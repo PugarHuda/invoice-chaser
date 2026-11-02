@@ -56,6 +56,7 @@ interface ClientProfile {
   reliabilityBadge: string;
   preferences: string[];
   memoryCount: number;
+  history?: Array<{ invoice: string; n: number; predicted: number; actual: number; error: number }>;
 }
 
 interface ClientDetail {
@@ -597,7 +598,7 @@ export default function App() {
                       </span>
                     </div>
                     <div className="text-xs text-secondary mt-xxs">
-                      Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : '0 days (On time)'} • Reminders: {c.profile.remindersNeeded}
+                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : 'on time'} • Reminders: {c.profile.remindersNeeded} • {c.profile.totalPaidInvoices} paid</>}
                     </div>
                   </div>
                 ))}
@@ -655,6 +656,36 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Learning chart: what we predicted before each payment vs what happened */}
+                    {clientDetail.profile.history && clientDetail.profile.history.length > 0 && (() => {
+                      const h = clientDetail.profile.history!;
+                      const max = Math.max(1, ...h.flatMap((x) => [x.predicted, x.actual]));
+                      return (
+                        <div className="p-md bg-secondary rounded-lg border border-secondary space-y-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-primary">How the prediction learned</span>
+                            <span className="text-xs text-tertiary">days late: predicted before payment vs actual</span>
+                          </div>
+                          {h.map((x) => (
+                            <div key={x.invoice} className="grid grid-cols-[72px_1fr_64px] items-center gap-sm text-xs">
+                              <span className="text-secondary font-mono">#{x.n} {x.invoice}</span>
+                              <div className="space-y-xxs">
+                                <div className="h-2 rounded-full bg-utility-brand-200" style={{ width: `${(x.predicted / max) * 100}%`, minWidth: 2 }} title={`predicted ${x.predicted}d`} />
+                                <div className="h-2 rounded-full bg-brand-solid" style={{ width: `${(x.actual / max) * 100}%`, minWidth: 2 }} title={`actual ${x.actual}d`} />
+                              </div>
+                              <span className={x.error === 0 ? 'text-utility-success-700 font-semibold' : 'text-tertiary'}>
+                                {x.error === 0 ? 'exact' : `off by ${x.error}d`}
+                              </span>
+                            </div>
+                          ))}
+                          <div className="flex gap-md text-xs text-tertiary">
+                            <span className="inline-flex items-center gap-xxs"><span className="w-2 h-2 rounded-full bg-utility-brand-200" /> predicted</span>
+                            <span className="inline-flex items-center gap-xxs"><span className="w-2 h-2 rounded-full bg-brand-solid" /> actual</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Tell me something about this client (Input & Field Recipe) */}
                     <div className="flex flex-col gap-sm pt-xs">
