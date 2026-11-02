@@ -9,7 +9,7 @@ Every freelancer has a client like Acme. The invoice is due on the 5th, nothing 
 
 I built **Invoice Chaser** for the Total Recall hackathon (Tatum × Walrus Memory) to fix exactly that. It's an invoice tracker for freelancers who get paid in USDC on Sui, and it remembers how each client pays.
 
-- Live demo: TODO
+- Live demo: https://invoice-chaser-sigma.vercel.app
 - Video (2:30): TODO
 - Code: https://github.com/PugarHuda/invoice-chaser
 

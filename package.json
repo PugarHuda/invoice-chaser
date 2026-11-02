@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "node --env-file-if-exists=.env.local server/index.mjs",
     "test": "node --test server/engine.test.mjs",
-    "seed": "node --env-file=.env.local scripts/seed.mjs"
+    "seed": "node --env-file=.env.local scripts/seed.mjs",
+    "build": "vite build"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.7",
@@ -29,5 +30,9 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "protobufjs": true
   }
 }

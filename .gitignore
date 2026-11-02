@@ -13,3 +13,6 @@ dist/
 .opencode/
 public/
 .vercel
+
+.vercel
+.env*

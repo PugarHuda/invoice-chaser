@@ -20,7 +20,7 @@ The "Why?" panel lists the @WalrusProtocol memories behind the decision.
 
 Started from one prompt in Tatum AI Builder, then wired to the real stack.
 
-Demo: TODO · Code: github.com/PugarHuda/invoice-chaser
+Demo: https://invoice-chaser-sigma.vercel.app · Code: github.com/PugarHuda/invoice-chaser
 
 ## LinkedIn
 
@@ -32,7 +32,7 @@ For the Total Recall hackathon (Tatum × Walrus Foundation) I built Invoice Chas
 • Payments are verified on Sui Mainnet through Tatum's gRPC gateway.
 • It measurably learns: the delay prediction for one client went from 4 days off to exact in four invoices.
 
-Demo: TODO
+Demo: https://invoice-chaser-sigma.vercel.app
 Code: https://github.com/PugarHuda/invoice-chaser
 
 #Walrus #Sui #Tatum #TotalRecall

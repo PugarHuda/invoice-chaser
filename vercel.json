@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "express",
-  "buildCommand": "vite build"
+  "buildCommand": "npm run build",
+  "functions": {
+    "app.mjs": {
+      "includeFiles": "public/**"
+    }
+  }
 }
