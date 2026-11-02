@@ -91,6 +91,8 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 - Recall caps at 100 memories per namespace, which is plenty for one client but would need paging for heavy users.
 - The default relayer sees memory plaintext (it does encryption and embeddings). Memories hold client aliases and amounts only, no emails. `MemWalManual` would keep plaintext client-side.
 
+- Digest replay protection is per process (an in-flight lock plus the set of digests already in memory). Two serverless instances verifying the *same* digest at the *same* moment could both accept it; the unique-amount rule limits this to one invoice's exact amount. A shared atomic store (e.g. Redis `SET NX`) would close it fully.
+
 ## License
 
 MIT

@@ -150,7 +150,7 @@ router.post('/invoices/:id/remind', (req, res) => {
 // Settle an invoice from a Sui transaction digest, verified on Mainnet through Tatum gRPC.
 router.post('/verify-payment', async (req, res) => {
   const { invoiceId, digest } = req.body || {}
-  if (!invoiceId || !digest) return res.status(400).json({ error: 'invoiceId and digest are required' })
+  if (typeof invoiceId !== 'string' || typeof digest !== 'string' || !sui.DIGEST_RE.test(digest)) return res.status(400).json({ error: 'invoiceId and a valid Sui transaction digest are required' })
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === invoiceId)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
@@ -168,13 +168,16 @@ router.post('/verify-payment', async (req, res) => {
 })
 
 const inflight = new Set()
-async function settle(_req, res, inv0, digest) {
+async function settle(_req, res, inv0, requested) {
   let tx
   try {
-    tx = await sui.usdcReceived(digest, PAYEE())
+    tx = await sui.usdcReceived(requested, PAYEE())
   } catch (e) {
     return res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }
+  // Key everything on the chain's canonical digest, not on what the client sent.
+  const digest = tx.digest
+  if (!digest) return res.status(400).json({ error: 'Transaction not found on Sui Mainnet' })
   // Re-read state after the await: anything settled meanwhile wins.
   const { clients, invoices, usedDigests } = state()
   const inv = invoices.find((i) => i.id === inv0.id)

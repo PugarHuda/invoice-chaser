@@ -73,10 +73,12 @@ export async function usdcReceived(digest, payee) {
     .filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE)
     .reduce((sum, c) => sum + BigInt(c.amount), 0n)
   const ts = tx?.timestamp ? new Date(Number(tx.timestamp.seconds) * 1000).toISOString() : null
-  return { ok, received, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
+  return { ok, received, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
 }
 
 const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')
+
+export const DIGEST_RE = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/ // base58, 32 bytes
 
 export const toMicro = (usdc) => {
   const [i, f = ''] = String(usdc).split('.')
