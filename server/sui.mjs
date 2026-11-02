@@ -30,31 +30,43 @@ async function throttle() {
   if (wait) await new Promise((r) => setTimeout(r, wait))
 }
 
+// Idle gRPC channels get reset by the gateway; retry once on a fresh channel.
+async function once(fn) {
+  try {
+    return await fn()
+  } catch (e) {
+    if (!/ECONNRESET|UNAVAILABLE|GOAWAY|socket hang up/i.test(`${e?.code} ${e?.message}`)) throw e
+    client = undefined
+    await throttle()
+    return fn()
+  }
+}
+
 const json = (v) => JSON.parse(JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? x.toString() : x)))
 
 export async function latestCheckpoint() {
   await throttle()
   const t = Date.now()
-  const { response } = await sui().ledgerService.getCheckpoint({
+  const { response } = await once(() => sui().ledgerService.getCheckpoint({
     checkpointId: { oneofKind: undefined },
     readMask: { paths: ['sequence_number', 'summary.timestamp'] },
-  })
+  }))
   return { sequence: String(response.checkpoint?.sequenceNumber), latencyMs: Date.now() - t }
 }
 
 export async function usdcBalance(owner) {
   await throttle()
-  const { balance } = await sui().core.getBalance({ owner, coinType: USDC_COIN_TYPE })
+  const { balance } = await once(() => sui().core.getBalance({ owner, coinType: USDC_COIN_TYPE }))
   return BigInt(balance.balance) // micro-USDC
 }
 
 // Fetch a transaction and return how much USDC (micro units) it moved into `payee`.
 export async function usdcReceived(digest, payee) {
   await throttle()
-  const { response } = await sui().ledgerService.getTransaction({
+  const { response } = await once(() => sui().ledgerService.getTransaction({
     digest,
     readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint', 'timestamp'] },
-  })
+  }))
   const tx = json(response.transaction)
   const ok = tx?.effects?.status?.success === true
   const received = (tx?.balanceChanges || [])

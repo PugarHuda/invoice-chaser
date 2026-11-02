@@ -13,6 +13,14 @@ router.use(async (_req, _res, next) => {
   next()
 })
 
+// Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
+router.use((req, res, next) => {
+  const pass = process.env.APP_PASSCODE
+  if (!pass || req.method === 'GET' || req.path === '/verify-payment') return next()
+  if (req.get('x-passcode') !== pass) return res.status(401).json({ error: 'Owner passcode required' })
+  next()
+})
+
 const state = () => deriveState(mem.store)
 const memsFor = (clientId) => mem.store.get(mem.clientNs(clientId)) || []
 const profileOf = (clientId) => computeProfile(clientId, memsFor(clientId))
@@ -83,12 +91,12 @@ router.post('/clients/:id/preference', (req, res) => {
 // Total Recall: throw away local state and rebuild everything from Walrus Memory.
 router.post('/clients/:id/rebuild', async (_req, res) => {
   const t = Date.now()
-  const r = await mem.loadAll({ wipe: true })
+  const r = await mem.loadAll()
   if (r.error) return res.status(502).json({ error: `Walrus Memory: ${r.error}` })
   res.json({ success: true, message: `Rebuilt from Walrus Memory: ${r.recalled} memories across ${r.namespaces} namespaces in ${((Date.now() - t) / 1000).toFixed(1)} s.` })
 })
 router.post('/rebuild', async (_req, res) => {
-  const r = await mem.loadAll({ wipe: true })
+  const r = await mem.loadAll()
   if (r.error) return res.status(502).json({ error: `Walrus Memory: ${r.error}` })
   res.json({ success: true, recalled: r.recalled, namespaces: r.namespaces })
 })
@@ -147,20 +155,40 @@ router.post('/verify-payment', async (req, res) => {
   const inv = invoices.find((i) => i.id === invoiceId)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
-  const used = invoices.find((i) => i.digest === digest)
-  if (used) return res.status(409).json({ error: `Digest already settled ${used.id}` })
+  if (mem.loadState.truncated?.length) return res.status(503).json({ error: 'Memory recall is incomplete; refusing to settle until every namespace is fully loaded' })
+  // Reserve digest + invoice synchronously so two concurrent requests cannot both settle.
+  if (inflight.has(digest) || inflight.has(inv.id)) return res.status(409).json({ error: 'This payment is already being verified' })
+  inflight.add(digest).add(inv.id)
+  try {
+    return await settle(req, res, inv, digest)
+  } finally {
+    inflight.delete(digest)
+    inflight.delete(inv.id)
+  }
+})
 
+const inflight = new Set()
+async function settle(_req, res, inv0, digest) {
   let tx
   try {
     tx = await sui.usdcReceived(digest, PAYEE())
   } catch (e) {
     return res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }
+  // Re-read state after the await: anything settled meanwhile wins.
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === inv0.id)
+  if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
+  const used = invoices.find((i) => i.digest === digest)
+  if (used) return res.status(409).json({ error: `Digest already settled ${used.id}` })
   if (!tx.ok) return res.status(400).json({ error: 'Transaction did not succeed on Sui Mainnet' })
   if (tx.received <= 0n) return res.status(400).json({ error: 'Transaction sent no USDC to the payee address' })
   if (tx.timestamp && tx.timestamp < inv.createdAt) return res.status(400).json({ error: 'Transaction is older than the invoice' })
 
   const expected = sui.toMicro(inv.payAmount)
+  // The unique amount is the invoice's fingerprint: a transfer that exactly matches another open invoice belongs to that one.
+  const other = invoices.find((i) => i.id !== inv.id && i.status !== 'paid' && sui.toMicro(i.payAmount) === tx.received)
+  if (other) return res.status(409).json({ error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` })
   const full = tx.received >= expected
   const paid = isoDay(tx.timestamp || Date.now())
   const delay = Math.max(0, Math.round((new Date(paid) - new Date(inv.dueDate)) / DAY))
@@ -175,7 +203,7 @@ router.post('/verify-payment', async (req, res) => {
     { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint },
   )
   res.json({ success: true, verifiedOnChain: true, received, full, memory: m, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, message: `Verified on Sui Mainnet via Tatum: ${received} USDC received.` })
-})
+}
 
 // Balance watcher: a balance increase that equals an open invoice's unique amount flags that invoice.
 let lastBalance = null

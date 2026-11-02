@@ -86,17 +86,19 @@ async function namespaces() {
 }
 
 // Total Recall: wipe local state and rebuild purely from Walrus Memory.
-export async function loadAll({ wipe = false } = {}) {
+export async function loadAll() {
   if (loadState.loading) return loadState
   loadState.loading = true
   loadState.error = null
   try {
     const nss = await namespaces()
     const fresh = new Map()
+    const truncated = []
     let n = 0
     for (const ns of nss) {
       // ponytail: recall caps at 100 per namespace; one namespace per client keeps us far below that
       const r = await memwal().recall({ query: 'invoice payment reminder client preference', namespace: ns.name, limit: 100, sort: 'recent' })
+      if (ns.memory_count > r.results.length) truncated.push(ns.name) // fail closed: payments refuse to settle
       const mems = []
       for (const hit of r.results) {
         const d = decode(hit.text)
@@ -107,14 +109,14 @@ export async function loadAll({ wipe = false } = {}) {
       fresh.set(ns.name, mems)
       n += mems.length
     }
-    // keep anything still waiting to be written so a reload never loses it
+    // keep anything still waiting to be written so a reload (even a wipe) never loses it
     for (const [ns, mems] of store) {
-      const unsaved = wipe ? [] : mems.filter((m) => m.status !== 'saved')
+      const unsaved = mems.filter((m) => m.status !== 'saved')
       if (unsaved.length) fresh.set(ns, [...unsaved, ...(fresh.get(ns) || [])])
     }
     store.clear()
     for (const [k, v] of fresh) store.set(k, v)
-    Object.assign(loadState, { loaded: true, loadedAt: new Date().toISOString(), recalled: n, namespaces: nss.length })
+    Object.assign(loadState, { truncated, loaded: true, loadedAt: new Date().toISOString(), recalled: n, namespaces: nss.length })
   } catch (e) {
     loadState.error = String(e?.message || e)
   } finally {
