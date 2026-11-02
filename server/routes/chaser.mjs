@@ -9,7 +9,7 @@ const DAY = 86_400_000
 
 // First request after boot rebuilds everything from Walrus Memory.
 router.use(async (_req, _res, next) => {
-  if (!mem.loadState.loaded && !mem.loadState.loading) await mem.loadAll()
+  await mem.ready()
   next()
 })
 

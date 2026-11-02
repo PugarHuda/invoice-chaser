@@ -91,8 +91,16 @@ async function namespaces() {
 }
 
 // Total Recall: wipe local state and rebuild purely from Walrus Memory.
-export async function loadAll() {
-  if (loadState.loading) return loadState
+// Concurrent callers share one in-flight load instead of reading half-built state.
+let loading = null
+export function loadAll() {
+  loading ??= doLoad().finally(() => (loading = null))
+  return loading
+}
+export async function ready() {
+  if (!loadState.loaded) await loadAll()
+}
+async function doLoad() {
   loadState.loading = true
   loadState.error = null
   try {
