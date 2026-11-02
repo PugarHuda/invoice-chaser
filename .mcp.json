@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tatum-docs": {
+      "type": "http",
+      "url": "https://docs.tatum.io/mcp"
+    }
+  }
+}

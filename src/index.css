@@ -1,0 +1,15 @@
+/* The design-system CSS variables every token class resolves to. Must stay the
+   first statement — CSS @import is only valid ahead of other rules. */
+@import '../design-tokens/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tatum foundation — read through the tokens, never hardcoded. The full system
+   (component anatomy, states, layout) is in the `tatum-design` skill. */
+body {
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-sans);
+}

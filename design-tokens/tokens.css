@@ -1,0 +1,202 @@
+/**
+ * Do not edit directly, this file was auto-generated.
+ */
+
+:root {
+  --color-text-primary: #181d27; /** Titles, key values, primary reading text. */
+  --color-text-secondary: #414651; /** Body copy, labels, secondary headings. */
+  --color-text-tertiary: #535862; /** Helper copy, metadata, descriptions. */
+  --color-text-quaternary: #717680; /** Lowest-emphasis text. */
+  --color-text-primary-on-brand: #ffffff; /** Text and labels on solid brand fills. */
+  --color-text-placeholder: #717680; /** Input placeholder text. */
+  --color-text-disabled: #717680; /** Text in disabled controls. */
+  --color-text-brand-primary: #4f37fd; /** Links, selected text, brand emphasis. */
+  --color-text-error-primary: #d92d20; /** Error text and destructive emphasis. */
+  --color-text-warning-primary: #dc6803; /** Warning text. */
+  --color-text-success-primary: #079455; /** Success text. */
+  --color-fg-primary: #181d27; /** Strongest icon color. */
+  --color-fg-secondary: #414651; /** Icons paired with secondary text. */
+  --color-fg-tertiary: #535862; /** Supporting icons. */
+  --color-fg-quaternary: #717680; /** Default utility-icon color. */
+  --color-fg-quaternary-hover: #535862; /** Utility icon on hover. */
+  --color-fg-brand-primary: #4f37fd; /** Brand-emphasised icons. */
+  --color-fg-error-primary: #d92d20; /** Error status icons. */
+  --color-fg-warning-primary: #dc6803; /** Warning status icons. */
+  --color-fg-success-primary: #079455; /** Success status icons. */
+  --color-fg-disabled: #a4a7ae; /** Icons in disabled controls. */
+  --color-fg-white: #ffffff; /** Icons on solid brand/status fills. */
+  --color-bg-primary: #ffffff; /** Page/canvas and default card surface. */
+  --color-bg-primary-hover: #fafafa; /** Hovered canvas/control surface. */
+  --color-bg-primary-solid: #0a0d12; /** Inverted solid surface — tooltips, dark chips. */
+  --color-bg-secondary: #fafafa; /** Grouped/quiet regions; table headers. */
+  --color-bg-secondary-hover: #f5f5f5; /** Hovered grouped surface; table row hover. */
+  --color-bg-tertiary: #f5f5f5; /** Nested/subtle raised surfaces. */
+  --color-bg-overlay: #0a0d12; /** Modal/drawer backdrop scrim (pair with opacity). */
+  --color-bg-brand-solid: #4832e7; /** Primary action fill; brand-owned solid surface. */
+  --color-bg-brand-solid-hover: #402dce; /** Primary action hover fill. */
+  --color-bg-error-primary: #fef3f2; /** Pale error tint in light, solid in dark — pair per theme. */
+  --color-bg-warning-primary: #fffaeb; /** Pale warning tint in light, solid in dark — pair per theme. */
+  --color-bg-success-primary: #ecfdf3; /** Pale success tint in light, solid in dark — pair per theme. */
+  --color-bg-error-secondary: #fee4e2; /** Error tint in light, solid in dark — pair per theme. */
+  --color-bg-warning-secondary: #fef0c7; /** Warning tint in light, solid in dark — pair per theme. */
+  --color-bg-success-secondary: #dcfae6; /** Success tint in light, solid in dark — pair per theme. */
+  --color-bg-disabled-subtle: #fafafa; /** Disabled control surface. */
+  --color-border-primary: #d5d7da; /** Inputs, cards, strong dividers. */
+  --color-border-secondary: #e9eaeb; /** Row dividers, soft separators. */
+  --color-border-brand: #4f37fd; /** Brand-emphasised or selected outlines. */
+  --color-border-error-subtle: #fda29b; /** Error outline on invalid inputs and callouts. */
+  --color-ring-focus-ring: #4f37fd; /** Keyboard focus ring. */
+  --color-ring-focus-ring-error: #f04438; /** Focus ring on invalid controls. */
+  --color-utility-gray-50: #fafafa; /** Theme-aware gray tinted surface (badges, alerts). */
+  --color-utility-gray-200: #e9eaeb; /** Theme-aware gray tinted border (badges). */
+  --color-utility-gray-600: #535862; /** Theme-aware gray accent text on the 50 tint (alerts). */
+  --color-utility-gray-700: #414651; /** Theme-aware gray accent text on the 50 tint (badges). */
+  --color-utility-brand-50: #ebeaff; /** Theme-aware brand tinted surface (badges, alerts). */
+  --color-utility-brand-200: #bdb8fe; /** Theme-aware brand tinted border (badges). */
+  --color-utility-brand-600: #4832e7; /** Theme-aware brand accent text on the 50 tint (alerts). */
+  --color-utility-brand-700: #402dce; /** Theme-aware brand accent text on the 50 tint (badges). */
+  --color-utility-success-50: #ecfdf3; /** Theme-aware success tinted surface (badges, alerts). */
+  --color-utility-success-200: #abefc6; /** Theme-aware success tinted border (badges). */
+  --color-utility-success-600: #079455; /** Theme-aware success accent text on the 50 tint (alerts). */
+  --color-utility-success-700: #067647; /** Theme-aware success accent text on the 50 tint (badges). */
+  --color-utility-warning-50: #fffaeb; /** Theme-aware warning tinted surface (badges, alerts). */
+  --color-utility-warning-200: #fedf89; /** Theme-aware warning tinted border (badges). */
+  --color-utility-warning-600: #dc6803; /** Theme-aware warning accent text on the 50 tint (alerts). */
+  --color-utility-warning-700: #b54708; /** Theme-aware warning accent text on the 50 tint (badges). */
+  --color-utility-error-50: #fef3f2; /** Theme-aware error tinted surface (badges, alerts). */
+  --color-utility-error-200: #fecdca; /** Theme-aware error tinted border (badges). */
+  --color-utility-error-600: #d92d20; /** Theme-aware error accent text on the 50 tint (alerts). */
+  --color-utility-error-700: #b42318; /** Theme-aware error accent text on the 50 tint (badges). */
+  --space-none: 0rem; /** Zero gap — flush/adjacent elements. */
+  --space-xxs: 0.125rem; /** Hairline gap between tightly-coupled marks (icon + label). */
+  --space-xs: 0.25rem; /** Tightest control padding; icon insets. */
+  --space-sm: 0.375rem; /** Compact control padding; dense chip/badge insets. */
+  --space-md: 0.5rem; /** Default gap inside compact controls. */
+  --space-md-lg: 0.625rem; /** Between compact and comfortable control padding. */
+  --space-lg: 0.75rem; /** Comfortable control padding; small stack gaps. */
+  --space-lg-xl: 0.875rem; /** Between control and container padding. */
+  --space-xl: 1rem; /** Default card/container padding; primary stack gap. */
+  --space-2xl: 1.25rem; /** Roomy card padding. */
+  --space-3xl: 1.5rem; /** Section padding; gap between major regions. */
+  --space-4xl: 2rem; /** Generous section padding on desktop. */
+  --space-5xl: 2.5rem; /** Page-level vertical rhythm. */
+  --space-6xl: 3rem; /** Large landing/section rhythm. */
+  --space-7xl: 4rem; /** Marketing section spacing. */
+  --space-8xl: 5rem; /** Hero vertical spacing. */
+  --space-9xl: 6rem; /** Large hero spacing. */
+  --space-10xl: 8rem; /** Oversized editorial spacing. */
+  --space-11xl: 10rem; /** Maximum layout spacing. */
+  --radius-none: 0rem; /** Square corners. */
+  --radius-xxs: 0.125rem; /** Barely-rounded marks. */
+  --radius-xs: 0.25rem; /** Small chips, tags, tiny controls. */
+  --radius-sm: 0.375rem; /** Compact controls. */
+  --radius-md: 0.5rem; /** Inputs, badges, tooltips, menu items, compact controls. */
+  --radius-lg: 0.625rem; /** Buttons, dialogs, floating menus. */
+  --radius-xl: 0.75rem; /** Cards, tables, panels, alerts, drawers. */
+  --radius-2xl: 1rem; /** Occasional oversized/rounded surfaces. */
+  --radius-3xl: 1.25rem; /** Extra-large surfaces. */
+  --radius-4xl: 1.5rem; /** Feature/marketing surfaces. */
+  --radius-full: 9999px; /** Pills, avatars, circular controls. */
+  --font-size-xs: 0.75rem; /** Captions, table sublabels, dense metadata. */
+  --font-size-sm: 0.875rem; /** Controls, table cells, dense body. */
+  --font-size-md: 1rem; /** Default readable body. */
+  --font-size-lg: 1.125rem; /** Larger descriptions, modal body. */
+  --font-size-xl: 1.25rem; /** Dense page headings when a heading size is too large. */
+  --font-size-heading-xs: 1.5rem; /** Default dashboard page title; card hero value. */
+  --font-size-heading-sm: 1.875rem; /** Section heading in docs/marketing. */
+  --font-size-heading-md: 2.25rem; /** Large section heading; rare in product UI. */
+  --font-size-heading-lg: 3rem; /** Marketing/editorial heading. */
+  --font-size-heading-xl: 3.75rem; /** Hero heading. */
+  --font-size-heading-2xl: 4.5rem; /** Largest display heading. */
+  --line-height-xs: 1.125rem;
+  --line-height-sm: 1.25rem;
+  --line-height-md: 1.5rem;
+  --line-height-lg: 1.75rem;
+  --line-height-xl: 1.875rem;
+  --line-height-heading-xs: 2rem;
+  --line-height-heading-sm: 2.375rem;
+  --line-height-heading-md: 2.75rem;
+  --line-height-heading-lg: 3.75rem;
+  --line-height-heading-xl: 4.5rem;
+  --line-height-heading-2xl: 5.625rem;
+  --font-weight-regular: 400; /** Body copy. */
+  --font-weight-medium: 500; /** Control text; table emphasis. */
+  --font-weight-semibold: 600; /** Headings, card labels, important values. */
+  --font-weight-bold: 700; /** Strong emphasis; use sparingly in product UI. */
+  --shadow-xs: 0 0.0625rem 0.125rem 0 rgba(10, 13, 18, 0.05); /** Subtle lift for resting cards/buttons. */
+  --shadow-sm: 0 0.0625rem 0.125rem 0 rgba(0, 0, 0, 0.05); /** Slightly raised controls. */
+  --shadow-md: 0 0.25rem 0.375rem -0.0625rem rgba(0, 0, 0, 0.1), 0 0.125rem 0.25rem -0.0625rem rgba(0, 0, 0, 0.06); /** Raised interactive surfaces. */
+  --shadow-lg: 0 0.625rem 0.9375rem -0.1875rem rgba(0, 0, 0, 0.1), 0 0.25rem 0.375rem -0.125rem rgba(0, 0, 0, 0.05); /** Menus, popovers, dropdowns. */
+  --shadow-xl: 0 1.25rem 1.5625rem -0.3125rem rgba(0, 0, 0, 0.1), 0 0.625rem 0.625rem -0.3125rem rgba(0, 0, 0, 0.04); /** Drawers and large overlays. */
+  --shadow-2xl: 0 1.5625rem 3.125rem -0.75rem rgba(0, 0, 0, 0.25); /** Modals and prominent overlays. */
+  --shadow-3xl: 0rem 2rem 4rem -0.75rem rgba(10, 13, 18, 0.14), 0rem 0.3125rem 0.3125rem -0.15625rem rgba(10, 13, 18, 0.04); /** Highest-elevation overlays. */
+  --shadow-inner: inset 0 0.125rem 0.25rem 0 rgba(0, 0, 0, 0.06); /** Inset/pressed treatment. */
+  --font-family-sans: Poppins, sans-serif; /** The brand typeface — Poppins. */
+}
+
+[data-theme="dark"], .dark {
+  --color-text-primary: #f7f7f7; /** Titles, key values, primary reading text. */
+  --color-text-secondary: #cecfd2; /** Body copy, labels, secondary headings. */
+  --color-text-tertiary: #94979c; /** Helper copy, metadata, descriptions. */
+  --color-text-quaternary: #94979c; /** Lowest-emphasis text. */
+  --color-text-primary-on-brand: #f7f7f7; /** Text and labels on solid brand fills. */
+  --color-text-placeholder: #85888e; /** Input placeholder text. */
+  --color-text-disabled: #85888e; /** Text in disabled controls. */
+  --color-text-brand-primary: #f7f7f7; /** Links, selected text, brand emphasis. */
+  --color-text-error-primary: #f97066; /** Error text and destructive emphasis. */
+  --color-text-warning-primary: #fdb022; /** Warning text. */
+  --color-text-success-primary: #47cd89; /** Success text. */
+  --color-fg-primary: #ffffff; /** Strongest icon color. */
+  --color-fg-secondary: #cecfd2; /** Icons paired with secondary text. */
+  --color-fg-tertiary: #94979c; /** Supporting icons. */
+  --color-fg-quaternary: #94979c; /** Default utility-icon color. */
+  --color-fg-quaternary-hover: #cecfd2; /** Utility icon on hover. */
+  --color-fg-brand-primary: #4f37fd; /** Brand-emphasised icons. */
+  --color-fg-error-primary: #f04438; /** Error status icons. */
+  --color-fg-warning-primary: #f79009; /** Warning status icons. */
+  --color-fg-success-primary: #17b26a; /** Success status icons. */
+  --color-fg-disabled: #85888e; /** Icons in disabled controls. */
+  --color-fg-white: #ffffff; /** Icons on solid brand/status fills. */
+  --color-bg-primary: #0c0e12; /** Page/canvas and default card surface. */
+  --color-bg-primary-hover: #212124; /** Hovered canvas/control surface. */
+  --color-bg-primary-solid: #13161b; /** Inverted solid surface — tooltips, dark chips. */
+  --color-bg-secondary: #13161b; /** Grouped/quiet regions; table headers. */
+  --color-bg-secondary-hover: #212124; /** Hovered grouped surface; table row hover. */
+  --color-bg-tertiary: #212124; /** Nested/subtle raised surfaces. */
+  --color-bg-overlay: #212124; /** Modal/drawer backdrop scrim (pair with opacity). */
+  --color-bg-brand-solid: #4832e7; /** Primary action fill; brand-owned solid surface. */
+  --color-bg-brand-solid-hover: #4f37fd; /** Primary action hover fill. */
+  --color-bg-error-primary: #f04438; /** Pale error tint in light, solid in dark — pair per theme. */
+  --color-bg-warning-primary: #f79009; /** Pale warning tint in light, solid in dark — pair per theme. */
+  --color-bg-success-primary: #17b26a; /** Pale success tint in light, solid in dark — pair per theme. */
+  --color-bg-error-secondary: #d92d20; /** Error tint in light, solid in dark — pair per theme. */
+  --color-bg-warning-secondary: #dc6803; /** Warning tint in light, solid in dark — pair per theme. */
+  --color-bg-success-secondary: #079455; /** Success tint in light, solid in dark — pair per theme. */
+  --color-bg-disabled-subtle: #13161b; /** Disabled control surface. */
+  --color-border-primary: #373a41; /** Inputs, cards, strong dividers. */
+  --color-border-secondary: #212124; /** Row dividers, soft separators. */
+  --color-border-brand: #7e73fd; /** Brand-emphasised or selected outlines. */
+  --color-border-error-subtle: #f97066; /** Error outline on invalid inputs and callouts. */
+  --color-ring-focus-ring: #4f37fd; /** Keyboard focus ring. */
+  --color-ring-focus-ring-error: #f04438; /** Focus ring on invalid controls. */
+  --color-utility-gray-50: #13161b; /** Theme-aware gray tinted surface (badges, alerts). */
+  --color-utility-gray-200: #373a41; /** Theme-aware gray tinted border (badges). */
+  --color-utility-gray-600: #94979c; /** Theme-aware gray accent text on the 50 tint (alerts). */
+  --color-utility-gray-700: #cecfd2; /** Theme-aware gray accent text on the 50 tint (badges). */
+  --color-utility-brand-50: #201667; /** Theme-aware brand tinted surface (badges, alerts). */
+  --color-utility-brand-200: #3827b3; /** Theme-aware brand tinted border (badges). */
+  --color-utility-brand-600: #7e73fd; /** Theme-aware brand accent text on the 50 tint (alerts). */
+  --color-utility-brand-700: #a19afe; /** Theme-aware brand accent text on the 50 tint (badges). */
+  --color-utility-success-50: #053321; /** Theme-aware success tinted surface (badges, alerts). */
+  --color-utility-success-200: #085d3a; /** Theme-aware success tinted border (badges). */
+  --color-utility-success-600: #47cd89; /** Theme-aware success accent text on the 50 tint (alerts). */
+  --color-utility-success-700: #75e0a7; /** Theme-aware success accent text on the 50 tint (badges). */
+  --color-utility-warning-50: #4e1d09; /** Theme-aware warning tinted surface (badges, alerts). */
+  --color-utility-warning-200: #93370d; /** Theme-aware warning tinted border (badges). */
+  --color-utility-warning-600: #fdb022; /** Theme-aware warning accent text on the 50 tint (alerts). */
+  --color-utility-warning-700: #fec84b; /** Theme-aware warning accent text on the 50 tint (badges). */
+  --color-utility-error-50: #55160c; /** Theme-aware error tinted surface (badges, alerts). */
+  --color-utility-error-200: #912018; /** Theme-aware error tinted border (badges). */
+  --color-utility-error-600: #f97066; /** Theme-aware error accent text on the 50 tint (alerts). */
+  --color-utility-error-700: #fda29b; /** Theme-aware error accent text on the 50 tint (badges). */
+}

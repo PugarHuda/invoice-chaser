@@ -1,0 +1,13 @@
+# node_modules is a mounted volume (see workload.go), never project source.
+node_modules/
+dist/
+# Secrets never enter history — /creds is outside the work tree already, but
+# agents write .env files into the project when asked to configure things.
+.env
+.env.*
+# Platform markers and harness internals — not the user's source. (The bridge's
+# file routes hide every dotfile, these included.)
+# .claude/ and .mcp.json are deliberately NOT listed: they carry the Tatum skills
+# and the docs MCP server so an export keeps working in an external agent.
+.scaffolded
+.opencode/
