@@ -12,9 +12,9 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 ## What it does
 
 1. **Issue a USDC invoice** with a *unique payable amount* (e.g. `300.004217`): the micro-decimals identify the invoice on-chain.
-2. **Verify payment on Sui Mainnet through Tatum's gRPC gateway**: paste the transaction digest; the server reads `balance_changes` and settles the invoice as paid or partial.
+2. **Get paid on Sui Mainnet**: the client clicks *Connect Sui wallet & pay* (any Wallet Standard wallet; the exact USDC transfer is built server-side through Tatum) or pays manually and pastes the digest. Either way the server verifies the transaction through **Tatum's gRPC gateway** (`balance_changes`) and settles the invoice as paid or partial.
 3. **Remember everything in Walrus Memory**: invoices, reminders (with tone), payments (delay, amount), and your own rules ("never chase Acme before the 10th").
-4. **Plan the next reminder from memory**: predicted pay date (EWMA of past delays), the tone that actually worked for this client, your hard rules. A **"Why?" panel** lists the memories behind the decision, and an **"Ignore memory"** switch shows what a memory-less tool would do.
+4. **Plan the next reminder from memory**: predicted pay date (EWMA of past delays), the tone that actually worked for this client, your hard rules. A **"Why?" panel** cites the exact memories behind the decision (each linked to its Walrus blob), every logged reminder stores which memories its plan cited, and an **"Ignore memory"** switch shows what a memory-less tool would do.
 
 ## How it learned (same invoice, two plans)
 
@@ -45,8 +45,31 @@ All chain reads go through **Tatum's Sui Mainnet gRPC gateway** (`sui-mainnet-gr
 | Verify an invoice payment | `LedgerService.GetTransaction` → `effects.status`, `balance_changes`, `timestamp` |
 | Detect incoming USDC | `StateService.GetBalance` (balance watcher, `/api/chaser/cron-check`) |
 | Live proof | `LedgerService.GetCheckpoint` (latest) |
+| Build the payer's USDC transfer (coin selection, gas price, budget) | `Transaction.build` through the same gateway (`/api/chaser/pay-tx`) |
+| Execute an agent-signed payment | `TransactionExecutionService` (`scripts/ap-agent.mjs`) |
 
 Sui JSON-RPC is deprecated, and gRPC has no "transactions by address" query. That is why invoices carry unique amounts and settle by digest. Calls are throttled to stay under the free tier's 3 req/s.
+
+## Agent payments (x402 on Sui)
+
+Every invoice is also a payable HTTP resource for accounts-payable agents:
+
+```
+GET /api/chaser/x402/<invoice>            -> 402 { x402Version: 1, accepts: [{ scheme: "exact", network: "sui:mainnet",
+                                               asset: <USDC>, maxAmountRequired, payTo, resource, ... }] }
+GET /api/chaser/x402/<invoice>            -> 200 receipt   (with  X-PAYMENT: <Sui tx digest>)
+    X-PAYMENT: <digest>
+```
+
+The server verifies the digest on Mainnet through Tatum exactly like a human payment (success, USDC to `payTo`, unique amount, newer than the invoice, never used before) and the payment is remembered with `channel: "x402"`. [`scripts/ap-agent.mjs`](scripts/ap-agent.mjs) is a reference agent: reads the 402 terms, enforces its own budget, builds and signs the USDC transfer, executes it through Tatum, retries with `X-PAYMENT`.
+
+```bash
+AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
+```
+
+## For judges
+
+The Today page has a five-stop tour: Acme's learned profile → memory on vs off → teach a rule → pay on Sui Mainnet → live proof.
 
 ## Architecture
 

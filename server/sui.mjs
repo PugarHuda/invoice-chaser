@@ -2,6 +2,7 @@
 import { SuiGrpcClient } from '@mysten/sui/grpc'
 import { GrpcTransport } from '@protobuf-ts/grpc-transport'
 import { ChannelCredentials } from '@grpc/grpc-js'
+import { Transaction, coinWithBalance } from '@mysten/sui/transactions'
 
 export const GRPC_HOST = 'sui-mainnet-grpc.gateway.tatum.io:443'
 export const USDC_COIN_TYPE =
@@ -78,6 +79,25 @@ export async function usdcReceived(digest, payee) {
 
 const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')
 
+// Build (unsigned) a USDC transfer for the payer's wallet to sign. Coin selection, gas price and
+// gas budget are all resolved through Tatum's gateway, so the browser never needs an RPC key.
+export async function buildUsdcTransfer(sender, payee, micro) {
+  const tx = new Transaction()
+  tx.setSender(sender)
+  tx.transferObjects([coinWithBalance({ type: USDC_COIN_TYPE, balance: BigInt(micro) })], payee)
+  await throttle()
+  const bytes = await once(() => tx.build({ client: sui() }))
+  return Buffer.from(bytes).toString('base64')
+}
+
+// Execute an already-signed transaction through Tatum (used by the x402 demo agent).
+export async function executeSigned(bytesB64, signature) {
+  await throttle()
+  const r = await once(() => sui().core.executeTransaction({ transaction: Buffer.from(bytesB64, 'base64'), signatures: [signature] }))
+  return json(r)
+}
+
+export const ADDRESS_RE = /^0x[0-9a-fA-F]{64}$/
 export const DIGEST_RE = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/ // base58, 32 bytes
 
 export const toMicro = (usdc) => {

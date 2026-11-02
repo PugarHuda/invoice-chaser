@@ -12,6 +12,7 @@
     "@grpc/grpc-js": "^1.14.7",
     "@mysten-incubation/memwal": "^0.1.12",
     "@mysten/sui": "^2.38.0",
+    "@mysten/wallet-standard": "^0.21.36",
     "@protobuf-ts/grpc-transport": "^2.11.1",
     "@vercel/functions": "^3.10.5",
     "@vitejs/plugin-react": "^4.3.1",

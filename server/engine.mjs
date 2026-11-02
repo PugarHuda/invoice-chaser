@@ -109,6 +109,8 @@ export function computeProfile(clientId, memories) {
     preferences: preferences.map((p) => p.tag.note),
     constraints: mergeConstraints(preferences.map((p) => parsePreference(p.tag.note))),
     history,
+    // the memories a plan is allowed to cite: recent payments + every rule
+    evidence: [...pays.slice(-4).reverse(), ...preferences].map((m) => ({ sentence: m.sentence, blobId: m.blobId || null, status: m.status || 'saved', at: m.timestamp })),
     memoryCount: memories.length,
   }
 }
@@ -184,7 +186,7 @@ export function plan(inv, profile, { ignoreMemory = false } = {}) {
     const second = applyConstraints(addDays(due, delay + 3), c)
     steps.push({ dayOffset: Math.round((second - due) / DAY), date: isoDay(second), tone: tone === 'firm' ? 'firm' : 'formal', reason: 'Escalate only if it is later than their usual pattern' })
   }
-  return { type: 'adaptive', predictedPayDate: isoDay(predicted), predictedDelayDays: delay, steps, memoriesUsed: used }
+  return { type: 'adaptive', predictedPayDate: isoDay(predicted), predictedDelayDays: delay, steps, memoriesUsed: used, cites: profile.evidence || [] }
 }
 
 // Unique payable amount: base + random micro-suffix so an on-chain transfer maps to exactly one invoice.

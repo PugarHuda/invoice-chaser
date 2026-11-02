@@ -13,10 +13,12 @@ router.use(async (_req, _res, next) => {
   next()
 })
 
+const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx'])
+const X402_NETWORK = 'sui:mainnet'
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
-  if (!pass || req.method === 'GET' || req.path === '/verify-payment') return next()
+  if (!pass || req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
   if (req.get('x-passcode') !== pass) return res.status(401).json({ error: 'Owner passcode required' })
   next()
 })
@@ -30,6 +32,8 @@ const withStatus = (inv) => ({ ...inv, status: invoiceStatus(inv) })
 router.get('/summary', (_req, res) => {
   const now = new Date()
   const horizon = isoDay(now.getTime() + 7 * DAY)
+  const horizon30 = isoDay(now.getTime() + 30 * DAY)
+  let expected30 = 0
   const today = isoDay(now)
   const { clients, invoices } = state()
   let expected = 0
@@ -42,6 +46,7 @@ router.get('/summary', (_req, res) => {
     const profile = profileOf(inv.clientId)
     const p = plan(inv, profile)
     const predicted = p.predictedPayDate || inv.dueDate
+    if (predicted <= horizon30) expected30 += inv.baseAmount
     if (predicted <= horizon) {
       expected += inv.baseAmount
       upcomingInflows.push({ invoiceId: inv.id, clientName: clientName(clients, inv.clientId), payAmount: inv.payAmount, dueDate: inv.dueDate, predictedPayDate: predicted, delayDays: p.predictedDelayDays ?? 0, status: inv.status })
@@ -53,6 +58,7 @@ router.get('/summary', (_req, res) => {
   nextActions.sort((a, b) => a.actionDate.localeCompare(b.actionDate))
   res.json({
     expectedInflow7Days: expected.toFixed(2),
+    expectedInflow30Days: expected30.toFixed(2),
     overdueAmount: overdue.toFixed(2),
     activeClientNamespaces: clients.length,
     upcomingInflows,
@@ -140,15 +146,17 @@ router.post('/invoices/:id/remind', (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
-  const tone = ['friendly', 'formal', 'firm'].includes(req.body?.tone) ? req.body.tone : plan(inv, profileOf(inv.clientId)).steps[0].tone
+  const p = plan(inv, profileOf(inv.clientId))
+  const tone = ['friendly', 'formal', 'firm'].includes(req.body?.tone) ? req.body.tone : p.steps[0].tone
   const name = clientName(clients, inv.clientId)
   const offset = Math.round((Date.now() - new Date(`${inv.dueDate}T00:00:00Z`)) / DAY)
-  const m = mem.remember(mem.clientNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset })
+  const m = mem.remember(mem.clientNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean) })
   res.json({ text: TEMPLATES[tone](name, inv), memory: m })
 })
 
 // Settle an invoice from a Sui transaction digest, verified on Mainnet through Tatum gRPC.
-router.post('/verify-payment', async (req, res) => {
+router.post('/verify-payment', (req, res) => verifyPayment(req, res))
+async function verifyPayment(req, res) {
   const { invoiceId, digest } = req.body || {}
   if (typeof invoiceId !== 'string' || typeof digest !== 'string' || !sui.DIGEST_RE.test(digest)) return res.status(400).json({ error: 'invoiceId and a valid Sui transaction digest are required' })
   const { clients, invoices } = state()
@@ -165,10 +173,10 @@ router.post('/verify-payment', async (req, res) => {
     inflight.delete(digest)
     inflight.delete(inv.id)
   }
-})
+}
 
 const inflight = new Set()
-async function settle(_req, res, inv0, requested) {
+async function settle(req, res, inv0, requested) {
   let tx
   try {
     tx = await sui.usdcReceived(requested, PAYEE())
@@ -202,10 +210,46 @@ async function settle(_req, res, inv0, requested) {
     full
       ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}.`
       : `${name} underpaid ${inv.id}: ${received} of ${inv.payAmount} USDC on ${paid}.`,
-    { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint },
+    { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel: req.x402 ? 'x402' : 'pay-page' },
   )
   res.json({ success: true, verifiedOnChain: true, received, full, memory: m, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, message: `Verified on Sui Mainnet via Tatum: ${received} USDC received.` })
 }
+
+// x402: an invoice is a payable HTTP resource. Without X-PAYMENT you get 402 + terms; with a Sui
+// Mainnet transaction digest in X-PAYMENT the server verifies it through Tatum and returns a receipt.
+router.get('/x402/:id', async (req, res) => {
+  const inv = state().invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const payment = req.get('x-payment')
+  if (!payment) {
+    if (inv.status === 'paid') return res.json({ status: 'paid', invoice: inv.id, digest: inv.digest })
+    res.set('Cache-Control', 'no-store')
+    return res.status(402).json({
+      x402Version: 1,
+      error: 'Payment required',
+      accepts: [{ scheme: 'exact', network: X402_NETWORK, asset: sui.USDC_COIN_TYPE, maxAmountRequired: sui.toMicro(inv.payAmount).toString(), amount: inv.payAmount, payTo: PAYEE(), resource: `${req.protocol}://${req.get('host')}${req.originalUrl}`, description: `Invoice ${inv.id} (${inv.description || 'services'})`, mimeType: 'application/json', maxTimeoutSeconds: 600 }],
+    })
+  }
+  if (!sui.DIGEST_RE.test(payment)) return res.status(400).json({ error: 'X-PAYMENT must be a Sui transaction digest' })
+  req.x402 = true
+  req.body = { invoiceId: inv.id, digest: payment }
+  return verifyPayment(req, res)
+})
+
+// Payer-facing: build the exact USDC transfer for the payer's wallet to sign (wallet executes, then /verify-payment).
+router.post('/pay-tx', async (req, res) => {
+  const { invoiceId, sender } = req.body || {}
+  if (typeof sender !== 'string' || !sui.ADDRESS_RE.test(sender)) return res.status(400).json({ error: 'A valid Sui sender address is required' })
+  const inv = state().invoices.find((i) => i.id === invoiceId)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
+  if (sender.toLowerCase() === PAYEE().toLowerCase()) return res.status(400).json({ error: 'Pay from a different wallet than the payee' })
+  try {
+    res.json({ bytes: await sui.buildUsdcTransfer(sender, PAYEE(), sui.toMicro(inv.payAmount)), amount: inv.payAmount, payee: PAYEE() })
+  } catch (e) {
+    res.status(400).json({ error: /insufficient|balance|coin/i.test(e.message) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}…` : `Could not build transaction: ${e.message}` })
+  }
+})
 
 // Balance watcher: a balance increase that equals an open invoice's unique amount flags that invoice.
 let lastBalance = null

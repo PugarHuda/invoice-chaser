@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { getWallets } from '@mysten/wallet-standard';
+import { Transaction } from '@mysten/sui/transactions';
 import {
   Clock,
   AlertCircle,
@@ -21,6 +23,7 @@ type TabKey = 'today' | 'clients' | 'invoices' | 'pay' | 'proof';
 
 interface SummaryData {
   expectedInflow7Days: string;
+  expectedInflow30Days?: string;
   overdueAmount: string;
   activeClientNamespaces: number;
   upcomingInflows: Array<{
@@ -93,6 +96,7 @@ interface InvoiceDetail {
     coinType: string;
   };
   adaptivePlan: {
+    cites?: Array<{ sentence: string; blobId: string | null; status: string; at: string }>;
     type: string;
     predictedPayDate: string;
     predictedDelayDays: number;
@@ -156,6 +160,8 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [newInvoice, setNewInvoice] = useState({ clientId: 'c4', amount: '0.05', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '' });
   const [reminderText, setReminderText] = useState<string>('');
+  const [newClientName, setNewClientName] = useState<string>('');
+  const [walletBusy, setWalletBusy] = useState<string | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -317,6 +323,58 @@ export default function App() {
     }
   };
 
+  const handleAddClient = async () => {
+    if (!newClientName.trim()) return;
+    const res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
+    const data = await res.json();
+    if (!res.ok) return showToast(data.error || 'Could not add client');
+    showToast(`${data.client.name} added (writing to Walrus Memory)`);
+    setNewClientName('');
+    await fetchClients();
+    setSelectedClientId(data.client.id);
+  };
+
+  // Pay with any Sui wallet (Wallet Standard). The server builds the exact USDC transfer through Tatum;
+  // the wallet signs and executes it; then the digest is verified on Mainnet like any other payment.
+  const handleWalletPay = async () => {
+    const wallets = getWallets().get().filter((w) => 'sui:signAndExecuteTransaction' in w.features && 'standard:connect' in w.features);
+    if (!wallets.length) return showToast('No Sui wallet found in this browser. Install Slush, or pay manually below.');
+    const wallet = wallets.find((w) => /slush|sui/i.test(w.name)) || wallets[0];
+    try {
+      setWalletBusy(`Connecting ${wallet.name}…`);
+      const { accounts } = await (wallet.features['standard:connect'] as any).connect();
+      const account = accounts.find((a: any) => a.chains.includes('sui:mainnet')) || accounts[0];
+      if (!account) throw new Error('No account approved');
+      setWalletBusy('Building transfer via Tatum…');
+      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address }) });
+      const built = await r.json();
+      if (!r.ok) throw new Error(built.error);
+      setWalletBusy('Approve in your wallet…');
+      const tx = Transaction.from(built.bytes);
+      const out = await (wallet.features['sui:signAndExecuteTransaction'] as any).signAndExecuteTransaction({
+        transaction: { toJSON: async () => tx.toJSON() },
+        account,
+        chain: 'sui:mainnet',
+      });
+      setWalletBusy('Verifying on Sui Mainnet…');
+      let data: any = null;
+      for (let i = 0; i < 6; i++) {
+        const v = await fetch('/api/chaser/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, digest: out.digest }) });
+        data = await v.json();
+        if (v.ok || v.status === 409) break;
+        await new Promise((ok) => setTimeout(ok, 2500)); // the gateway may need a moment to see the tx
+      }
+      showToast(data?.message || data?.error || 'Payment sent');
+      fetchInvoiceDetail(selectedInvoiceId);
+      fetchSummary();
+      fetchAllInvoices();
+    } catch (e: any) {
+      showToast(e?.message || 'Wallet payment failed');
+    } finally {
+      setWalletBusy(null);
+    }
+  };
+
   const handleCreateInvoice = async () => {
     try {
       const res = await fetch('/api/chaser/invoices', {
@@ -413,6 +471,23 @@ export default function App() {
               </p>
             </div>
 
+            {/* Judge path: five stops that show the learning loop end to end */}
+            <section className="rounded-xl border border-utility-brand-200 bg-utility-brand-50 p-lg flex flex-wrap items-center gap-sm">
+              <span className="text-sm font-semibold text-utility-brand-700 mr-sm">Judging? 2-minute tour:</span>
+              {[
+                { label: '1 · Acme learned profile', go: () => { setSelectedClientId('c1'); setActiveTab('clients'); } },
+                { label: '2 · Memory on vs off', go: () => { setSelectedInvoiceId('inv-101'); setIgnoreMemory(true); setActiveTab('invoices'); } },
+                { label: '3 · Teach a rule', go: () => { setSelectedClientId('c1'); setActiveTab('clients'); } },
+                { label: '4 · Pay on Sui Mainnet', go: () => setActiveTab('invoices') },
+                { label: '5 · Live proof', go: () => setActiveTab('proof') },
+              ].map((st) => (
+                <button key={st.label} onClick={st.go} className="rounded-full border border-utility-brand-200 bg-primary px-md py-xs text-xs font-semibold text-utility-brand-700 hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
+                  {st.label}
+                </button>
+              ))}
+              <span className="text-xs text-tertiary w-full">Aug–Oct client history is seeded demo data (labelled in each timeline). Everything you do here becomes a real Walrus Mainnet memory.</span>
+            </section>
+
             {/* Overview Stats (Card Recipe: rounded-xl, border-secondary, bg-primary, p-xl, shadow-xs) */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-lg">
               <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
@@ -421,11 +496,11 @@ export default function App() {
                   <DollarSign className="w-4 h-4 text-fg-brand-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {summary ? summary.expectedInflow7Days : '12,450.00'} <span className="text-xs font-normal text-secondary">USDC</span>
+                  {summary ? summary.expectedInflow7Days : '—'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
                 <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
                   <TrendingUp className="w-3.5 h-3.5" />
-                  <span>{summary ? summary.upcomingInflows.length : 3} expected payments</span>
+                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {summary?.expectedInflow30Days ?? '—'} USDC in 30 days</span>
                 </div>
               </section>
 
@@ -438,7 +513,7 @@ export default function App() {
                   {summary ? summary.overdueAmount : '0.00'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
                 <div className="text-xs text-secondary mt-xs flex items-center gap-xxs font-medium">
-                  <span>Tracked across 4 active clients</span>
+                  <span>Tracked across {clientsList.length} clients</span>
                 </div>
               </section>
 
@@ -570,6 +645,10 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <h2 className="text-heading-xs font-semibold text-primary">Clients</h2>
                 <span className="text-xs text-secondary">{clientsList.length} active clients</span>
+              </div>
+              <div className="flex gap-sm">
+                <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddClient(); }} placeholder="New client name" className="flex-1 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <button onClick={handleAddClient} className="rounded-lg bg-brand-solid px-md py-xs text-xs font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Add</button>
               </div>
 
               <div className="space-y-sm">
@@ -996,6 +1075,22 @@ export default function App() {
                             <li key={idx}>{m}</li>
                           ))}
                         </ul>
+                        {!ignoreMemory && (invoiceDetail.adaptivePlan.cites?.length ?? 0) > 0 && (
+                          <div className="pt-xs space-y-xxs">
+                            <p className="text-xs font-semibold text-utility-brand-600">Cited memories</p>
+                            {invoiceDetail.adaptivePlan.cites!.map((c, i) => (
+                              <div key={i} className="text-xs text-tertiary flex gap-xs">
+                                <span className="shrink-0">{c.at?.slice(0, 10)}</span>
+                                <span className="flex-1">{c.sentence}</span>
+                                {c.blobId ? (
+                                  <a href={`https://walruscan.com/mainnet/blob/${c.blobId}`} target="_blank" rel="noreferrer" className="shrink-0 inline-flex items-center gap-xxs text-utility-brand-700 hover:underline">Walrus <ExternalLink className="w-3 h-3" /></a>
+                                ) : (
+                                  <span className="shrink-0 text-utility-warning-600">writing…</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </section>
@@ -1047,9 +1142,22 @@ export default function App() {
                 </div>
               </div>
 
+              {/* One-click: connect a Sui wallet and pay */}
+              <div className="space-y-sm border-t border-secondary pt-lg">
+                <button
+                  onClick={handleWalletPay}
+                  disabled={!invoiceDetail || invoiceDetail.invoice.status === 'paid' || !!walletBusy}
+                  className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring bg-brand-solid text-primary-on-brand hover:bg-brand-solid-hover disabled:bg-disabled-subtle disabled:text-disabled"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>{walletBusy ?? (invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Connect Sui wallet & pay ${invoiceDetail?.invoice.payAmount ?? ''} USDC`)}</span>
+                </button>
+                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The transfer is built through Tatum and verified on Sui Mainnet.</p>
+              </div>
+
               {/* Pay from any Sui wallet */}
               <div className="space-y-sm border-t border-secondary pt-lg">
-                <span className="text-sm font-semibold text-primary block">Step 1: Send exactly this amount from any Sui wallet</span>
+                <span className="text-sm font-semibold text-primary block">Or pay manually · Step 1: send exactly this amount</span>
                 <button
                   onClick={() => {
                     navigator.clipboard?.writeText(invoiceDetail?.invoice.payAmount || '');
