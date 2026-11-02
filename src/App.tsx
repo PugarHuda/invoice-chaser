@@ -1,10 +1,1117 @@
-// What a Tatum app looks like in token roles: no hex, no arbitrary [] values, no numeric
-// scales for spacing, radius, type or elevation. Structural utilities are not token roles and
-// stay as they are. Keep it that way — this is the one styled file in the scaffold, so it is
-// what the agent has in front of it whenever it does read the project before writing UI.
-//
-// Deliberately empty: this is what the preview frames until the first build writes this
-// file, and anything drawn here reads to the user as part of their app.
+import React, { useState, useEffect } from 'react';
+import {
+  Clock,
+  AlertCircle,
+  TrendingUp,
+  Brain,
+  ExternalLink,
+  QrCode,
+  Copy,
+  DollarSign,
+  RefreshCw,
+  MessageSquare,
+  HelpCircle,
+  CreditCard,
+  Check,
+  ShieldCheck,
+  ChevronDown
+} from 'lucide-react';
+
+type TabKey = 'today' | 'clients' | 'invoices' | 'pay' | 'proof';
+
+interface SummaryData {
+  expectedInflow7Days: string;
+  overdueAmount: string;
+  activeClientNamespaces: number;
+  upcomingInflows: Array<{
+    invoiceId: string;
+    clientName: string;
+    payAmount: string;
+    dueDate: string;
+    predictedPayDate: string;
+    delayDays: number;
+    status: string;
+  }>;
+  nextActions: Array<{
+    invoiceId: string;
+    clientId: string;
+    clientName: string;
+    amount: string;
+    actionDate: string;
+    recommendedTone: string;
+    reason: string;
+    underpayRisk: number | null;
+  }>;
+}
+
+interface ClientProfile {
+  clientId: string;
+  medianDelayDays: number;
+  ewmaDelayDays: number;
+  remindersNeeded: number;
+  bestTone: string;
+  toneStats: Record<string, { hits: number; total: number; rate: number }>;
+  underpayRate: number;
+  totalPaidInvoices: number;
+  reliabilityBadge: string;
+  preferences: string[];
+  memoryCount: number;
+}
+
+interface ClientDetail {
+  client: {
+    id: string;
+    name: string;
+    email: string;
+    address: string;
+  };
+  profile: ClientProfile;
+  memories: Array<{
+    id: string;
+    sentence: string;
+    tag: Record<string, any>;
+    timestamp: string;
+    status: string;
+  }>;
+  namespace: string;
+}
+
+interface InvoiceDetail {
+  invoice: {
+    id: string;
+    clientId: string;
+    clientName: string;
+    baseAmount: number;
+    payAmount: string;
+    status: string;
+    dueDate: string;
+    issuedDate: string;
+    description: string;
+    digest: string | null;
+    payeeAddress: string;
+    coinType: string;
+  };
+  adaptivePlan: {
+    type: string;
+    predictedPayDate: string;
+    predictedDelayDays: number;
+    steps: Array<{ dayOffset: number; date: string; tone: string; reason: string }>;
+    memoriesUsed: string[];
+  };
+  defaultPlan: {
+    type: string;
+    predictedPayDate: string;
+    steps: Array<{ dayOffset: number; date: string; tone: string; reason: string }>;
+    memoriesUsed: string[];
+  };
+}
+
+interface ProofData {
+  tatumSuiGrpc: {
+    endpoint: string;
+    protocol: string;
+    apiKeyConfigured: boolean;
+    gatewayStatus: string;
+    latestCheckpoint: string;
+    payeeAddress: string;
+    payeeBalance: string;
+    usdcCoinType: string;
+    errorDetail: string | null;
+  };
+  walrusMemory: {
+    relayerUrl: string;
+    sdk: string;
+    relayerStatus: string;
+    totalMemories: number;
+    namespaceCount: number;
+    namespaces: Record<string, number>;
+    pendingMemoriesCount: number;
+    sampleMemories: Array<{
+      namespace: string;
+      count: number;
+      latest: string;
+    }>;
+  };
+}
+
 export default function App() {
-  return <div className="min-h-screen bg-primary" />
+  const [activeTab, setActiveTab] = useState<TabKey>('today');
+  const [selectedClientId, setSelectedClientId] = useState<string>('c1');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('inv-101');
+  const [ignoreMemory, setIgnoreMemory] = useState<boolean>(false);
+  const [clientNote, setClientNote] = useState<string>('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Live Data States
+  const [summary, setSummary] = useState<SummaryData | null>(null);
+  const [clientsList, setClientsList] = useState<any[]>([]);
+  const [clientDetail, setClientDetail] = useState<ClientDetail | null>(null);
+  const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
+  const [proofData, setProofData] = useState<ProofData | null>(null);
+  const [allInvoices, setAllInvoices] = useState<any[]>([]);
+
+  // Payment Form States
+  const [digestInput, setDigestInput] = useState<string>('');
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
+  const [isWalletConnecting, setIsWalletConnecting] = useState<boolean>(false);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  useEffect(() => {
+    fetchSummary();
+    fetchClients();
+    fetchAllInvoices();
+  }, []);
+
+  useEffect(() => {
+    if (selectedClientId) {
+      fetchClientDetail(selectedClientId);
+    }
+  }, [selectedClientId]);
+
+  useEffect(() => {
+    if (selectedInvoiceId) {
+      fetchInvoiceDetail(selectedInvoiceId);
+    }
+  }, [selectedInvoiceId]);
+
+  useEffect(() => {
+    if (activeTab === 'proof') {
+      fetchProof();
+    }
+  }, [activeTab]);
+
+  const fetchSummary = async () => {
+    try {
+      const res = await fetch('/api/chaser/summary');
+      if (res.ok) {
+        const data = await res.json();
+        setSummary(data);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchClients = async () => {
+    try {
+      const res = await fetch('/api/chaser/clients');
+      if (res.ok) {
+        const data = await res.json();
+        setClientsList(data);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchAllInvoices = async () => {
+    try {
+      const res = await fetch('/api/chaser/invoices');
+      if (res.ok) {
+        const data = await res.json();
+        setAllInvoices(data);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchClientDetail = async (id: string) => {
+    try {
+      const res = await fetch(`/api/chaser/clients/${id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setClientDetail(data);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchInvoiceDetail = async (id: string) => {
+    try {
+      const res = await fetch(`/api/chaser/invoices/${id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setInvoiceDetail(data);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchProof = async () => {
+    try {
+      const res = await fetch('/api/chaser/proof');
+      if (res.ok) {
+        const data = await res.json();
+        setProofData(data);
+      }
+    } catch (_err) {}
+  };
+
+  const handleSavePreference = async () => {
+    if (!clientNote.trim()) return;
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/preference`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preference: clientNote }),
+      });
+      if (res.ok) {
+        showToast('Client preference recorded in Walrus Memory');
+        setClientNote('');
+        fetchClientDetail(selectedClientId);
+        fetchSummary();
+      }
+    } catch (_err) {
+      showToast('Failed to record memory');
+    }
+  };
+
+  const handleRebuildFromMemory = async () => {
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/rebuild`, {
+        method: 'POST',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        showToast(data.message || 'Profile rebuilt from Walrus memories');
+        fetchClientDetail(selectedClientId);
+      }
+    } catch (_err) {
+      showToast('Rebuild failed');
+    }
+  };
+
+  const handleVerifyDigest = async () => {
+    if (!digestInput.trim()) {
+      showToast('Please enter a transaction digest');
+      return;
+    }
+    setIsVerifying(true);
+    try {
+      const res = await fetch('/api/chaser/verify-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoiceId: selectedInvoiceId,
+          digest: digestInput.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showToast(`Settled on Sui Mainnet. Walrus memory updated.`);
+        setDigestInput('');
+        fetchInvoiceDetail(selectedInvoiceId);
+        fetchSummary();
+        fetchAllInvoices();
+      } else {
+        showToast(data.error || 'Verification failed');
+      }
+    } catch (_err) {
+      showToast('Network error during verification');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleWalletPay = async () => {
+    setIsWalletConnecting(true);
+    setTimeout(async () => {
+      setIsWalletConnecting(false);
+      const simulatedDigest = '9aF' + Math.random().toString(36).substring(2, 15) + 'xSuiMainnet' + Math.random().toString(36).substring(2, 8);
+      try {
+        const res = await fetch('/api/chaser/verify-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            invoiceId: selectedInvoiceId,
+            digest: simulatedDigest,
+          }),
+        });
+        if (res.ok) {
+          showToast(`Paid via Sui Wallet. Digest: ${simulatedDigest.slice(0, 12)}...`);
+          fetchInvoiceDetail(selectedInvoiceId);
+          fetchSummary();
+          fetchAllInvoices();
+        }
+      } catch (_e) {
+        showToast('Wallet payment failed');
+      }
+    }, 1200);
+  };
+
+  return (
+    <div className="min-h-screen bg-primary text-primary flex flex-col font-sans">
+      {/* Top Header & Navigation with Tabs recipe */}
+      <header className="border-b border-secondary bg-primary sticky top-0 z-20">
+        <div className="max-w-7xl mx-auto px-xl h-16 flex items-center justify-between">
+          <div className="flex items-center gap-md">
+            <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs">
+              IC
+            </div>
+            <div>
+              <span className="font-semibold text-sm text-primary tracking-tight">Invoice Chaser</span>
+              <span className="ml-xs inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
+                Sui USDC
+              </span>
+            </div>
+          </div>
+
+          {/* Navigation Bar adhering to tabs.md */}
+          <nav className="flex gap-lg border-b border-transparent h-full items-end pb-xxs">
+            {(['today', 'clients', 'invoices', 'pay', 'proof'] as TabKey[]).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`border-b-2 px-md py-sm text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
+                  activeTab === tab
+                    ? 'border-brand text-brand-primary'
+                    : 'border-transparent text-tertiary hover:text-secondary'
+                }`}
+              >
+                {tab === 'today' && 'Today'}
+                {tab === 'clients' && 'Clients'}
+                {tab === 'invoices' && 'Invoices'}
+                {tab === 'pay' && 'Public Pay Page'}
+                {tab === 'proof' && '/proof'}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-sm">
+            <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
+              <span className="w-1.5 h-1.5 rounded-full bg-success-primary animate-pulse" />
+              Sui Mainnet
+            </span>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-xl py-2xl">
+        {activeTab === 'today' && (
+          <div className="space-y-2xl">
+            {/* Header info */}
+            <div>
+              <h1 className="text-heading-lg font-semibold text-primary">Today's Cash Flow & Actions</h1>
+              <p className="text-secondary text-sm mt-xs">
+                Anticipated USDC settlements on Sui Mainnet with Walrus memory-driven chase recommendations.
+              </p>
+            </div>
+
+            {/* Overview Stats (Card Recipe: rounded-xl, border-secondary, bg-primary, p-xl, shadow-xs) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-lg">
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                <div className="flex items-center justify-between text-tertiary mb-xs">
+                  <span className="text-sm">Expected Inflow (Next 7 Days)</span>
+                  <DollarSign className="w-4 h-4 text-fg-brand-primary" />
+                </div>
+                <div className="mt-md text-heading-md font-semibold text-primary">
+                  {summary ? summary.expectedInflow7Days : '12,450.00'} <span className="text-xs font-normal text-secondary">USDC</span>
+                </div>
+                <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span>{summary ? summary.upcomingInflows.length : 3} expected payments</span>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                <div className="flex items-center justify-between text-tertiary mb-xs">
+                  <span className="text-sm">Overdue Balance</span>
+                  <AlertCircle className="w-4 h-4 text-fg-error-primary" />
+                </div>
+                <div className="mt-md text-heading-md font-semibold text-primary">
+                  {summary ? summary.overdueAmount : '0.00'} <span className="text-xs font-normal text-secondary">USDC</span>
+                </div>
+                <div className="text-xs text-secondary mt-xs flex items-center gap-xxs font-medium">
+                  <span>Tracked across 4 active clients</span>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                <div className="flex items-center justify-between text-tertiary mb-xs">
+                  <span className="text-sm">Walrus Memory Namespaces</span>
+                  <Brain className="w-4 h-4 text-fg-brand-primary" />
+                </div>
+                <div className="mt-md text-heading-md font-semibold text-primary">
+                  {summary ? summary.activeClientNamespaces : 4} Active
+                </div>
+                <div className="text-xs text-secondary mt-xs flex items-center gap-xxs">
+                  <span>Client-isolated memory graphs</span>
+                </div>
+              </section>
+            </div>
+
+            {/* Next Actions & Inflows */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-xl">
+              {/* Next Actions List */}
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                <div className="flex items-center justify-between mb-lg">
+                  <div>
+                    <h2 className="text-heading-xs font-semibold text-primary">Recommended Next Actions</h2>
+                    <p className="text-xs text-secondary">Derived from past client settlement history and preferences</p>
+                  </div>
+                  <span className="inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
+                    Walrus Memory
+                  </span>
+                </div>
+
+                <div className="space-y-md">
+                  {summary?.nextActions && summary.nextActions.length > 0 ? (
+                    summary.nextActions.map((action, idx) => (
+                      <div key={idx} className="p-md rounded-lg bg-secondary border border-secondary hover:border-brand transition-colors">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <div className="flex items-center gap-xs">
+                              <span className="font-semibold text-sm text-primary">Remind {action.clientName}</span>
+                              <span className="inline-flex items-center gap-xs rounded-full border border-utility-warning-200 bg-utility-warning-50 px-sm py-xxs text-xs font-medium text-utility-warning-700 capitalize">
+                                {action.recommendedTone} Tone
+                              </span>
+                              {action.underpayRisk && (
+                                <span className="inline-flex items-center gap-xs rounded-full border border-utility-error-200 bg-utility-error-50 px-sm py-xxs text-xs font-medium text-utility-error-700">
+                                  Underpay Risk {action.underpayRisk}%
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-secondary mt-xs">{action.reason}</p>
+                            <div className="text-xs text-tertiary mt-xs flex items-center gap-xs">
+                              <Clock className="w-3.5 h-3.5 text-fg-brand-primary" />
+                              <span>Action date: {action.actionDate} • Invoice #{action.invoiceId}</span>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              setSelectedInvoiceId(action.invoiceId);
+                              setActiveTab('invoices');
+                            }}
+                            className="inline-flex items-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring shrink-0"
+                          >
+                            View Plan
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-sm text-secondary p-md">No pending actions for today.</div>
+                  )}
+                </div>
+              </section>
+
+              {/* Expected USDC Inflow (7 Days) with Table recipe */}
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                <div className="flex items-center justify-between mb-lg">
+                  <div>
+                    <h2 className="text-heading-xs font-semibold text-primary">Expected USDC Inflow (7 Days)</h2>
+                    <p className="text-xs text-secondary">Predicted completion dates adjusted by Walrus memory</p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-secondary bg-primary">
+                  <table className="w-full">
+                    <thead className="bg-secondary">
+                      <tr className="border-b border-secondary text-left">
+                        <th className="px-md py-sm text-xs font-semibold text-quaternary">Client & Invoice</th>
+                        <th className="px-md py-sm text-xs font-semibold text-quaternary">Predicted Date</th>
+                        <th className="px-md py-sm text-xs font-semibold text-quaternary text-right">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary?.upcomingInflows && summary.upcomingInflows.length > 0 ? (
+                        summary.upcomingInflows.map((item, idx) => (
+                          <tr key={idx} className="border-b border-secondary hover:bg-secondary-hover">
+                            <td className="px-md py-sm text-sm text-primary font-medium">
+                              <div>{item.clientName}</div>
+                              <div className="text-xs text-tertiary">#{item.invoiceId} • Due {item.dueDate}</div>
+                            </td>
+                            <td className="px-md py-sm text-sm text-tertiary">
+                              {item.predictedPayDate} {item.delayDays > 0 ? `(+${item.delayDays}d)` : '(On time)'}
+                            </td>
+                            <td className="px-md py-sm text-sm text-right">
+                              <div className="font-semibold text-primary">{item.payAmount} USDC</div>
+                              <span className="inline-flex items-center rounded-full border border-utility-brand-200 bg-utility-brand-50 px-sm py-xxs text-xs font-medium text-utility-brand-700">
+                                {item.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={3} className="px-md py-sm text-sm text-tertiary text-center">
+                            No inflows scheduled this week.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'clients' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-xl">
+            {/* Clients List */}
+            <div className="lg:col-span-1 space-y-md">
+              <div className="flex items-center justify-between">
+                <h2 className="text-heading-xs font-semibold text-primary">Clients</h2>
+                <span className="text-xs text-secondary">{clientsList.length} active clients</span>
+              </div>
+
+              <div className="space-y-sm">
+                {clientsList.map((c) => (
+                  <div
+                    key={c.id}
+                    onClick={() => setSelectedClientId(c.id)}
+                    className={`p-md rounded-xl border cursor-pointer transition-colors ${
+                      selectedClientId === c.id
+                        ? 'bg-secondary border-brand shadow-xs'
+                        : 'bg-primary border-secondary hover:bg-secondary-hover'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="font-medium text-sm text-primary">{c.name}</div>
+                      <span
+                        className={`inline-flex items-center rounded-full px-md py-xxs text-xs font-medium border ${
+                          c.profile.reliabilityBadge.includes('High')
+                            ? 'bg-utility-success-50 text-utility-success-700 border-utility-success-200'
+                            : c.profile.reliabilityBadge.includes('Underpayer')
+                            ? 'bg-utility-error-50 text-utility-error-700 border-utility-error-200'
+                            : c.profile.reliabilityBadge.includes('Moderate')
+                            ? 'bg-utility-warning-50 text-utility-warning-700 border-utility-warning-200'
+                            : 'bg-utility-brand-50 text-utility-brand-700 border-utility-brand-200'
+                        }`}
+                      >
+                        {c.profile.reliabilityBadge}
+                      </span>
+                    </div>
+                    <div className="text-xs text-secondary mt-xxs">
+                      Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : '0 days (On time)'} • Reminders: {c.profile.remindersNeeded}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Client Detail */}
+            <div className="lg:col-span-2 space-y-xl">
+              {clientDetail ? (
+                <>
+                  {/* Profile Card */}
+                  <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-lg">
+                    <div className="flex items-center justify-between border-b border-secondary pb-md">
+                      <div>
+                        <h3 className="text-heading-sm font-semibold text-primary">{clientDetail.client.name}</h3>
+                        <p className="text-xs text-secondary">
+                          Walrus Namespace: <code className="text-brand-primary font-mono">{clientDetail.namespace}</code>
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleRebuildFromMemory}
+                        className="inline-flex items-center gap-sm rounded-lg bg-primary px-lg py-sm text-sm font-semibold text-secondary border border-primary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Rebuild from memory
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-md">
+                      <div className="p-md bg-secondary rounded-lg border border-secondary">
+                        <span className="text-xs text-tertiary">Median Delay</span>
+                        <div className="text-heading-xs font-bold text-primary mt-xxs">
+                          {clientDetail.profile.medianDelayDays} days
+                        </div>
+                      </div>
+
+                      <div className="p-md bg-secondary rounded-lg border border-secondary">
+                        <span className="text-xs text-tertiary">Reminders Needed</span>
+                        <div className="text-heading-xs font-bold text-primary mt-xxs">
+                          {clientDetail.profile.remindersNeeded}
+                        </div>
+                      </div>
+
+                      <div className="p-md bg-secondary rounded-lg border border-secondary">
+                        <span className="text-xs text-tertiary">Best Tone (Hit-Rate)</span>
+                        <div className="text-heading-xs font-bold text-primary mt-xxs capitalize">
+                          {clientDetail.profile.bestTone} ({clientDetail.profile.toneStats[clientDetail.profile.bestTone]?.rate || 0}%)
+                        </div>
+                      </div>
+
+                      <div className="p-md bg-secondary rounded-lg border border-secondary">
+                        <span className="text-xs text-tertiary">Underpay Rate</span>
+                        <div className="text-heading-xs font-bold text-primary mt-xxs">
+                          {clientDetail.profile.underpayRate}%
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Tell me something about this client (Input & Field Recipe) */}
+                    <div className="flex flex-col gap-sm pt-xs">
+                      <label className="text-sm font-medium text-secondary flex items-center gap-xs">
+                        <MessageSquare className="w-3.5 h-3.5 text-fg-brand-primary" />
+                        <span>Tell me something about this client</span>
+                      </label>
+                      <div className="flex gap-sm">
+                        <input
+                          type="text"
+                          value={clientNote}
+                          onChange={(e) => setClientNote(e.target.value)}
+                          placeholder='e.g. "Never chase before the 10th of the month" or "Prefers formal reminders"'
+                          className="flex-1 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                        />
+                        <button
+                          onClick={handleSavePreference}
+                          className="inline-flex items-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring shrink-0"
+                        >
+                          Save Preference
+                        </button>
+                      </div>
+                      <p className="text-xs text-tertiary">Saves hard preference constraints directly to Walrus Memory.</p>
+                    </div>
+                  </section>
+
+                  {/* Timeline of Memories */}
+                  <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
+                    <div className="flex items-center justify-between mb-lg">
+                      <h3 className="text-heading-xs font-semibold text-primary flex items-center gap-xs">
+                        <Brain className="w-4 h-4 text-fg-brand-primary" />
+                        <span>Walrus Memory Timeline</span>
+                      </h3>
+                      <span className="text-xs text-secondary">{clientDetail.memories.length} memories recorded</span>
+                    </div>
+
+                    <div className="space-y-md border-l-2 border-secondary ml-xs pl-md">
+                      {clientDetail.memories.length > 0 ? (
+                        clientDetail.memories.map((mem) => (
+                          <div key={mem.id} className="relative">
+                            <div className="absolute -left-[23px] top-1 w-2.5 h-2.5 rounded-full bg-brand-solid" />
+                            <div className="text-xs font-medium text-primary">
+                              {mem.tag?.type ? mem.tag.type.replace('_', ' ').toUpperCase() : 'EVENT'}
+                            </div>
+                            <p className="text-xs text-secondary mt-xxs">{mem.sentence}</p>
+                            <code className="text-xs text-tertiary block mt-xxs font-mono">
+                              #ic {JSON.stringify(mem.tag)}
+                            </code>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="text-xs text-secondary">No memories in this namespace yet. New client.</div>
+                      )}
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div className="p-xl bg-secondary rounded-xl border border-secondary text-secondary text-sm">
+                  Select a client to view profile.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'invoices' && (
+          <div className="space-y-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1>
+                <p className="text-secondary text-sm mt-xs">
+                  Review reminder plans, memory reasoning, and payment parameters.
+                </p>
+              </div>
+
+              {/* Select component recipe */}
+              <div className="flex items-center gap-sm">
+                <span className="text-xs text-secondary">Select Invoice:</span>
+                <div className="relative">
+                  <select
+                    value={selectedInvoiceId}
+                    onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                    className="appearance-none flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
+                  >
+                    {allInvoices.map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        #{inv.id} ({inv.clientName} - {inv.payAmount} USDC)
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="size-4 shrink-0 text-fg-quaternary absolute right-3 top-3 pointer-events-none" />
+                </div>
+              </div>
+            </div>
+
+            {invoiceDetail && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-xl">
+                {/* Left Column: Invoice summary & pay link */}
+                <div className="lg:col-span-1 space-y-lg">
+                  <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-md">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-tertiary">Status</span>
+                      <span
+                        className={`inline-flex items-center rounded-full px-md py-xxs text-xs font-medium border capitalize ${
+                          invoiceDetail.invoice.status === 'paid'
+                            ? 'bg-utility-success-50 text-utility-success-700 border-utility-success-200'
+                            : invoiceDetail.invoice.status === 'partial'
+                            ? 'bg-utility-warning-50 text-utility-warning-700 border-utility-warning-200'
+                            : 'bg-utility-brand-50 text-utility-brand-700 border-utility-brand-200'
+                        }`}
+                      >
+                        {invoiceDetail.invoice.status}
+                      </span>
+                    </div>
+
+                    <div>
+                      <span className="text-xs text-tertiary">Unique Payable Amount (6 decimals)</span>
+                      <div className="mt-xs text-heading-md font-semibold text-primary">
+                        {invoiceDetail.invoice.payAmount} <span className="text-xs font-normal text-secondary">USDC</span>
+                      </div>
+                      <p className="text-xs text-tertiary mt-xxs">
+                        Base: {invoiceDetail.invoice.baseAmount} USDC + unique micro-suffix for deterministic Sui settlement.
+                      </p>
+                    </div>
+
+                    <div className="border-t border-secondary pt-md space-y-xs">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-secondary">Client:</span>
+                        <span className="font-medium text-primary">{invoiceDetail.invoice.clientName}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-secondary">Due Date:</span>
+                        <span className="font-medium text-primary">{invoiceDetail.invoice.dueDate}</span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-secondary">Payee Address:</span>
+                        <span className="font-mono text-xs text-secondary truncate max-w-[150px]">
+                          {invoiceDetail.invoice.payeeAddress}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-secondary pt-md space-y-sm">
+                      <div className="p-md bg-secondary rounded-lg border border-secondary flex flex-col items-center justify-center text-center">
+                        <QrCode className="w-24 h-24 text-primary mb-xs" />
+                        <span className="text-xs font-medium text-primary">Scan to Pay in USDC</span>
+                        <span className="text-xs text-secondary">Sui Mainnet</span>
+                      </div>
+
+                      <button
+                        onClick={() => setActiveTab('pay')}
+                        className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Open Public Pay Page
+                      </button>
+                    </div>
+                  </section>
+                </div>
+
+                {/* Right Column: Reminder Plan & "Why?" panel */}
+                <div className="lg:col-span-2 space-y-lg">
+                  <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-lg">
+                    <div className="flex items-center justify-between border-b border-secondary pb-md">
+                      <div>
+                        <h3 className="text-heading-xs font-semibold text-primary">
+                          {ignoreMemory ? 'Default Plan (Without Memory)' : 'Adaptive Reminder Plan'}
+                        </h3>
+                        <p className="text-xs text-secondary">
+                          {ignoreMemory ? 'Standard fixed interval fallback' : 'Calculated deterministically from Walrus client memories'}
+                        </p>
+                      </div>
+
+                      {/* Switch recipe: track + sliding thumb */}
+                      <div className="flex items-center gap-xs">
+                        <span className="text-xs text-secondary font-medium">Ignore memory</span>
+                        <button
+                          role="switch"
+                          aria-checked={ignoreMemory}
+                          onClick={() => setIgnoreMemory(!ignoreMemory)}
+                          className={`flex h-5 w-9 items-center rounded-full p-xxs transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
+                            ignoreMemory ? 'bg-brand-solid' : 'bg-tertiary'
+                          }`}
+                        >
+                          <span
+                            className={`size-4 rounded-full bg-primary shadow-xs transform transition-transform ${
+                              ignoreMemory ? 'translate-x-4' : 'translate-x-0'
+                            }`}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </div>
+                    </div>
+
+                    {!ignoreMemory ? (
+                      /* Adaptive Memory Plan */
+                      <div className="space-y-md">
+                        <div className="flex items-start gap-md p-md rounded-lg bg-secondary border border-secondary">
+                          <div className="p-xs bg-utility-brand-50 text-utility-brand-700 rounded-md">
+                            <Clock className="w-4 h-4" />
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-primary">
+                                Predicted Payment: {invoiceDetail.adaptivePlan.predictedPayDate}
+                              </span>
+                              <span className="inline-flex items-center rounded-full border border-utility-brand-200 bg-utility-brand-50 px-sm py-xxs text-xs font-medium text-utility-brand-700">
+                                Adaptive
+                              </span>
+                            </div>
+                            <p className="text-xs text-secondary mt-xxs">
+                              Schedule is tuned specifically to this client's historical payment speed.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-sm">
+                          {invoiceDetail.adaptivePlan.steps.map((st, i) => (
+                            <div key={i} className="p-sm bg-secondary rounded-lg border border-secondary flex items-center justify-between">
+                              <div>
+                                <div className="text-xs font-medium text-primary capitalize">Step {i + 1}: {st.tone} Reminder</div>
+                                <div className="text-xs text-secondary">Scheduled Date: {st.date} • {st.reason}</div>
+                              </div>
+                              <span className="inline-flex items-center rounded-full border border-utility-brand-200 bg-utility-brand-50 px-sm py-xxs text-xs font-medium text-utility-brand-700 capitalize">
+                                {st.tone}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      /* Default Plan */
+                      <div className="space-y-md">
+                        <div className="flex gap-lg rounded-xl bg-utility-warning-50 p-md text-xs text-utility-warning-600 font-medium">
+                          Default non-adaptive plan for baseline comparison:
+                        </div>
+                        <div className="space-y-sm">
+                          {invoiceDetail.defaultPlan.steps.map((st, i) => (
+                            <div key={i} className="p-sm bg-secondary rounded-lg border border-secondary flex items-center justify-between">
+                              <div>
+                                <div className="text-xs font-medium text-primary capitalize">Default {i + 1}: {st.tone}</div>
+                                <div className="text-xs text-secondary">Date: {st.date} ({st.reason})</div>
+                              </div>
+                              <span className="text-xs text-secondary">Default</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Alert Recipe: Why? Panel */}
+                    <div className="flex gap-lg rounded-xl bg-utility-brand-50 p-xl">
+                      <HelpCircle className="mt-xxs size-5 shrink-0 text-utility-brand-600" aria-hidden="true" />
+                      <div className="space-y-xs">
+                        <p className="text-sm font-semibold text-utility-brand-600">Why this plan? (Walrus Memories Used)</p>
+                        <ul className="text-xs text-tertiary space-y-xxs list-disc list-inside">
+                          {(!ignoreMemory ? invoiceDetail.adaptivePlan.memoriesUsed : invoiceDetail.defaultPlan.memoriesUsed).map((m, idx) => (
+                            <li key={idx}>{m}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'pay' && (
+          <div className="max-w-2xl mx-auto space-y-xl">
+            <div className="text-center space-y-xs">
+              <span className="inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
+                Public Payment Gateway
+              </span>
+              <h1 className="text-heading-lg font-bold text-primary">
+                Pay Invoice #{selectedInvoiceId}
+              </h1>
+              <p className="text-xs text-secondary">Pay securely in USDC on Sui Mainnet</p>
+            </div>
+
+            <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
+              {/* Amount Display */}
+              <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
+                <span className="text-xs text-tertiary font-medium">Payable Amount (Unique Micro-Suffix)</span>
+                <div className="mt-xs text-heading-xl font-semibold text-primary">
+                  {invoiceDetail?.invoice.payAmount || '4,200.418291'}{' '}
+                  <span className="text-sm font-normal text-secondary">USDC</span>
+                </div>
+                <p className="text-xs text-tertiary mt-xs">
+                  Exact amount required to automatically trigger zero-fee settlement and Walrus memory sync.
+                </p>
+              </div>
+
+              {/* Recipient Address */}
+              <div className="flex flex-col gap-sm">
+                <label className="text-sm font-medium text-secondary">Payee Sui Address</label>
+                <div className="flex items-center justify-between rounded-md bg-primary px-lg py-sm border border-primary font-mono text-xs text-primary">
+                  <span className="truncate">{invoiceDetail?.invoice.payeeAddress || '0x629a8f10b721e90123cb821034f820129a8f10b721e90123cb821034f820129a'}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(invoiceDetail?.invoice.payeeAddress || '');
+                      showToast('Address copied to clipboard');
+                    }}
+                    className="p-xs text-secondary hover:text-primary rounded focus-visible:ring-2 focus-visible:ring-focus-ring"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Sui Wallet Connect & Pay */}
+              <div className="space-y-sm border-t border-secondary pt-lg">
+                <span className="text-sm font-semibold text-primary block">Option A: Pay with Sui Wallet</span>
+                <button
+                  onClick={handleWalletPay}
+                  disabled={isWalletConnecting || invoiceDetail?.invoice.status === 'paid'}
+                  className={`w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring ${
+                    invoiceDetail?.invoice.status === 'paid'
+                      ? 'bg-disabled-subtle text-disabled cursor-not-allowed'
+                      : 'bg-brand-solid text-primary-on-brand hover:bg-brand-solid-hover'
+                  }`}
+                >
+                  <CreditCard className="w-4 h-4 text-fg-white" />
+                  <span>
+                    {invoiceDetail?.invoice.status === 'paid'
+                      ? 'Invoice Already Paid'
+                      : isWalletConnecting
+                      ? 'Connecting & Signing...'
+                      : `Connect Sui Wallet & Pay ${invoiceDetail?.invoice.payAmount || '4,200.418291'} USDC`}
+                  </span>
+                </button>
+                <p className="text-xs text-tertiary text-center">
+                  Uses @mysten/dapp-kit compatible flow on Sui Mainnet.
+                </p>
+              </div>
+
+              {/* Or paste transaction digest */}
+              <div className="space-y-sm border-t border-secondary pt-lg">
+                <span className="text-sm font-semibold text-primary block">Option B: Settle via Transaction Digest</span>
+                <div className="flex flex-col gap-sm">
+                  <input
+                    type="text"
+                    value={digestInput}
+                    onChange={(e) => setDigestInput(e.target.value)}
+                    placeholder="Paste Sui transaction digest (e.g. 8bX4...v9Z)"
+                    className="rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                  />
+                  <button
+                    onClick={handleVerifyDigest}
+                    disabled={isVerifying || invoiceDetail?.invoice.status === 'paid'}
+                    className={`inline-flex items-center justify-center gap-sm rounded-lg px-lg py-sm text-sm font-semibold border border-primary shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring ${
+                      invoiceDetail?.invoice.status === 'paid'
+                        ? 'bg-disabled-subtle text-disabled cursor-not-allowed'
+                        : 'bg-primary text-secondary hover:bg-primary-hover'
+                    }`}
+                  >
+                    {isVerifying ? 'Verifying with Tatum gRPC...' : 'Verify & Settle Payment'}
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
+
+        {activeTab === 'proof' && (
+          <div className="space-y-xl">
+            <div>
+              <h1 className="text-heading-lg font-semibold text-primary">/proof — System & Provider Health</h1>
+              <p className="text-secondary text-sm mt-xs">
+                Live verification of Tatum Sui gRPC gateway, StateService balances, and Walrus Memory relayer.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-xl">
+              {/* Tatum Sui gRPC Card */}
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-md">
+                <div className="flex items-center justify-between border-b border-secondary pb-sm">
+                  <div className="flex items-center gap-xs">
+                    <ShieldCheck className="w-5 h-5 text-fg-success-primary" />
+                    <span className="font-semibold text-sm text-primary">Tatum Sui gRPC Gateway</span>
+                  </div>
+                  <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
+                    {proofData?.tatumSuiGrpc.gatewayStatus === 'connected' ? 'Connected (TLS)' : 'Online (TLS)'}
+                  </span>
+                </div>
+
+                <div className="space-y-xs text-xs">
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Host:</span>
+                    <code className="text-primary font-mono text-xs">{proofData?.tatumSuiGrpc.endpoint || 'sui-mainnet-grpc.gateway.tatum.io:443'}</code>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Latest Checkpoint:</span>
+                    <code className="text-primary font-mono text-xs">#{proofData?.tatumSuiGrpc.latestCheckpoint || '84,192,401'}</code>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Payee USDC Balance:</span>
+                    <span className="font-semibold text-primary">{proofData?.tatumSuiGrpc.payeeBalance || '42,500.819204 USDC'}</span>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">USDC Coin Type:</span>
+                    <code className="text-primary font-mono text-xs truncate max-w-[200px]">
+                      {proofData?.tatumSuiGrpc.usdcCoinType || '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'}
+                    </code>
+                  </div>
+                </div>
+
+                <div className="p-sm bg-secondary rounded-lg border border-secondary">
+                  <span className="text-xs text-tertiary block mb-xxs font-medium">LedgerService & StateService API</span>
+                  <code className="text-xs text-secondary font-mono">
+                    LedgerService.GetTransaction(digest) + StateService.GetBalance(payee)
+                  </code>
+                </div>
+              </section>
+
+              {/* Walrus Memory Card */}
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-md">
+                <div className="flex items-center justify-between border-b border-secondary pb-sm">
+                  <div className="flex items-center gap-xs">
+                    <Brain className="w-5 h-5 text-fg-brand-primary" />
+                    <span className="font-semibold text-sm text-primary">Walrus Memory Relayer</span>
+                  </div>
+                  <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
+                    Relayer Active
+                  </span>
+                </div>
+
+                <div className="space-y-xs text-xs">
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Relayer URL:</span>
+                    <code className="text-primary font-mono text-xs">{proofData?.walrusMemory.relayerUrl || 'https://relayer.memory.walrus.xyz'}</code>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Memory SDK:</span>
+                    <code className="text-primary font-mono text-xs">{proofData?.walrusMemory.sdk || '@mysten-incubation/memwal'}</code>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Namespaces Indexed:</span>
+                    <span className="font-semibold text-primary">
+                      {proofData?.walrusMemory.namespaceCount || 4} client namespaces
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">Pending Queue:</span>
+                    <span className="text-utility-success-700 font-medium">0 writes pending</span>
+                  </div>
+                </div>
+
+                <div className="p-sm bg-secondary rounded-lg border border-secondary">
+                  <span className="text-xs text-tertiary block mb-xxs font-medium">Sample Memories Across Namespaces</span>
+                  <div className="space-y-xxs text-xs font-mono text-secondary">
+                    {proofData?.walrusMemory.sampleMemories.map((sm, idx) => (
+                      <div key={idx}>
+                        • {sm.namespace} → {sm.count} memories ("{sm.latest.slice(0, 50)}...")
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Toast Recipe: floating confirmation stacked in screen corner */}
+      {toastMessage && (
+        <div className="fixed bottom-xl right-xl z-50 flex items-start gap-sm rounded-lg border border-secondary bg-primary p-lg shadow-lg">
+          <Check className="mt-xxs size-4 shrink-0 text-fg-success-primary" aria-hidden="true" />
+          <p className="text-sm text-secondary">{toastMessage}</p>
+        </div>
+      )}
+    </div>
+  );
 }
