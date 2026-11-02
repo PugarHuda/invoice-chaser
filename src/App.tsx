@@ -181,9 +181,10 @@ export default function App() {
   }, [selectedInvoiceId]);
 
   useEffect(() => {
-    if (activeTab === 'proof') {
-      fetchProof();
-    }
+    if (activeTab === 'proof') fetchProof();
+    // plans depend on memories that may have changed on another tab
+    if (activeTab === 'invoices' || activeTab === 'pay') selectedInvoiceId && fetchInvoiceDetail(selectedInvoiceId);
+    if (activeTab === 'today') fetchSummary();
   }, [activeTab]);
 
   const fetchSummary = async () => {
@@ -259,6 +260,7 @@ export default function App() {
         setClientNote('');
         fetchClientDetail(selectedClientId);
         fetchSummary();
+        if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
       }
     } catch (_err) {
       showToast('Failed to record memory');
