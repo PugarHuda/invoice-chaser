@@ -153,7 +153,8 @@ export default function App() {
   // Payment Form States
   const [digestInput, setDigestInput] = useState<string>('');
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
-  const [isWalletConnecting, setIsWalletConnecting] = useState<boolean>(false);
+  const [newInvoice, setNewInvoice] = useState({ clientId: 'c4', amount: '0.05', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '' });
+  const [reminderText, setReminderText] = useState<string>('');
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -272,6 +273,9 @@ export default function App() {
         const data = await res.json();
         showToast(data.message || 'Profile rebuilt from Walrus memories');
         fetchClientDetail(selectedClientId);
+        fetchClients();
+        fetchAllInvoices();
+        fetchSummary();
       }
     } catch (_err) {
       showToast('Rebuild failed');
@@ -310,30 +314,41 @@ export default function App() {
     }
   };
 
-  const handleWalletPay = async () => {
-    setIsWalletConnecting(true);
-    setTimeout(async () => {
-      setIsWalletConnecting(false);
-      const simulatedDigest = '9aF' + Math.random().toString(36).substring(2, 15) + 'xSuiMainnet' + Math.random().toString(36).substring(2, 8);
-      try {
-        const res = await fetch('/api/chaser/verify-payment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            invoiceId: selectedInvoiceId,
-            digest: simulatedDigest,
-          }),
-        });
-        if (res.ok) {
-          showToast(`Paid via Sui Wallet. Digest: ${simulatedDigest.slice(0, 12)}...`);
-          fetchInvoiceDetail(selectedInvoiceId);
-          fetchSummary();
-          fetchAllInvoices();
-        }
-      } catch (_e) {
-        showToast('Wallet payment failed');
-      }
-    }, 1200);
+  const handleCreateInvoice = async () => {
+    try {
+      const res = await fetch('/api/chaser/invoices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newInvoice),
+      });
+      const data = await res.json();
+      if (!res.ok) return showToast(data.error || 'Could not create invoice');
+      showToast(`Invoice ${data.invoice.id} created: pay exactly ${data.invoice.payAmount} USDC`);
+      await fetchAllInvoices();
+      setSelectedInvoiceId(data.invoice.id);
+      fetchSummary();
+    } catch (_e) {
+      showToast('Could not create invoice');
+    }
+  };
+
+  const handleLogReminder = async (tone: string) => {
+    try {
+      const res = await fetch(`/api/chaser/invoices/${selectedInvoiceId}/remind`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tone }),
+      });
+      const data = await res.json();
+      if (!res.ok) return showToast(data.error || 'Could not log reminder');
+      setReminderText(data.text);
+      navigator.clipboard?.writeText(data.text);
+      showToast('Reminder copied and saved to Walrus Memory');
+      fetchInvoiceDetail(selectedInvoiceId);
+      fetchSummary();
+    } catch (_e) {
+      showToast('Could not log reminder');
+    }
   };
 
   return (
@@ -607,7 +622,7 @@ export default function App() {
                         className="inline-flex items-center gap-sm rounded-lg bg-primary px-lg py-sm text-sm font-semibold text-secondary border border-primary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
-                        Rebuild from memory
+                        Total Recall: rebuild from Walrus
                       </button>
                     </div>
 
@@ -685,9 +700,17 @@ export default function App() {
                               {mem.tag?.type ? mem.tag.type.replace('_', ' ').toUpperCase() : 'EVENT'}
                             </div>
                             <p className="text-xs text-secondary mt-xxs">{mem.sentence}</p>
-                            <code className="text-xs text-tertiary block mt-xxs font-mono">
-                              #ic {JSON.stringify(mem.tag)}
-                            </code>
+                            <div className="flex items-center gap-sm mt-xxs text-xs">
+                              <span className="text-tertiary">{mem.timestamp?.slice(0, 10)}</span>
+                              {mem.status === 'saved' && (mem as any).blobId ? (
+                                <a href={`https://walruscan.com/mainnet/blob/${(mem as any).blobId}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xxs text-utility-brand-700 hover:underline">
+                                  On Walrus <ExternalLink className="w-3 h-3" />
+                                </a>
+                              ) : (
+                                <span className={mem.status === 'failed' ? 'text-utility-error-600' : 'text-utility-warning-600'}>{mem.status === 'failed' ? 'write failed, retrying' : 'writing to Walrus…'}</span>
+                              )}
+                              {mem.tag?.seed && <span className="text-tertiary">· seeded demo history</span>}
+                            </div>
                           </div>
                         ))
                       ) : (
@@ -734,6 +757,31 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* New invoice */}
+            <section className="rounded-xl border border-secondary bg-primary p-lg shadow-xs flex flex-wrap items-end gap-md">
+              <div className="flex flex-col gap-xxs">
+                <label className="text-xs text-tertiary">Client</label>
+                <select value={newInvoice.clientId} onChange={(e) => setNewInvoice({ ...newInvoice, clientId: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring">
+                  {clientsList.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </select>
+              </div>
+              <div className="flex flex-col gap-xxs">
+                <label className="text-xs text-tertiary">Amount (USDC)</label>
+                <input type="number" min="0.01" step="0.01" value={newInvoice.amount} onChange={(e) => setNewInvoice({ ...newInvoice, amount: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring w-28" />
+              </div>
+              <div className="flex flex-col gap-xxs">
+                <label className="text-xs text-tertiary">Due date</label>
+                <input type="date" value={newInvoice.dueDate} onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+              </div>
+              <div className="flex flex-col gap-xxs flex-1 min-w-[160px]">
+                <label className="text-xs text-tertiary">Description</label>
+                <input type="text" value={newInvoice.description} onChange={(e) => setNewInvoice({ ...newInvoice, description: e.target.value })} placeholder="What is this invoice for?" className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+              </div>
+              <button onClick={handleCreateInvoice} className="inline-flex items-center gap-sm rounded-lg bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
+                <DollarSign className="w-4 h-4" /> New invoice
+              </button>
+            </section>
 
             {invoiceDetail && (
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-xl">
@@ -844,7 +892,7 @@ export default function App() {
                           <div className="flex-1">
                             <div className="flex items-center justify-between">
                               <span className="text-xs font-semibold text-primary">
-                                Predicted Payment: {invoiceDetail.adaptivePlan.predictedPayDate}
+                                Predicted Payment: {invoiceDetail.adaptivePlan.predictedPayDate ?? 'no history yet'}
                               </span>
                               <span className="inline-flex items-center rounded-full border border-utility-brand-200 bg-utility-brand-50 px-sm py-xxs text-xs font-medium text-utility-brand-700">
                                 Adaptive
@@ -890,6 +938,21 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Log a reminder you actually sent */}
+                    {invoiceDetail.invoice.status !== 'paid' && (
+                      <div className="space-y-sm border-t border-secondary pt-md">
+                        <div className="flex flex-wrap items-center gap-sm">
+                          <span className="text-xs text-secondary font-medium">Send a reminder now:</span>
+                          {['friendly', 'formal', 'firm'].map((t) => (
+                            <button key={t} onClick={() => handleLogReminder(t)} className="inline-flex items-center gap-xs rounded-lg border border-primary bg-primary px-md py-xs text-xs font-semibold text-secondary capitalize shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
+                              <MessageSquare className="w-3.5 h-3.5" /> {t}
+                            </button>
+                          ))}
+                        </div>
+                        {reminderText && <p className="text-xs text-secondary bg-secondary rounded-lg border border-secondary p-md">{reminderText}</p>}
+                      </div>
+                    )}
+
                     {/* Alert Recipe: Why? Panel */}
                     <div className="flex gap-lg rounded-xl bg-utility-brand-50 p-xl">
                       <HelpCircle className="mt-xxs size-5 shrink-0 text-utility-brand-600" aria-hidden="true" />
@@ -926,11 +989,11 @@ export default function App() {
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
                 <span className="text-xs text-tertiary font-medium">Payable Amount (Unique Micro-Suffix)</span>
                 <div className="mt-xs text-heading-xl font-semibold text-primary">
-                  {invoiceDetail?.invoice.payAmount || '4,200.418291'}{' '}
+                  {invoiceDetail?.invoice.payAmount ?? '—'}{' '}
                   <span className="text-sm font-normal text-secondary">USDC</span>
                 </div>
                 <p className="text-xs text-tertiary mt-xs">
-                  Exact amount required to automatically trigger zero-fee settlement and Walrus memory sync.
+                  The exact decimals map this transfer to this invoice. Verified on Sui Mainnet through Tatum, then remembered in Walrus Memory.
                 </p>
               </div>
 
@@ -938,7 +1001,7 @@ export default function App() {
               <div className="flex flex-col gap-sm">
                 <label className="text-sm font-medium text-secondary">Payee Sui Address</label>
                 <div className="flex items-center justify-between rounded-md bg-primary px-lg py-sm border border-primary font-mono text-xs text-primary">
-                  <span className="truncate">{invoiceDetail?.invoice.payeeAddress || '0x629a8f10b721e90123cb821034f820129a8f10b721e90123cb821034f820129a'}</span>
+                  <span className="truncate">{invoiceDetail?.invoice.payeeAddress ?? '—'}</span>
                   <button
                     onClick={() => {
                       navigator.clipboard?.writeText(invoiceDetail?.invoice.payeeAddress || '');
@@ -951,35 +1014,28 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Sui Wallet Connect & Pay */}
+              {/* Pay from any Sui wallet */}
               <div className="space-y-sm border-t border-secondary pt-lg">
-                <span className="text-sm font-semibold text-primary block">Option A: Pay with Sui Wallet</span>
+                <span className="text-sm font-semibold text-primary block">Step 1: Send exactly this amount from any Sui wallet</span>
                 <button
-                  onClick={handleWalletPay}
-                  disabled={isWalletConnecting || invoiceDetail?.invoice.status === 'paid'}
-                  className={`w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring ${
-                    invoiceDetail?.invoice.status === 'paid'
-                      ? 'bg-disabled-subtle text-disabled cursor-not-allowed'
-                      : 'bg-brand-solid text-primary-on-brand hover:bg-brand-solid-hover'
-                  }`}
+                  onClick={() => {
+                    navigator.clipboard?.writeText(invoiceDetail?.invoice.payAmount || '');
+                    showToast('Exact amount copied');
+                  }}
+                  disabled={!invoiceDetail || invoiceDetail.invoice.status === 'paid'}
+                  className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring bg-brand-solid text-primary-on-brand hover:bg-brand-solid-hover disabled:bg-disabled-subtle disabled:text-disabled"
                 >
-                  <CreditCard className="w-4 h-4 text-fg-white" />
-                  <span>
-                    {invoiceDetail?.invoice.status === 'paid'
-                      ? 'Invoice Already Paid'
-                      : isWalletConnecting
-                      ? 'Connecting & Signing...'
-                      : `Connect Sui Wallet & Pay ${invoiceDetail?.invoice.payAmount || '4,200.418291'} USDC`}
-                  </span>
+                  <CreditCard className="w-4 h-4" />
+                  <span>{invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Copy amount: ${invoiceDetail?.invoice.payAmount ?? ''} USDC`}</span>
                 </button>
                 <p className="text-xs text-tertiary text-center">
-                  Uses @mysten/dapp-kit compatible flow on Sui Mainnet.
+                  Send USDC on Sui Mainnet to the address above (Slush, Suiet, Phantom, or an exchange withdrawal). The unique decimals identify this invoice.
                 </p>
               </div>
 
               {/* Or paste transaction digest */}
               <div className="space-y-sm border-t border-secondary pt-lg">
-                <span className="text-sm font-semibold text-primary block">Option B: Settle via Transaction Digest</span>
+                <span className="text-sm font-semibold text-primary block">Step 2: Paste the transaction digest</span>
                 <div className="flex flex-col gap-sm">
                   <input
                     type="text"
@@ -1034,11 +1090,11 @@ export default function App() {
                   </div>
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">Latest Checkpoint:</span>
-                    <code className="text-primary font-mono text-xs">#{proofData?.tatumSuiGrpc.latestCheckpoint || '84,192,401'}</code>
+                    <code className="text-primary font-mono text-xs">#{proofData?.tatumSuiGrpc.latestCheckpoint ?? 'loading…'}</code>
                   </div>
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">Payee USDC Balance:</span>
-                    <span className="font-semibold text-primary">{proofData?.tatumSuiGrpc.payeeBalance || '42,500.819204 USDC'}</span>
+                    <span className="font-semibold text-primary">{proofData?.tatumSuiGrpc.payeeBalance ?? 'loading…'}</span>
                   </div>
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">USDC Coin Type:</span>

@@ -1,11 +1,17 @@
 {
-  "name": "my-tatum-app",
+  "name": "invoice-chaser",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node server/index.mjs"
+    "dev": "node --env-file-if-exists=.env.local server/index.mjs",
+    "test": "node --test server/engine.test.mjs",
+    "seed": "node --env-file=.env.local scripts/seed.mjs"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.14.7",
+    "@mysten-incubation/memwal": "^0.1.12",
+    "@mysten/sui": "^2.38.0",
+    "@protobuf-ts/grpc-transport": "^2.11.1",
     "@vitejs/plugin-react": "^4.3.1",
     "express": "^4.21.0",
     "lucide-react": "^1.31.0",
