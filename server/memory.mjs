@@ -114,8 +114,8 @@ async function doLoad() {
       if (ns.memory_count > r.results.length) truncated.push(ns.name) // fail closed: payments refuse to settle
       const mems = []
       for (const hit of r.results) {
-        const d = decode(hit.text)
-        if (!d) continue
+        // memories without our tag are facts extracted by analyze(): keep them as notes
+        const d = decode(hit.text) || { sentence: hit.text.trim(), tag: { type: 'note', source: 'walrus-analyze' } }
         mems.push({ id: hit.blob_id, blobId: hit.blob_id, sentence: d.sentence, tag: d.tag, timestamp: d.tag.at || hit.created_at, status: 'saved' })
       }
       mems.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
@@ -136,6 +136,35 @@ async function doLoad() {
     loadState.loading = false
   }
   return loadState
+}
+
+// analyze(): the relayer extracts facts from free text and stores each as a memory in `ns`.
+export async function ingestNotes(ns, text) {
+  const r = await memwal().analyze(text, ns)
+  if (!store.has(ns)) store.set(ns, [])
+  const at = new Date().toISOString()
+  const local = r.facts.map((f) => ({ id: f.id, sentence: f.text, tag: { type: 'note', source: 'walrus-analyze', at }, timestamp: at, status: 'pending' }))
+  store.get(ns).unshift(...local)
+  // flip to saved (with blob ids) once the relayer finishes; keep the instance alive on Vercel
+  waitUntil(
+    memwal()
+      .waitForRememberJobs(r.job_ids, r.job_ids.map(() => ns))
+      .then((done) => (done.results || []).forEach((x, i) => Object.assign(local[i], x.status === 'done' ? { status: 'saved', blobId: x.blob_id } : { status: 'failed', error: x.error })))
+      .catch((e) => local.forEach((m) => Object.assign(m, { status: 'failed', error: String(e?.message || e) }))),
+  )
+  return r.facts.map((f) => f.text)
+}
+
+// restore(): ask the relayer to re-index blobs it holds for each namespace (idempotent).
+export async function restoreAll() {
+  const sum = { restored: 0, skipped: 0, failed: 0 }
+  for (const ns of await namespaces()) {
+    const r = await memwal().restore(ns.name, Math.min(100, Math.max(1, ns.memory_count)))
+    sum.restored += r.restored
+    sum.skipped += r.skipped
+    sum.failed += r.failed
+  }
+  return sum
 }
 
 export async function health() {

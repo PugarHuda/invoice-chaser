@@ -22,4 +22,10 @@ if (fs.existsSync(path.join(dist, 'index.html'))) {
   app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
 }
 
+// JSON errors for the API (e.g. malformed request bodies), never an HTML stack page.
+app.use((err, req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next(err)
+  res.status(err.status || err.statusCode || 500).json({ error: err.type === 'entity.parse.failed' ? 'Malformed JSON body' : 'Internal error' })
+})
+
 export default app

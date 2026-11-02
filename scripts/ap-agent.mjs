@@ -4,7 +4,7 @@
 // The agent needs a little USDC and SUI (gas) on Mainnet. It refuses anything over AP_MAX_USDC.
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
-import { buildUsdcTransfer, executeSigned, USDC_COIN_TYPE, toMicro } from '../server/sui.mjs'
+import { buildInvoicePayment, buildUsdcTransfer, executeSigned, USDC_COIN_TYPE, NETWORK, EXPLORER, toMicro } from '../server/sui.mjs'
 
 const url = process.argv[2]
 if (!url || !process.env.AP_AGENT_KEY) {
@@ -21,22 +21,26 @@ if (first.status !== 402) {
   process.exit(0)
 }
 const { accepts } = await first.json()
-const terms = accepts.find((a) => a.scheme === 'exact' && a.network === 'sui:mainnet' && a.asset === USDC_COIN_TYPE)
-if (!terms) throw new Error('No Sui Mainnet USDC payment option offered')
+const terms = accepts.find((a) => a.scheme === 'exact' && a.network === `sui:${NETWORK}` && a.asset === USDC_COIN_TYPE)
+if (!terms) throw new Error(`No sui:${NETWORK} USDC payment option offered`)
 if (BigInt(terms.maxAmountRequired) > budget) throw new Error(`Invoice asks ${terms.amount} USDC, over this agent's budget`)
 console.log(`402: ${terms.description} → pay ${terms.amount} USDC to ${terms.payTo} from ${me}`)
 
-const bytes = await buildUsdcTransfer(me, terms.payTo, BigInt(terms.maxAmountRequired))
+// Prefer Sui Payment Kit (nonce = invoice): the registry makes a double payment impossible on-chain.
+const pk = terms.extra?.paymentKit
+const bytes = pk?.nonce
+  ? await buildInvoicePayment(me, terms.payTo, BigInt(terms.maxAmountRequired), pk.nonce)
+  : await buildUsdcTransfer(me, terms.payTo, BigInt(terms.maxAmountRequired))
 const { signature } = await kp.signTransaction(Buffer.from(bytes, 'base64'))
 const exec = await executeSigned(bytes, signature)
 const digest = exec?.Transaction?.digest || exec?.transaction?.digest || exec?.digest
-console.log('executed on Sui Mainnet:', digest)
+console.log(`executed on sui:${NETWORK}:`, digest)
 
 for (let i = 0; i < 6; i++) {
   const paid = await fetch(url, { headers: { 'X-PAYMENT': digest } })
   const body = await paid.json()
   if (paid.ok) {
-    console.log('200 receipt:', body.message, `https://suiscan.xyz/mainnet/tx/${digest}`)
+    console.log('200 receipt:', body.message, `${EXPLORER}/tx/${digest}`)
     process.exit(0)
   }
   console.log(`${paid.status}: ${body.error}; retrying`)

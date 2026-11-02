@@ -16,3 +16,4 @@ public/
 
 .vercel
 .env*
+.env.testagent

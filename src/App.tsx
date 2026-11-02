@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { getWallets } from '@mysten/wallet-standard';
 import { Transaction } from '@mysten/sui/transactions';
+import QRCode from 'qrcode';
+
+// ?pay=<invoice> is the public, client-facing pay page (no owner tabs).
+const PAY_ONLY = new URLSearchParams(window.location.search).get('pay');
 import {
   Clock,
   AlertCircle,
@@ -94,6 +98,10 @@ interface InvoiceDetail {
     digest: string | null;
     payeeAddress: string;
     coinType: string;
+    network?: string;
+    paymentUri?: string;
+    registry?: string;
+    explorerTx?: string | null;
   };
   adaptivePlan: {
     cites?: Array<{ sentence: string; blobId: string | null; status: string; at: string }>;
@@ -140,9 +148,9 @@ interface ProofData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabKey>('today');
-  const [selectedClientId, setSelectedClientId] = useState<string>('c1');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('inv-101');
+  const [activeTab, setActiveTab] = useState<TabKey>(PAY_ONLY ? 'pay' : 'today');
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>(PAY_ONLY || '');
   const [ignoreMemory, setIgnoreMemory] = useState<boolean>(false);
   const [clientNote, setClientNote] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -162,6 +170,55 @@ export default function App() {
   const [reminderText, setReminderText] = useState<string>('');
   const [newClientName, setNewClientName] = useState<string>('');
   const [walletBusy, setWalletBusy] = useState<string | null>(null);
+  const [qr, setQr] = useState<string>('');
+  const [noteText, setNoteText] = useState<string>('');
+  const [noteBusy, setNoteBusy] = useState<boolean>(false);
+  // Tour targets: the client with the most payment history, and one of its open invoices.
+  const tourClient = [...clientsList].sort((a, b) => (b.profile?.totalPaidInvoices ?? 0) - (a.profile?.totalPaidInvoices ?? 0))[0];
+  const tourInvoice = allInvoices.find((i) => i.clientId === tourClient?.id && i.status !== 'paid') || allInvoices[0];
+  const netLabel = (invoiceDetail?.invoice.network || (summary as any)?.network) === 'testnet' ? 'Sui Testnet' : 'Sui Mainnet';
+
+  // Real QR: the Sui Payment Kit URI (sui:pay?...) for this invoice, scannable by Sui wallets.
+  useEffect(() => {
+    const uri = invoiceDetail?.invoice.paymentUri;
+    if (!uri) return setQr('');
+    QRCode.toDataURL(uri, { margin: 1, width: 240 }).then(setQr).catch(() => setQr(''));
+  }, [invoiceDetail?.invoice.paymentUri]);
+
+  // Payment Kit auto-sync: payments made through the on-chain registry settle without a pasted digest.
+  const syncPayments = async () => {
+    try {
+      const r = await fetch('/api/chaser/sync-payments', { method: 'POST' });
+      const d = await r.json();
+      if (d.settled?.length) {
+        showToast(d.settled.map((x: any) => `${x.invoice}: ${x.message}`).join(' · '));
+        fetchSummary();
+        fetchAllInvoices();
+        if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
+      }
+    } catch (_e) {}
+  };
+  useEffect(() => {
+    if (activeTab !== 'pay' || invoiceDetail?.invoice.status === 'paid') return;
+    const t = setInterval(syncPayments, 10000);
+    return () => clearInterval(t);
+  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status]);
+
+  const handleIngestNotes = async () => {
+    if (noteText.trim().length < 10) return showToast('Paste at least a sentence');
+    setNoteBusy(true);
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: noteText }) });
+      const data = await res.json();
+      if (!res.ok) return showToast(data.error || 'Could not analyze notes');
+      showToast(`Walrus extracted ${data.facts.length} fact(s) from your notes`);
+      setNoteText('');
+      fetchClientDetail(selectedClientId);
+      if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
+    } finally {
+      setNoteBusy(false);
+    }
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -169,19 +226,21 @@ export default function App() {
   };
 
   useEffect(() => {
+    syncPayments();
+    if (PAY_ONLY) return; // the public pay page loads nothing but its own invoice
     fetchSummary();
     fetchClients();
     fetchAllInvoices();
   }, []);
 
   useEffect(() => {
-    if (selectedClientId) {
+    if (selectedClientId && !PAY_ONLY && (!clientsList.length || clientsList.some((c) => c.id === selectedClientId))) {
       fetchClientDetail(selectedClientId);
     }
   }, [selectedClientId]);
 
   useEffect(() => {
-    if (selectedInvoiceId) {
+    if (selectedInvoiceId && (PAY_ONLY || !allInvoices.length || allInvoices.some((i) => i.id === selectedInvoiceId))) {
       fetchInvoiceDetail(selectedInvoiceId);
     }
   }, [selectedInvoiceId]);
@@ -209,6 +268,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setClientsList(data);
+        if (data.length && !data.some((c: any) => c.id === selectedClientId)) setSelectedClientId(data[0].id);
       }
     } catch (_err) {}
   };
@@ -219,6 +279,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAllInvoices(data);
+        if (!PAY_ONLY && data.length && !data.some((i: any) => i.id === selectedInvoiceId)) setSelectedInvoiceId((data.find((i: any) => i.status !== 'paid') || data[0]).id);
       }
     } catch (_err) {}
   };
@@ -235,7 +296,7 @@ export default function App() {
 
   const fetchInvoiceDetail = async (id: string) => {
     try {
-      const res = await fetch(`/api/chaser/invoices/${id}`);
+      const res = await fetch(PAY_ONLY ? `/api/chaser/pay/${id}` : `/api/chaser/invoices/${id}`);
       if (res.ok) {
         const data = await res.json();
         setInvoiceDetail(data);
@@ -275,7 +336,8 @@ export default function App() {
 
   const handleRebuildFromMemory = async () => {
     try {
-      const res = await fetch(`/api/chaser/clients/${selectedClientId}/rebuild`, {
+      showToast('Total Recall: restoring and recalling every namespace from Walrus…');
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/rebuild?deep=1`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -308,7 +370,7 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        showToast(`Settled on Sui Mainnet. Walrus memory updated.`);
+        showToast(data.message || `Settled on ${netLabel}. Walrus memory updated.`);
         setDigestInput('');
         fetchInvoiceDetail(selectedInvoiceId);
         fetchSummary();
@@ -356,10 +418,10 @@ export default function App() {
         account,
         chain: 'sui:mainnet',
       });
-      setWalletBusy('Verifying on Sui Mainnet…');
+      setWalletBusy(`Verifying on ${netLabel}…`);
       let data: any = null;
       for (let i = 0; i < 6; i++) {
-        const v = await fetch('/api/chaser/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, digest: out.digest }) });
+        const v = await fetch('/api/chaser/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, digest: out.digest, channel: 'wallet' }) });
         data = await v.json();
         if (v.ok || v.status === 409) break;
         await new Promise((ok) => setTimeout(ok, 2500)); // the gateway may need a moment to see the tx
@@ -416,7 +478,7 @@ export default function App() {
     <div className="min-h-screen bg-primary text-primary flex flex-col font-sans">
       {/* Top Header & Navigation with Tabs recipe */}
       <header className="border-b border-secondary bg-primary sticky top-0 z-20">
-        <div className="max-w-7xl mx-auto px-xl h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-xl min-h-16 py-xs md:py-0 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-xs">
           <div className="flex items-center gap-md">
             <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs">
               IC
@@ -430,7 +492,7 @@ export default function App() {
           </div>
 
           {/* Navigation Bar adhering to tabs.md */}
-          <nav className="flex gap-lg border-b border-transparent h-full items-end pb-xxs">
+          {!PAY_ONLY && <nav className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
             {(['today', 'clients', 'invoices', 'pay', 'proof'] as TabKey[]).map((tab) => (
               <button
                 key={tab}
@@ -448,12 +510,12 @@ export default function App() {
                 {tab === 'proof' && '/proof'}
               </button>
             ))}
-          </nav>
+          </nav>}
 
           <div className="flex items-center gap-sm">
-            <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
+            <span className={`inline-flex items-center gap-xs rounded-full border px-md py-xxs text-xs font-medium ${netLabel === 'Sui Testnet' ? 'border-utility-warning-200 bg-utility-warning-50 text-utility-warning-700' : 'border-utility-success-200 bg-utility-success-50 text-utility-success-700'}`}>
               <span className="w-1.5 h-1.5 rounded-full bg-success-primary animate-pulse" />
-              Sui Mainnet
+              {netLabel === 'Sui Testnet' ? 'TESTNET' : 'Sui Mainnet'}
             </span>
           </div>
         </div>
@@ -467,7 +529,7 @@ export default function App() {
             <div>
               <h1 className="text-heading-lg font-semibold text-primary">Today's Cash Flow & Actions</h1>
               <p className="text-secondary text-sm mt-xs">
-                Anticipated USDC settlements on Sui Mainnet with Walrus memory-driven chase recommendations.
+                Anticipated USDC settlements on {netLabel} with Walrus memory-driven chase recommendations.
               </p>
             </div>
 
@@ -475,17 +537,17 @@ export default function App() {
             <section className="rounded-xl border border-utility-brand-200 bg-utility-brand-50 p-lg flex flex-wrap items-center gap-sm">
               <span className="text-sm font-semibold text-utility-brand-700 mr-sm">Judging? 2-minute tour:</span>
               {[
-                { label: '1 · Acme learned profile', go: () => { setSelectedClientId('c1'); setActiveTab('clients'); } },
-                { label: '2 · Memory on vs off', go: () => { setSelectedInvoiceId('inv-101'); setIgnoreMemory(true); setActiveTab('invoices'); } },
-                { label: '3 · Teach a rule', go: () => { setSelectedClientId('c1'); setActiveTab('clients'); } },
-                { label: '4 · Pay on Sui Mainnet', go: () => setActiveTab('invoices') },
+                { label: `1 · ${tourClient?.name ?? 'Client'}'s learned profile`, go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
+                { label: '2 · Memory on vs off', go: () => { tourInvoice && setSelectedInvoiceId(tourInvoice.id); setIgnoreMemory(true); setActiveTab('invoices'); } },
+                { label: '3 · Teach a rule', go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
+                { label: `4 · Pay on ${netLabel}`, go: () => setActiveTab('invoices') },
                 { label: '5 · Live proof', go: () => setActiveTab('proof') },
               ].map((st) => (
                 <button key={st.label} onClick={st.go} className="rounded-full border border-utility-brand-200 bg-primary px-md py-xs text-xs font-semibold text-utility-brand-700 hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
                   {st.label}
                 </button>
               ))}
-              <span className="text-xs text-tertiary w-full">Aug–Oct client history is seeded demo data (labelled in each timeline). Everything you do here becomes a real Walrus Mainnet memory.</span>
+              {tourClient?.id === 'c1' && <span className="text-xs text-tertiary w-full">Aug–Oct client history is seeded demo data (labelled in each timeline). Everything you do here becomes a real Walrus Mainnet memory.</span>}
             </section>
 
             {/* Overview Stats (Card Recipe: rounded-xl, border-secondary, bg-primary, p-xl, shadow-xs) */}
@@ -791,6 +853,25 @@ export default function App() {
                       </div>
                       <p className="text-xs text-tertiary">Saves hard preference constraints directly to Walrus Memory.</p>
                     </div>
+
+                    {/* Free-form notes -> Walrus Memory analyze() */}
+                    <div className="flex flex-col gap-sm pt-xs">
+                      <label className="text-sm font-medium text-secondary flex items-center gap-xs">
+                        <Brain className="w-3.5 h-3.5 text-fg-brand-primary" />
+                        <span>Paste an email or call notes from this client</span>
+                      </label>
+                      <textarea
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        rows={3}
+                        placeholder={'e.g. "Hi, our AP team only runs payments on Thursdays and never before the 15th. Please cc finance@acme.example on invoices."'}
+                        className="rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                      />
+                      <button onClick={handleIngestNotes} disabled={noteBusy} className="self-start inline-flex items-center gap-sm rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled">
+                        {noteBusy ? 'Walrus is extracting facts…' : 'Extract facts with Walrus analyze()'}
+                      </button>
+                      <p className="text-xs text-tertiary">Walrus Memory pulls out each fact and stores it as its own memory; scheduling rules found in them are obeyed.</p>
+                    </div>
                   </section>
 
                   {/* Timeline of Memories */}
@@ -842,7 +923,7 @@ export default function App() {
 
         {activeTab === 'invoices' && (
           <div className="space-y-xl">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
                 <h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1>
                 <p className="text-secondary text-sm mt-xs">
@@ -857,7 +938,7 @@ export default function App() {
                   <select
                     value={selectedInvoiceId}
                     onChange={(e) => setSelectedInvoiceId(e.target.value)}
-                    className="appearance-none flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
+                    className="appearance-none max-w-[80vw] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
                   >
                     {allInvoices.map((inv) => (
                       <option key={inv.id} value={inv.id}>
@@ -944,9 +1025,9 @@ export default function App() {
 
                     <div className="border-t border-secondary pt-md space-y-sm">
                       <div className="p-md bg-secondary rounded-lg border border-secondary flex flex-col items-center justify-center text-center">
-                        <QrCode className="w-24 h-24 text-primary mb-xs" />
-                        <span className="text-xs font-medium text-primary">Scan to Pay in USDC</span>
-                        <span className="text-xs text-secondary">Sui Mainnet</span>
+                        {qr ? <img src={qr} alt="Sui Payment Kit QR code for this invoice" className="w-40 h-40 mb-xs" /> : <QrCode className="w-24 h-24 text-primary mb-xs" />}
+                        <span className="text-xs font-medium text-primary">Scan with a Sui wallet</span>
+                        <span className="text-xs text-secondary">{netLabel} · Payment Kit registry</span>
                       </div>
 
                       <button
@@ -956,6 +1037,16 @@ export default function App() {
                         <ExternalLink className="w-3.5 h-3.5" />
                         Open Public Pay Page
                       </button>
+                      <button
+                        onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/?pay=${invoiceDetail.invoice.id}`); showToast('Pay link copied: send it to your client'); }}
+                        className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        Copy client pay link
+                      </button>
+                      {invoiceDetail.invoice.explorerTx && (
+                        <a href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer" className="block text-center text-xs text-utility-brand-700 hover:underline">View payment on Suiscan</a>
+                      )}
                     </div>
                   </section>
                 </div>
@@ -1061,7 +1152,14 @@ export default function App() {
                             </button>
                           ))}
                         </div>
-                        {reminderText && <p className="text-xs text-secondary bg-secondary rounded-lg border border-secondary p-md">{reminderText}</p>}
+                        {reminderText && (
+                          <div className="text-xs text-secondary bg-secondary rounded-lg border border-secondary p-md space-y-xs">
+                            <p>{reminderText}</p>
+                            <a href={`mailto:?subject=${encodeURIComponent(`Invoice ${invoiceDetail.invoice.id}`)}&body=${encodeURIComponent(`${reminderText}\n\nPay here: ${window.location.origin}/?pay=${invoiceDetail.invoice.id}`)}`} className="inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline">
+                              Open in your email app <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -1109,7 +1207,12 @@ export default function App() {
               <h1 className="text-heading-lg font-bold text-primary">
                 Pay Invoice #{selectedInvoiceId}
               </h1>
-              <p className="text-xs text-secondary">Pay securely in USDC on Sui Mainnet</p>
+              <p className="text-xs text-secondary">{invoiceDetail ? `${invoiceDetail.invoice.clientName} · due ${invoiceDetail.invoice.dueDate} · ` : ''}Pay in USDC on {netLabel}</p>
+              {invoiceDetail?.invoice.status === 'paid' && (
+                <p className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-sm font-semibold text-utility-success-700">
+                  <Check className="w-4 h-4" /> Paid · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">receipt</a>}
+                </p>
+              )}
             </div>
 
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
@@ -1121,8 +1224,14 @@ export default function App() {
                   <span className="text-sm font-normal text-secondary">USDC</span>
                 </div>
                 <p className="text-xs text-tertiary mt-xs">
-                  The exact decimals map this transfer to this invoice. Verified on Sui Mainnet through Tatum, then remembered in Walrus Memory.
+                  Paid through the Sui Payment Kit registry with this invoice as the nonce, so the chain itself refuses a second payment. Verified through Tatum, remembered in Walrus Memory.
                 </p>
+                {qr && invoiceDetail?.invoice.status !== 'paid' && (
+                  <div className="mt-md flex flex-col items-center gap-xs">
+                    <img src={qr} alt="Scan to pay with a Sui wallet" className="w-44 h-44" />
+                    <a href={invoiceDetail?.invoice.paymentUri} className="text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
+                  </div>
+                )}
               </div>
 
               {/* Recipient Address */}
@@ -1152,7 +1261,7 @@ export default function App() {
                   <ShieldCheck className="w-4 h-4" />
                   <span>{walletBusy ?? (invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Connect Sui wallet & pay ${invoiceDetail?.invoice.payAmount ?? ''} USDC`)}</span>
                 </button>
-                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The transfer is built through Tatum and verified on Sui Mainnet.</p>
+                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The Payment Kit transaction is built through Tatum and verified on {netLabel}.</p>
               </div>
 
               {/* Pay from any Sui wallet */}
@@ -1170,7 +1279,7 @@ export default function App() {
                   <span>{invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Copy amount: ${invoiceDetail?.invoice.payAmount ?? ''} USDC`}</span>
                 </button>
                 <p className="text-xs text-tertiary text-center">
-                  Send USDC on Sui Mainnet to the address above (Slush, Suiet, Phantom, or an exchange withdrawal). The unique decimals identify this invoice.
+                  Send USDC on {netLabel} to the address above (Slush, Suiet, Phantom, or an exchange withdrawal). The unique decimals identify this invoice.
                 </p>
               </div>
 

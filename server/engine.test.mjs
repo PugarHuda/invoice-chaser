@@ -52,6 +52,18 @@ test('preferences are hard constraints', () => {
   assert.equal(plan({ dueDate: '2026-11-03' }, p).steps[0].date, '2026-11-10')
 })
 
+test('notes: "only Thursdays, never before the 15th" means pay day + no early chasing', () => {
+  const c = parsePreference('Vendor payments are only run on Thursdays and never before the 15th of the month')
+  assert.deepEqual(c, { notBeforeDayOfMonth: 15, payWeekdays: [4] })
+  assert.equal(c.skipWeekdays, undefined) // the old parser wrongly blocked Thursdays
+  assert.deepEqual(parsePreference('please never send reminders on Fridays').skipWeekdays, [5])
+  // a brand-new client with a rule: default plan still obeys it, and predicts their pay day
+  const fresh = computeProfile('x', [mem('2026-11-01T00:00:00Z', { type: 'note', source: 'walrus-analyze' })].map((m) => ({ ...m, sentence: 'Vendor payments are only run on Thursdays and never before the 15th of the month' })))
+  const p = plan({ dueDate: '2026-11-03' }, fresh) // Tue 3 Nov
+  assert.equal(p.steps[0].date, '2026-11-15')
+  assert.equal(p.predictedPayDate, '2026-11-05') // next Thursday
+})
+
 test('state is derived from memories (total recall)', () => {
   const store = new Map([['ic:main:client:acme', [...acme].reverse()]])
   const { clients, invoices } = deriveState(store)
