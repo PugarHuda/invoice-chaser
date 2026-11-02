@@ -11,3 +11,5 @@ dist/
 # and the docs MCP server so an export keeps working in an external agent.
 .scaffolded
 .opencode/
+public/
+.vercel

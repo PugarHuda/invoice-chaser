@@ -176,11 +176,10 @@ async function settle(_req, res, inv0, digest) {
     return res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }
   // Re-read state after the await: anything settled meanwhile wins.
-  const { clients, invoices } = state()
+  const { clients, invoices, usedDigests } = state()
   const inv = invoices.find((i) => i.id === inv0.id)
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
-  const used = invoices.find((i) => i.digest === digest)
-  if (used) return res.status(409).json({ error: `Digest already settled ${used.id}` })
+  if (usedDigests.has(digest)) return res.status(409).json({ error: 'This transaction has already settled an invoice' })
   if (!tx.ok) return res.status(400).json({ error: 'Transaction did not succeed on Sui Mainnet' })
   if (tx.received <= 0n) return res.status(400).json({ error: 'Transaction sent no USDC to the payee address' })
   if (tx.timestamp && tx.timestamp < inv.createdAt) return res.status(400).json({ error: 'Transaction is older than the invoice' })

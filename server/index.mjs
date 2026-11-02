@@ -6,36 +6,20 @@ import './proxy-bootstrap.mjs'
 // the controller path (which delivers the key as a file, not an env var) and
 // stays live across the rotation push. A no-op where the key is already in env.
 import './credentials-store.mjs'
-import express from 'express'
 import { createServer as createHttpServer } from 'http'
 import { createServer as createViteServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'url'
 import path from 'path'
-import tatumRoutes from './routes/tatum.mjs'
-import chaserRoutes from './routes/chaser.mjs'
-import { credentialGuard } from './credential-guard.mjs'
+import app from './app.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.join(__dirname, '..')
 
-// Run from the project root. The preview-sidecar starts this server with CWD=/,
-// but tooling that resolves paths from the CWD — notably Tailwind's `content`
-// globs — must see the project files, or it silently generates no utilities
-// (unstyled preview). `vite build` already runs from here; this makes dev match.
+// Run from the project root so Tailwind's content globs resolve (dev only; production is app.mjs on Vercel).
 process.chdir(root)
 
-const app = express()
-app.use(express.json())
-
-// Redact the Tatum API key from every response before it leaves the process.
-app.use(credentialGuard)
-
-app.use('/api/tatum', tatumRoutes)
-app.use('/api/chaser', chaserRoutes)
-
 const server = createHttpServer(app)
-
 // All Vite config is inline — no vite.config.js needed, no temp files written.
 // cacheDir points to /tmp so dep pre-bundling works on read-only node_modules mounts.
 const vite = await createViteServer({

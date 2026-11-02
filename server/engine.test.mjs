@@ -58,6 +58,14 @@ test('state is derived from memories (total recall)', () => {
   assert.equal(clients[0].name, 'Acme')
   assert.equal(invoices.length, 3)
   assert.ok(invoices.every((i) => i.status === 'paid' && i.reminders === 2))
+  // a partial payment's digest stays "used" even after a later payment replaces it on the invoice
+  const s2 = new Map([['n', [
+    mem('2026-10-01T00:00:00Z', { type: 'invoice_sent', client: 'x', invoice: 'i1', base: 10, pay_amount: '10.001000', due: '2026-10-05' }),
+    mem('2026-10-06T00:00:00Z', { type: 'invoice_partial', client: 'x', invoice: 'i1', digest: 'D1' }),
+    mem('2026-10-07T00:00:00Z', { type: 'invoice_paid', client: 'x', invoice: 'i1', digest: 'D2' }),
+  ]]])
+  const { usedDigests } = deriveState(s2)
+  assert.ok(usedDigests.has('D1') && usedDigests.has('D2'))
 })
 
 test('encoding round-trips and amounts are exact', () => {

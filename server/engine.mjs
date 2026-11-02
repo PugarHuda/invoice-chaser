@@ -12,6 +12,7 @@ const TONES = ['friendly', 'formal', 'firm']
 export function deriveState(store) {
   const clients = new Map()
   const invoices = new Map()
+  const usedDigests = new Set() // every digest ever settled, even if a later payment replaced it on the invoice
   const all = [...store.values()].flat().sort((a, b) => a.timestamp.localeCompare(b.timestamp))
   for (const m of all) {
     const t = m.tag || {}
@@ -35,6 +36,7 @@ export function deriveState(store) {
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
       invoices.get(t.invoice).reminders++
     } else if ((t.type === 'invoice_paid' || t.type === 'invoice_partial') && invoices.has(t.invoice)) {
+      if (t.digest) usedDigests.add(t.digest)
       Object.assign(invoices.get(t.invoice), {
         status: t.type === 'invoice_paid' ? 'paid' : 'partial',
         digest: t.digest || null,
@@ -43,7 +45,7 @@ export function deriveState(store) {
       })
     }
   }
-  return { clients: [...clients.values()], invoices: [...invoices.values()] }
+  return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests }
 }
 
 export function invoiceStatus(inv, now = new Date()) {

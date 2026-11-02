@@ -2,6 +2,7 @@
 //   "<human sentence>\n#ic {json tag}"
 // On boot we recall every ic:main:* namespace and rebuild all state from it.
 import { MemWal } from '@mysten-incubation/memwal'
+import { waitUntil } from '@vercel/functions'
 
 export const NS_PREFIX = process.env.MEMWAL_NS_PREFIX || 'ic:main:'
 export const clientNs = (clientId) => `${NS_PREFIX}client:${clientId}`
@@ -41,17 +42,19 @@ export function remember(ns, sentence, tag) {
   if (!store.has(ns)) store.set(ns, [])
   store.get(ns).unshift(m)
   queue.push({ ns, m })
-  pump()
+  // On Vercel, keep the instance alive until the queue drains (no-op elsewhere).
+  waitUntil(pump())
   return m
 }
 
 const queue = []
-let pumping = false
-async function pump() {
-  if (pumping) return
-  pumping = true
-  try {
-    while (queue.length) {
+let pumping = null
+function pump() {
+  pumping ??= drain().finally(() => (pumping = null))
+  return pumping
+}
+async function drain() {
+  while (queue.length) {
       const { ns, m } = queue[0]
       try {
         const job = await memwal().remember(encode(m.sentence, m.tag), ns, { idempotencyKey: m.id })
@@ -61,15 +64,17 @@ async function pump() {
         delete m.error
         queue.shift()
       } catch (e) {
-        // ponytail: one serial queue with a fixed 30 s backoff; parallelise if write volume ever matters
+        // ponytail: one serial queue with a fixed backoff; parallelise if write volume ever matters
         m.status = 'failed'
+        m.attempts ??= 0
         m.error = String(e?.message || e)
-        await new Promise((r) => setTimeout(r, 30_000))
-        m.status = 'pending'
+        // after 5 tries leave it visibly failed rather than retrying past the function's lifetime
+        if (++m.attempts >= 5) queue.shift()
+        else {
+          await new Promise((r) => setTimeout(r, 15_000))
+          m.status = 'pending'
+        }
       }
-    }
-  } finally {
-    pumping = false
   }
 }
 export const pendingCount = () => queue.length
