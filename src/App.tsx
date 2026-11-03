@@ -258,6 +258,9 @@ export default function App() {
     fetchAllInvoices();
   }, []);
 
+  // recall hits belong to one client: clear them when the selection changes
+  useEffect(() => { setMemHits(null); setMemQuery(''); }, [selectedClientId]);
+
   useEffect(() => {
     if (selectedClientId && !PAY_ONLY && (!clientsList.length || clientsList.some((c) => c.id === selectedClientId))) {
       fetchClientDetail(selectedClientId);
@@ -748,10 +751,12 @@ export default function App() {
 
               <div className="space-y-sm">
                 {clientsList.map((c) => (
-                  <div
+                  <button
+                    type="button"
                     key={c.id}
                     onClick={() => setSelectedClientId(c.id)}
-                    className={`p-md rounded-xl border cursor-pointer transition-colors ${
+                    aria-pressed={selectedClientId === c.id}
+                    className={`block w-full text-left p-md rounded-xl border cursor-pointer transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                       selectedClientId === c.id
                         ? 'bg-secondary border-brand shadow-xs'
                         : 'bg-primary border-secondary hover:bg-secondary-hover'
@@ -761,11 +766,11 @@ export default function App() {
                       <div className="font-medium text-sm text-primary">{c.name}</div>
                       <span
                         className={`inline-flex items-center rounded-full px-md py-xxs text-xs font-medium border ${
-                          c.profile.reliabilityBadge.includes('High')
+                          c.profile.reliabilityBadge.includes('Reliable')
                             ? 'bg-utility-success-50 text-utility-success-700 border-utility-success-200'
                             : c.profile.reliabilityBadge.includes('Underpayer')
                             ? 'bg-utility-error-50 text-utility-error-700 border-utility-error-200'
-                            : c.profile.reliabilityBadge.includes('Moderate')
+                            : c.profile.reliabilityBadge.includes('Late')
                             ? 'bg-utility-warning-50 text-utility-warning-700 border-utility-warning-200'
                             : 'bg-utility-brand-50 text-utility-brand-700 border-utility-brand-200'
                         }`}
@@ -776,7 +781,7 @@ export default function App() {
                     <div className="text-xs text-secondary mt-xxs">
                       {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : 'on time'} • Reminders: {c.profile.remindersNeeded} • {c.profile.totalPaidInvoices} paid</>}
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
