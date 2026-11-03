@@ -1,8 +1,10 @@
 import { Router } from 'express'
+import { randomBytes } from 'node:crypto'
 import * as mem from '../memory.mjs'
 import * as sui from '../sui.mjs'
 import { usdRate } from '../rates.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay } from '../engine.mjs'
+import { screenAddress } from '../security.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -56,6 +58,9 @@ const memsFor = (clientId) => mem.store.get(mem.clientNs(clientId)) || []
 const profileOf = (clientId) => computeProfile(clientId, memsFor(clientId))
 const clientName = (clients, id) => clients.find((c) => c.id === id)?.name || 'Unknown'
 const withStatus = (inv) => ({ ...inv, status: invoiceStatus(inv) })
+// time-ordered and collision-free even for concurrent requests
+const newId = (prefix) => `${prefix}-${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
+const owed = (inv) => (inv.status === 'partial' && inv.remaining ? inv.remaining : inv.payAmount)
 
 router.get('/summary', (_req, res) => {
   const now = new Date()
@@ -93,6 +98,7 @@ router.get('/summary', (_req, res) => {
     nextActions,
     memory: { loadedAt: mem.loadState.loadedAt, pending: mem.pendingCount(), error: mem.loadState.error, namespacePrefix: mem.NS_PREFIX },
     network: sui.NETWORK,
+    learning: learningSummary(clients.map((c) => profileOf(c.id))),
   })
 })
 
@@ -104,7 +110,7 @@ router.post('/clients', (req, res) => {
   const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ')
   if (!name) return res.status(400).json({ error: 'name is required' })
   if (name.length > 80) return res.status(400).json({ error: 'name must be 80 characters or fewer' })
-  const id = `c-${Date.now().toString(36)}`
+  const id = newId('c')
   const m = mem.remember(mem.clientNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact: req.body?.contact || null })
   res.json({ client: { id, name }, memory: m })
 })
@@ -123,6 +129,37 @@ router.post('/clients/:id/preference', (req, res) => {
   if (!client) return res.status(404).json({ error: 'Client not found' })
   const m = mem.remember(mem.clientNs(client.id), `Rule for ${client.name}: "${note}"`, { type: 'preference', client: client.id, note })
   res.json({ success: true, memory: m, profile: profileOf(client.id) })
+})
+
+// Expected payer wallet for a client: a 0x address or a SuiNS name resolved through Tatum.
+// Payments from any other wallet are flagged; the wallet is screened with Tatum's Malicious Address API.
+router.post('/clients/:id/payer', async (req, res) => {
+  const input = String(req.body?.payer || '').trim().toLowerCase()
+  const client = state().clients.find((c) => c.id === req.params.id)
+  if (!client) return res.status(404).json({ error: 'Client not found' })
+  let address = input
+  let name = null
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*\.sui$/.test(input) || /^@[a-z0-9-]+$/.test(input)) {
+    name = input
+    address = await sui.resolveSuins(input).catch(() => null)
+    if (!address) return res.status(404).json({ error: `SuiNS name ${input} does not resolve` })
+  }
+  if (!sui.ADDRESS_RE.test(address)) return res.status(400).json({ error: 'Enter a Sui address (0x + 64 hex) or a SuiNS name (name.sui)' })
+  const screen = await screenAddress(address).catch(() => null)
+  const m = mem.remember(mem.clientNs(client.id), `${client.name} pays from ${name ? `${name} (${address.slice(0, 10)}…)` : address}${screen ? `; Tatum screening: ${screen.verdict}` : ''}.`, { type: 'payer_expected', client: client.id, payer: address, name, screen: screen?.verdict || null })
+  res.json({ success: true, address, name, screen, memory: m })
+})
+
+// Accounting export (CSV) of every invoice with its on-chain receipt.
+router.get('/export.csv', (_req, res) => {
+  const { clients, invoices } = state()
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const rows = [['invoice', 'client', 'description', 'amount_usdc', 'pay_amount', 'due', 'status', 'remaining', 'paid_on', 'tx', 'network'].join(',')]
+  for (const raw of invoices) {
+    const i = withStatus(raw)
+    rows.push([i.id, clientName(clients, i.clientId), i.description, i.baseAmount, i.payAmount, i.dueDate, i.status, i.remaining ?? '', i.settledAt ?? '', i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : '', sui.NETWORK].map(esc).join(','))
+  }
+  res.set('Content-Disposition', 'attachment; filename="invoice-chaser.csv"').type('text/csv').send(rows.join('\n'))
 })
 
 // Semantic search across a client's memories (Walrus recall ranks by meaning, not keywords).
@@ -184,7 +221,7 @@ router.post('/invoices', (req, res) => {
   if (!/^\d+(\.\d{1,2})?$/.test(typeof amount === 'number' ? String(Math.round(amount * 100) / 100 === amount ? amount : 'x') : String(amount))) return res.status(400).json({ error: 'amount must be a number with at most 2 decimals' })
   if (!(Number(amount) >= 0.01 && Number(amount) <= 1_000_000) || !validDate) return res.status(400).json({ error: 'amount between 0.01 and 1,000,000 and a real dueDate (YYYY-MM-DD) are required' })
   if (description && String(description).length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
-  const id = `inv-${Date.now().toString(36)}`
+  const id = newId('inv')
   const payAmount = uniquePayAmount(amount, new Set(invoices.map((i) => i.payAmount)))
   const m = mem.remember(mem.clientNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
   res.json({ invoice: { id, payAmount }, memory: m })
@@ -198,9 +235,9 @@ router.get('/pay/:id', (req, res) => {
   const i = withStatus(inv)
   res.json({
     invoice: {
-      id: i.id, clientId: i.clientId, clientName: clientName(clients, i.clientId), baseAmount: i.baseAmount, payAmount: i.payAmount, status: i.status, dueDate: i.dueDate, issuedDate: i.issuedDate, description: i.description, digest: i.digest,
+      id: i.id, clientId: i.clientId, clientName: clientName(clients, i.clientId), baseAmount: i.baseAmount, payAmount: owed(i), originalAmount: i.payAmount, remaining: i.remaining ?? null, status: i.status, dueDate: i.dueDate, issuedDate: i.issuedDate, description: i.description, digest: i.digest,
       payeeAddress: PAYEE(), coinType: sui.USDC_COIN_TYPE, network: sui.NETWORK, registry: sui.REGISTRY_NAME,
-      paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(i.payAmount), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
+      paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
       explorerTx: i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : null,
     },
   })
@@ -282,12 +319,13 @@ async function settleDigest(invoiceId, requested, channel) {
     if (!tx.ok) return [400, { error: `Transaction did not succeed on ${NET}` }]
     if (tx.received <= 0n) return [400, { error: 'Transaction sent no USDC to the payee address' }]
     if (tx.timestamp && tx.timestamp < inv.createdAt) return [400, { error: 'Transaction is older than the invoice' }]
-    const expected = sui.toMicro(inv.payAmount)
+    const expected = sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
     // A transfer that exactly matches another open invoice's unique amount belongs to that one.
     const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && sui.toMicro(i.payAmount) === tx.received)
     if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
 
     const full = tx.received >= expected
+    const totalReceived = sui.toMicro(inv.payAmount) - expected + tx.received
     const paid = isoDay(tx.timestamp || Date.now())
     const delay = Math.max(0, Math.round((new Date(paid) - new Date(inv.dueDate)) / DAY))
     const ms = memsFor(inv.clientId)
@@ -297,18 +335,22 @@ async function settleDigest(invoiceId, requested, channel) {
     const payerName = payer ? await sui.suinsName(payer) : null
     const knownPayers = new Set(ms.map((m) => m.tag?.payer).filter(Boolean))
     const newPayer = Boolean(payer && knownPayers.size && !knownPayers.has(payer))
+    const screen = payer ? await screenAddress(payer).catch(() => null) : null
+    // the client told us which wallet pays: anything else is flagged even if it paid before
+    const expectedPayer = clients.find((c) => c.id === inv.clientId)?.expectedPayer?.address || null
+    const unexpectedPayer = Boolean(payer && expectedPayer && payer.toLowerCase() !== expectedPayer.toLowerCase())
     const name = clientName(clients, inv.clientId)
     const received = sui.fromMicro(tx.received)
-    const who = payer ? ` from ${payerName || `${payer.slice(0, 8)}…`}${newPayer ? ' (a wallet this client never paid from before)' : ''}` : ''
+    const who = payer ? ` from ${payerName || `${payer.slice(0, 8)}…`}${unexpectedPayer ? ' (NOT the wallet this client said it pays from)' : newPayer ? ' (a wallet this client never paid from before)' : ''}${screen?.verdict === 'flagged' ? ' [FLAGGED by Tatum malicious-address screening]' : ''}` : ''
     settledDigests.add(digest)
     const m = mem.remember(
       mem.clientNs(inv.clientId),
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}.`
-        : `${name} underpaid ${inv.id}: ${received} of ${inv.payAmount} USDC on ${paid}${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer },
+        : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
+      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived) },
     )
-    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, message: `Verified on ${NET} via Tatum: ${received} USDC received${newPayer ? ' from a NEW payer wallet' : ''}.` }]
+    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, message: `Verified on ${NET} via Tatum: ${received} USDC received${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
     inflight.delete(requested)
     inflight.delete(invoiceId)
@@ -330,7 +372,7 @@ async function syncPayments() {
   const open = state().invoices.filter((i) => i.status === 'sent' || i.status === 'partial')
   const settled = []
   for (const inv of open) {
-    const digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(inv.payAmount), inv.id)
+    const digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(owed(inv)), inv.id)
     if (!digest) continue
     const [code, body] = await settleDigest(inv.id, digest, 'payment-kit')
     settled.push({ invoice: inv.id, digest, code, message: body.message || body.error })
@@ -353,15 +395,15 @@ const paymentTerms = (req, inv) => ({
   scheme: 'exact',
   network: `sui:${sui.NETWORK}`,
   asset: sui.USDC_COIN_TYPE,
-  maxAmountRequired: sui.toMicro(inv.payAmount).toString(),
-  amount: inv.payAmount,
+  maxAmountRequired: sui.toMicro(owed(inv)).toString(),
+  amount: owed(inv),
   payTo: PAYEE(),
   resource: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
   description: `Invoice ${inv.id} (${inv.description || 'services'})`,
   mimeType: 'application/json',
   maxTimeoutSeconds: 600,
   // Pay through Sui Payment Kit so the chain itself rejects a second payment for this invoice.
-  extra: { paymentKit: { registry: sui.REGISTRY_NAME, registryId: sui.registryId(), nonce: inv.id }, paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(inv.payAmount), nonce: inv.id, label: 'Invoice Chaser', message: `Invoice ${inv.id}` }) },
+  extra: { paymentKit: { registry: sui.REGISTRY_NAME, registryId: sui.registryId(), nonce: inv.id }, paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(inv)), nonce: inv.id, label: 'Invoice Chaser', message: `Invoice ${inv.id}` }) },
 })
 
 // x402: an invoice is a payable HTTP resource. Without X-PAYMENT you get 402 + terms; with a Sui
@@ -390,10 +432,10 @@ router.post('/pay-tx', async (req, res) => {
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
   if (sender.toLowerCase() === PAYEE().toLowerCase()) return res.status(400).json({ error: 'Pay from a different wallet than the payee' })
   try {
-    const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(inv.payAmount), inv.id)
+    const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id)
     // simulate through Tatum for the real fee, priced in USD with Tatum's rate API (best effort)
     const [fee, rate] = await Promise.all([sui.estimateFee(bytes).catch(() => null), usdRate('SUI').catch(() => null)])
-    res.json({ bytes, amount: inv.payAmount, payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
+    res.json({ bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
   } catch (e) {
     const msg = e.message || ''
     res.status(400).json({ error: /EDuplicatePayment|duplicate/i.test(msg) ? 'This invoice was already paid on-chain' : /insufficient|balance|coin/i.test(msg) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}… on ${NET}` : `Could not build transaction: ${msg}` })

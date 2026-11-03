@@ -128,9 +128,11 @@ async function doLoad() {
     }
     // Merge, never drop: keep every local memory the recall didn't return yet (still being written,
     // or saved but not indexed by the relayer). Otherwise a reload could "un-pay" an invoice.
-    const seen = new Set([...fresh.values()].flat().map((m) => m.blobId))
+    // a local copy and its recalled twin share content (sentence + type + timestamp), not ids
+    const contentKey = (m) => `${m.tag?.type}|${m.tag?.at || m.timestamp}|${m.sentence}`
+    const seen = new Set([...fresh.values()].flat().flatMap((m) => [m.blobId, contentKey(m)]))
     for (const [ns, mems] of store) {
-      const missing = mems.filter((m) => !m.blobId || !seen.has(m.blobId))
+      const missing = mems.filter((m) => !(m.blobId && seen.has(m.blobId)) && !seen.has(contentKey(m)))
       if (missing.length) fresh.set(ns, [...missing, ...(fresh.get(ns) || [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)))
     }
     store.clear()

@@ -64,4 +64,45 @@ const payMem = cl.memories.find((m) => m.tag?.invoice === paidId && m.tag?.type 
 assert.equal(payMem.tag.payer, me)
 assert.ok(['x402', 'payment-kit'].includes(payMem.tag.channel), payMem.tag.channel)
 ok(`payment memory records payer wallet and channel (${payMem.tag.channel})`)
+// (g) partial payment then the rest: remaining balance, both legs through the registry
+const [, inv4] = await api('/invoices', { method: 'POST', body: JSON.stringify({ clientId: paid.invoice.clientId, amount: 0.05, dueDate: paid.invoice.dueDate, description: 'partial test' }) })
+const id4 = inv4.invoice.id
+const part = 30000n // 0.03 of ~0.05
+const payReg = async (micro) => {
+  const b = await buildInvoicePayment(me, paid.invoice.payeeAddress, micro, id4)
+  const { signature: sg } = await kp.signTransaction(Buffer.from(b, 'base64'))
+  const r = await executeSigned(b, sg)
+  return r?.Transaction?.digest || r?.transaction?.digest || r?.digest
+}
+const d1 = await payReg(part)
+let v1
+for (let i = 0; i < 8; i++) { await sleep(3000); v1 = await api('/verify-payment', { method: 'POST', body: JSON.stringify({ invoiceId: id4, digest: d1 }) }); if (v1[0] !== 404) break }
+assert.equal(v1[0], 200, JSON.stringify(v1[1]))
+assert.equal(v1[1].full, false)
+const [, p4] = await api(`/pay/${id4}`)
+assert.equal(p4.invoice.status, 'partial')
+assert.equal(toMicro(p4.invoice.remaining), toMicro(inv4.invoice.payAmount) - part)
+assert.equal(p4.invoice.payAmount, p4.invoice.remaining) // the pay page now asks only for the rest
+ok(`partial payment leaves ${p4.invoice.remaining} owed; pay page asks only for that`)
+await payReg(toMicro(p4.invoice.remaining))
+let done4
+for (let i = 0; i < 10 && !done4; i++) { await sleep(4000); const [, sy] = await api('/sync-payments', { method: 'POST' }); done4 = sy.settled?.find((x) => x.invoice === id4 && x.code === 200) }
+const [, f4] = await api(`/pay/${id4}`)
+assert.equal(f4.invoice.status, 'paid')
+ok('remaining balance paid through the registry and auto-settled: invoice paid')
+
+// (h) expected payer: set another wallet as this client's payer; our agent's payment is then flagged
+const [cp] = await api(`/clients/${paid.invoice.clientId}/payer`, { method: 'POST', body: JSON.stringify({ payer: '0x' + '1'.repeat(64) }) })
+assert.equal(cp, 200)
+const [, inv5] = await api('/invoices', { method: 'POST', body: JSON.stringify({ clientId: paid.invoice.clientId, amount: 0.02, dueDate: paid.invoice.dueDate, description: 'payer test' }) })
+const b5 = await buildInvoicePayment(me, paid.invoice.payeeAddress, toMicro(inv5.invoice.payAmount), inv5.invoice.id)
+const { signature: s5 } = await kp.signTransaction(Buffer.from(b5, 'base64'))
+const e5 = await executeSigned(b5, s5)
+const d5 = e5?.Transaction?.digest || e5?.transaction?.digest || e5?.digest
+let v5
+for (let i = 0; i < 8; i++) { await sleep(3000); v5 = await api('/verify-payment', { method: 'POST', body: JSON.stringify({ invoiceId: inv5.invoice.id, digest: d5 }) }); if (v5[0] !== 404) break }
+assert.equal(v5[0], 200, JSON.stringify(v5[1]))
+assert.equal(v5[1].unexpectedPayer, true)
+assert.equal(v5[1].payerScreen?.verdict, 'clean')
+ok('payment from a wallet other than the expected payer is flagged; payer screened by Tatum (clean)')
 console.log('all testnet e2e checks passed')

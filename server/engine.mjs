@@ -2,6 +2,25 @@
 // AI proposes (reminder text), code decides (when, which tone, what we predict).
 
 const DAY = 86_400_000
+// 6-decimal USDC strings <-> integer micro-units (engine-local so it stays pure)
+const micro = (s) => {
+  const [i, f = ''] = String(s).split('.')
+  return BigInt(i) * 1_000_000n + BigInt((f + '000000').slice(0, 6))
+}
+const unmicro = (m) => {
+  const s = m.toString().padStart(7, '0')
+  return `${s.slice(0, -6)}.${s.slice(-6)}`
+}
+
+// Portfolio-level evidence that the app learns: mean prediction error on each client's first
+// invoice (predicted with no history) vs their latest one (only clients with >= 2 paid invoices).
+export function learningSummary(profiles) {
+  const xs = profiles.filter((p) => (p.history || []).length >= 2)
+  if (!xs.length) return null
+  const mean = (a) => Math.round((a.reduce((s, x) => s + x, 0) / a.length) * 10) / 10
+  return { clients: xs.length, firstError: mean(xs.map((p) => p.history[0].error)), latestError: mean(xs.map((p) => p.history.at(-1).error)), predictions: xs.reduce((s, p) => s + p.history.length, 0) }
+}
+
 export const isoDay = (d) => {
   const t = new Date(d)
   return Number.isNaN(t.getTime()) ? '' : t.toISOString().slice(0, 10)
@@ -39,15 +58,26 @@ export function deriveState(store) {
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
       invoices.get(t.invoice).reminders++
     } else if ((t.type === 'invoice_paid' || t.type === 'invoice_partial') && invoices.has(t.invoice)) {
+      if (t.digest && usedDigests.has(t.digest)) continue // the same payment recorded twice counts once
       if (t.digest) usedDigests.add(t.digest)
-      Object.assign(invoices.get(t.invoice), {
-        status: t.type === 'invoice_paid' ? 'paid' : 'partial',
-        digest: t.digest || null,
+      const inv = invoices.get(t.invoice)
+      // amounts as integer micro-units so sums are exact; seeded history may lack `received`
+      const got = t.received != null ? micro(t.received) : t.type === 'invoice_paid' ? micro(inv.payAmount) : 0n
+      inv.receivedMicro = (inv.receivedMicro || 0n) + got
+      inv.payments = [...(inv.payments || []), { digest: t.digest || null, received: t.received ?? null, paid: t.paid, payer: t.payer || null }]
+      const full = t.type === 'invoice_paid' || inv.receivedMicro >= micro(inv.payAmount)
+      Object.assign(inv, {
+        status: full ? 'paid' : 'partial',
+        digest: t.digest || inv.digest || null,
         settledAt: t.paid,
-        partialAmount: t.type === 'invoice_partial' ? t.received : null,
+        partialAmount: full ? null : unmicro(inv.receivedMicro),
+        remaining: full ? '0.000000' : unmicro(micro(inv.payAmount) - inv.receivedMicro),
       })
+    } else if (t.type === 'payer_expected') {
+      if (clients.has(t.client)) clients.get(t.client).expectedPayer = { address: t.payer, name: t.name || null }
     }
   }
+  for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
   return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests }
 }
 
@@ -59,9 +89,14 @@ export function invoiceStatus(inv, now = new Date()) {
 // ---- Learned profile ------------------------------------------------------------------
 
 export function computeProfile(clientId, memories) {
-  const pays = memories
-    .filter((m) => m.tag?.type === 'invoice_paid' || m.tag?.type === 'invoice_partial')
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+  // One entry per invoice: its latest payment event (a partial then a top-up is one invoice, not two),
+  // remembering whether any part of it was short-paid.
+  const byInvoice = new Map()
+  for (const m of memories.filter((x) => x.tag?.type === 'invoice_paid' || x.tag?.type === 'invoice_partial').sort((a, b) => a.timestamp.localeCompare(b.timestamp))) {
+    const prev = byInvoice.get(m.tag.invoice)
+    byInvoice.set(m.tag.invoice, { ...m, shortPaid: Boolean(prev?.shortPaid || m.tag.type === 'invoice_partial') })
+  }
+  const pays = [...byInvoice.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
   const reminders = memories.filter((m) => m.tag?.type === 'reminder_sent')
   const preferences = memories.filter((m) => m.tag?.type === 'preference')
   const notes = memories.filter((m) => m.tag?.type === 'note')
@@ -90,7 +125,7 @@ export function computeProfile(clientId, memories) {
   const score = (s) => (s.hits + 1) / (s.total + 2)
   const bestTone = TONES.reduce((best, t) => (score(toneStats[t]) > score(toneStats[best]) ? t : best), 'friendly')
 
-  const underpays = pays.filter((p) => p.tag.type === 'invoice_partial').length
+  const underpays = pays.filter((p) => p.shortPaid).length
   const underpayRate = pays.length ? Math.round((underpays / pays.length) * 1000) / 10 : 0
   const remindersNeeded = pays.length ? Math.round((pays.reduce((s, p) => s + Number(p.tag.reminders || 0), 0) / pays.length) * 10) / 10 : 0
 

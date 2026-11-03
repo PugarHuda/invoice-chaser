@@ -186,6 +186,13 @@ export async function estimateFee(bytesB64) {
   return { mist: mist.toString(), sui: Number(mist) / 1e9 }
 }
 
+// SuiNS forward lookup (name.sui -> address) through Tatum's NameService.
+export async function resolveSuins(name) {
+  await throttle()
+  const { response } = await once(() => sui().nameService.lookupName({ name }))
+  return response.record?.targetAddress || null
+}
+
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{64}$/
 export const DIGEST_RE = /^[1-9A-HJ-NP-Za-km-z]{43,44}$/ // base58, 32 bytes
 

@@ -13,8 +13,9 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 
 1. **Issue a USDC invoice** and send the client a **pay link** (`/?pay=<invoice>`): a payer-only page with a real `sui:pay` QR code (Sui Payment Kit URI) that shows nothing about how you see them.
 2. **Get paid on Sui Mainnet through the Sui Payment Kit**: the client scans the QR, clicks *Connect Sui wallet & pay* (the registry payment is built server-side through Tatum), or pays manually and pastes the digest. Payments go through the shared Payment Kit **registry with nonce = invoice id**, so the chain itself refuses a second payment for the same invoice, and the app finds the payment by invoice without anyone reporting a digest (`/sync-payments`). Every path is verified through **Tatum's gRPC gateway** (`balance_changes`) and settles the invoice as paid or partial; the payer's wallet (and SuiNS name) is remembered, and a payment from a wallet this client never used before is flagged.
-3. **Remember everything in Walrus Memory**: invoices, reminders (with tone), payments (delay, amount, payer), your own rules ("never chase Acme before the 10th"), and facts that Walrus `analyze()` extracts from a pasted client email ("we only pay on Thursdays, never before the 15th").
-4. **Plan the next reminder from memory**: predicted pay date (EWMA of past delays), the tone that actually worked for this client, your hard rules. A **"Why?" panel** cites the exact memories behind the decision (each linked to its Walrus blob), every logged reminder stores which memories its plan cited, and an **"Ignore memory"** switch shows what a memory-less tool would do.
+3. **Partial payments, payer checks**: a short payment leaves a remaining balance; the pay page, x402 terms and registry lookup then ask for exactly what's still owed. Each client can have an expected payer wallet (0x… or a **SuiNS** name resolved through Tatum); payments from any other wallet are flagged, and every payer is screened with **Tatum's Malicious Address API** ("clean" = not in Tatum's scam feeds).
+4. **Remember everything in Walrus Memory**: invoices, reminders (with tone), payments (delay, amount, payer), your own rules ("never chase Acme before the 10th"), and facts that Walrus `analyze()` extracts from a pasted client email ("we only pay on Thursdays, never before the 15th").
+5. **Plan the next reminder from memory**: predicted pay date (EWMA of past delays), the tone that actually worked for this client, your hard rules. A **"Why?" panel** cites the exact memories behind the decision (each linked to its Walrus blob), every logged reminder stores which memories its plan cited, and an **"Ignore memory"** switch shows what a memory-less tool would do.
 
 ## How it learned (same invoice, two plans)
 
@@ -23,6 +24,8 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 | First reminder | 6 Nov, friendly | **9 Nov, formal** |
 | Predicted payment | — | **10 Nov** (EWMA of 4 paid invoices: +4, +6, +5, +5 days) |
 | Why | default schedule | formal reminders were followed by payment within 3 days 4/4 times; friendly 1/3 |
+
+The Today page shows the same evidence for the whole book: mean prediction error on each client's first invoice vs their latest. CSV export (`/api/chaser/export.csv`) carries every invoice with its on-chain receipt.
 
 Prediction error for Acme, invoice by invoice: **4 → 2 → 0 → 0 days** (`computeProfile().history`, covered by tests).
 
@@ -87,7 +90,10 @@ AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-
 3. the registry **rejects a second payment** for the same invoice;
 4. a payment nobody reported is found through the registry and settled automatically;
 5. replaying a used digest on another invoice is rejected; malformed input is rejected;
-6. the payment memory records the payer wallet and channel.
+6. the payment memory records the payer wallet and channel;
+7. a partial payment leaves a remaining balance and the pay page asks only for that;
+8. the remaining balance, paid through the registry, auto-settles the invoice;
+9. a payment from a wallet other than the client's expected payer is flagged, and the payer is screened by Tatum.
 
 ```bash
 SUI_NETWORK=testnet MEMWAL_NS_PREFIX=ic:test: PORT=3088 node --env-file=.env.local server/index.mjs

@@ -173,6 +173,16 @@ export default function App() {
   const [qr, setQr] = useState<string>('');
   const [noteText, setNoteText] = useState<string>('');
   const [noteBusy, setNoteBusy] = useState<boolean>(false);
+  const [payerInput, setPayerInput] = useState<string>('');
+  const handleSetPayer = async () => {
+    const r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: payerInput }) });
+    const d = await r.json();
+    if (!r.ok) return showToast(d.error || 'Could not set payer');
+    showToast(`Payer set: ${d.name ? `${d.name} → ` : ''}${d.address.slice(0, 10)}… · Tatum screening: ${d.screen?.verdict ?? 'unavailable'}`);
+    setPayerInput('');
+    fetchClientDetail(selectedClientId);
+    fetchClients();
+  };
   const [memQuery, setMemQuery] = useState<string>('');
   const [memHits, setMemHits] = useState<any[] | null>(null);
   const [memBusy, setMemBusy] = useState<boolean>(false);
@@ -604,14 +614,14 @@ export default function App() {
 
               <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
                 <div className="flex items-center justify-between text-tertiary mb-xs">
-                  <span className="text-sm">Walrus Memory Namespaces</span>
+                  <span className="text-sm">Prediction error (learned from memory)</span>
                   <Brain className="w-4 h-4 text-fg-brand-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {summary ? summary.activeClientNamespaces : 4} Active
+                  {(summary as any)?.learning ? <>{(summary as any).learning.firstError}d → {(summary as any).learning.latestError}d</> : '—'}
                 </div>
                 <div className="text-xs text-secondary mt-xs flex items-center gap-xxs">
-                  <span>Client-isolated memory graphs</span>
+                  <span>{(summary as any)?.learning ? `first invoice vs latest, ${(summary as any).learning.clients} client(s), ${(summary as any).learning.predictions} predictions` : 'appears once a client has 2 paid invoices'}</span>
                 </div>
               </section>
             </div>
@@ -877,6 +887,19 @@ export default function App() {
                       <p className="text-xs text-tertiary">Saves hard preference constraints directly to Walrus Memory.</p>
                     </div>
 
+                    {/* Expected payer wallet: 0x… or a SuiNS name, resolved and screened through Tatum */}
+                    <div className="flex flex-col gap-sm pt-xs">
+                      <label className="text-sm font-medium text-secondary flex items-center gap-xs">
+                        <ShieldCheck className="w-3.5 h-3.5 text-fg-brand-primary" />
+                        <span>Wallet this client pays from {(clientDetail.client as any).expectedPayer ? <span className="font-mono text-xs text-tertiary">({(clientDetail.client as any).expectedPayer.name || (clientDetail.client as any).expectedPayer.address.slice(0, 12) + '…'})</span> : null}</span>
+                      </label>
+                      <div className="flex gap-sm">
+                        <input value={payerInput} onChange={(e) => setPayerInput(e.target.value)} placeholder="0x… or name.sui" aria-label="Expected payer wallet" className="flex-1 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                        <button onClick={handleSetPayer} className="rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Set payer</button>
+                      </div>
+                      <p className="text-xs text-tertiary">SuiNS names resolve through Tatum; the wallet is screened with Tatum's Malicious Address API. Payments from any other wallet are flagged.</p>
+                    </div>
+
                     {/* Free-form notes -> Walrus Memory analyze() */}
                     <div className="flex flex-col gap-sm pt-xs">
                       <label className="text-sm font-medium text-secondary flex items-center gap-xs">
@@ -978,7 +1001,7 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1>
+                <h1 className="text-heading-lg font-semibold text-primary flex items-center gap-md">Invoice Detail <a href="/api/chaser/export.csv" className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a></h1>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>
@@ -1050,7 +1073,7 @@ export default function App() {
                     </div>
 
                     <div>
-                      <span className="text-xs text-tertiary">Unique Payable Amount (6 decimals)</span>
+                      <span className="text-xs text-tertiary">{invoiceDetail.invoice.status === 'partial' ? `Still owed (partially paid)` : 'Unique Payable Amount (6 decimals)'}</span>
                       <div className="mt-xs text-heading-md font-semibold text-primary">
                         {invoiceDetail.invoice.payAmount} <span className="text-xs font-normal text-secondary">USDC</span>
                       </div>
@@ -1271,7 +1294,7 @@ export default function App() {
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
               {/* Amount Display */}
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
-                <span className="text-xs text-tertiary font-medium">Payable Amount (Unique Micro-Suffix)</span>
+                <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${(invoiceDetail.invoice as any).originalAmount} USDC)` : 'Payable Amount (Unique Micro-Suffix)'}</span>
                 <div className="mt-xs text-heading-xl font-semibold text-primary">
                   {invoiceDetail?.invoice.payAmount ?? '—'}{' '}
                   <span className="text-sm font-normal text-secondary">USDC</span>

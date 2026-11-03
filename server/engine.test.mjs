@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay } from './engine.mjs'
+import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -78,6 +78,34 @@ test('state is derived from memories (total recall)', () => {
   ]]])
   const { usedDigests } = deriveState(s2)
   assert.ok(usedDigests.has('D1') && usedDigests.has('D2'))
+})
+
+test('partial payments accumulate into a remaining balance, then paid', () => {
+  const s = new Map([['n', [
+    mem('2026-10-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i9', base: 100, pay_amount: '100.004000', due: '2026-10-05' }),
+    mem('2026-10-06T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i9', received: '90.000000', digest: 'A' }),
+  ]]])
+  let inv = deriveState(s).invoices[0]
+  assert.equal(inv.status, 'partial')
+  assert.equal(inv.remaining, '10.004000')
+  s.get('n').push(mem('2026-10-08T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i9', received: '10.004000', digest: 'B' }))
+  inv = deriveState(s).invoices[0]
+  assert.equal(inv.status, 'paid')
+  assert.equal(inv.payments.length, 2)
+  assert.doesNotThrow(() => JSON.stringify(inv))
+  // the same payment memory loaded twice (local copy + recalled twin) must not double-count
+  s.get('n').push(mem('2026-10-08T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i9', received: '10.004000', digest: 'B' }))
+  assert.equal(deriveState(s).invoices[0].payments.length, 2)
+  // the profile sees ONE paid invoice (short-paid at first), not two
+  const prof = computeProfile('g', s.get('n').map((m) => ({ ...m, tag: { ...m.tag, delay_days: 1, paid: m.timestamp.slice(0, 10) } })))
+  assert.equal(prof.totalPaidInvoices, 1)
+  assert.equal(prof.history.length, 1)
+  assert.equal(prof.underpayRate, 100)
+})
+
+test('learning summary: error on first prediction vs latest', () => {
+  const l = learningSummary([computeProfile('acme', acme)])
+  assert.deepEqual(l, { clients: 1, firstError: 5, latestError: 0, predictions: 3 })
 })
 
 test('encoding round-trips and amounts are exact', () => {
