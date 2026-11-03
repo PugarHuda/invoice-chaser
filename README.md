@@ -81,6 +81,16 @@ The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` an
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
 ```
 
+## Use the memory from Claude / Cursor (MCP)
+
+Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): any agent can ask what it has learned.
+
+```bash
+claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp
+```
+
+Tools: `list_open_invoices`, `client_profile`, `plan_reminder`, `search_client_memory` (Walrus recall), `payment_terms` (x402 + Payment Kit + `sui:pay`), `learning_summary`. `node scripts/mcp-smoke.mjs <base-url>` exercises all of them with the official MCP client.
+
 ## Tested end to end on Sui Testnet
 
 `SUI_NETWORK=testnet` switches the Tatum gateway, the USDC type (Circle testnet USDC) and the Payment Kit package; `MEMWAL_NS_PREFIX=ic:test:` keeps test memories out of the demo. [`scripts/e2e-testnet.mjs`](scripts/e2e-testnet.mjs) runs against a live server and checks, on-chain:

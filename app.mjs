@@ -27,6 +27,9 @@ app.get('/llms.txt', (req, res) => {
 - Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
 - [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
 
+## MCP
+- [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, learning_summary)
+
 ## Docs
 - [README](https://github.com/PugarHuda/invoice-chaser/blob/main/README.md): how it uses Walrus Memory, Tatum and Sui Payment Kit
 - [Live proof](${base}/api/chaser/proof): current Sui checkpoint via Tatum, memory counts from the Walrus relayer

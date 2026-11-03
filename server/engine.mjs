@@ -54,6 +54,7 @@ export function deriveState(store) {
         partialAmount: null,
         reminders: 0,
         createdAt: m.timestamp,
+        seed: Boolean(t.seed), // demo history: a seeded short payment is closed history, not an open debt
       })
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
       invoices.get(t.invoice).reminders++

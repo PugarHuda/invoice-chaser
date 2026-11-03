@@ -4,6 +4,7 @@ import * as mem from '../memory.mjs'
 import * as sui from '../sui.mjs'
 import { usdRate } from '../rates.mjs'
 import { screenAddress } from '../security.mjs'
+import { mcpHandler } from '../mcp.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
 
 const router = Router()
@@ -16,16 +17,16 @@ router.use(async (_req, _res, next) => {
   next()
 })
 
-const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/sync-payments'])
+const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/sync-payments', '/mcp'])
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
 const buckets = new Map()
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => req.method === 'GET' && /^\/clients\/[^/]+\/search$/.test(req.path)
+const isExpensiveRead = (req) => (req.method === 'GET' && /^\/clients\/[^/]+\/search$/.test(req.path)) || req.path === '/mcp'
 router.use((req, res, next) => {
-  const isPayment = PUBLIC_WRITES.has(req.path) || req.path.startsWith('/x402/')
+  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/')
   const expensive = isExpensiveRead(req)
   if (req.method === 'GET' && !isPayment && !expensive) return next()
   const kind = isPayment ? 'payment' : expensive ? 'expensive' : 'write'
@@ -376,7 +377,7 @@ router.post('/verify-payment', async (req, res) => {
 let lastSync = 0
 let syncing = null
 async function syncPayments() {
-  const open = state().invoices.filter((i) => i.status === 'sent' || i.status === 'partial')
+  const open = state().invoices.filter((i) => i.status === 'sent' || (i.status === 'partial' && !i.seed))
   const settled = []
   for (const inv of open) {
     const digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(owed(inv)), inv.id)
@@ -429,6 +430,19 @@ router.get('/x402/:id', async (req, res) => {
   if (code === 200) res.set('X-PAYMENT-RESPONSE', Buffer.from(JSON.stringify({ success: true, transaction: inv.digest || payment, network: `sui:${sui.NETWORK}` })).toString('base64'))
   res.status(code).json(body)
 })
+
+// MCP (Streamable HTTP, stateless): read-only tools over the learned memory for Claude/Cursor/agents.
+router.post('/mcp', mcpHandler((req) => ({
+  state,
+  profileOf,
+  plan,
+  owed,
+  search: (clientId, q) => mem.search(mem.clientNs(clientId), q, 5),
+  terms: (inv) => paymentTerms(req, inv),
+  learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
+  baseUrl: `${req.protocol}://${req.get('host')}`,
+})))
+router.all('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'MCP endpoint: POST JSON-RPC (Streamable HTTP, stateless)' }))
 
 // Payer-facing: build the Payment Kit registry payment for the payer's wallet to sign.
 router.post('/pay-tx', async (req, res) => {
