@@ -265,6 +265,7 @@ router.get('/pay/:id', (req, res) => {
       payeeAddress: PAYEE(), coinType: sui.USDC_COIN_TYPE, network: sui.NETWORK, registry: sui.REGISTRY_NAME,
       paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
       explorerTx: i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : null,
+      receipt: receiptOf(i),
     },
   })
 })

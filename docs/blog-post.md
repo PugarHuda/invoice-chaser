@@ -82,6 +82,10 @@ On Sui Mainnet, an agent asked for invoice `inv-mvzyioev`, got `402 Payment Requ
 
 The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude tools like `client_profile`, `plan_reminder` and `search_client_memory` over the same Walrus memories.
 
+## Receipts that outlive the app
+
+When an invoice is paid, the app can render a PDF receipt and store it on Walrus as a blob for a year, then remember the blob id in the client's memory. The payer gets the same link on their pay page. [Here is one from Mainnet](https://aggregator.walrus-mainnet.walrus.space/v1/blobs/maCqeFY1G5eSVx_ji5zrqXM308rCMUMY-nGWqBMNNPM). The UI itself is also published as a Walrus Site.
+
 ## Starting with Tatum AI Builder
 
 The first version came from one prompt in [Tatum AI Builder](https://ai.tatum.io) (the prompt is in the repo, the generated commit is tagged `ai-builder-v0`). It produced a clean UI with all five screens and a sensible profile algorithm. The backend was a mock: in-memory data, fake memories, a simulated wallet payment, and a QR code that was just an icon. I kept the UI and replaced every mock with the real thing: Tatum gRPC, Walrus Memory, Sui Payment Kit, and a payment check that can say no.

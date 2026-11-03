@@ -1124,11 +1124,13 @@ export default function App() {
                     </div>
 
                     <div className="border-t border-secondary pt-md space-y-sm">
-                      <div className="p-md bg-secondary rounded-lg border border-secondary flex flex-col items-center justify-center text-center">
-                        {qr ? <img src={qr} alt="Sui Payment Kit QR code for this invoice" className="w-40 h-40 mb-xs" /> : <QrCode className="w-24 h-24 text-primary mb-xs" />}
-                        <span className="text-xs font-medium text-primary">Scan with a Sui wallet</span>
-                        <span className="text-xs text-secondary">{netLabel} · Payment Kit registry</span>
-                      </div>
+                      {invoiceDetail.invoice.status !== 'paid' && (
+                        <div className="p-md bg-secondary rounded-lg border border-secondary flex flex-col items-center justify-center text-center">
+                          {qr ? <img src={qr} alt="Sui Payment Kit QR code for this invoice" className="w-40 h-40 mb-xs" /> : <QrCode className="w-24 h-24 text-primary mb-xs" />}
+                          <span className="text-xs font-medium text-primary">Scan with a Sui wallet</span>
+                          <span className="text-xs text-secondary">{netLabel} · Payment Kit registry</span>
+                        </div>
+                      )}
 
                       <button
                         onClick={() => setActiveTab('pay')}
@@ -1318,7 +1320,7 @@ export default function App() {
               <p className="text-xs text-secondary">{invoiceDetail ? `${invoiceDetail.invoice.clientName} · due ${invoiceDetail.invoice.dueDate} · ` : ''}Pay in USDC on {netLabel}</p>
               {invoiceDetail?.invoice.status === 'paid' && (
                 <p className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-sm font-semibold text-utility-success-700">
-                  <Check className="w-4 h-4" /> Paid · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">receipt</a>}
+                  <Check className="w-4 h-4" /> Paid · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
                 </p>
               )}
             </div>

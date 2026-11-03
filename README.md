@@ -90,6 +90,17 @@ AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-
 
 Both payments are now memories in Delta Studio's Walrus namespace (`ic:main:client:c4`), visible in the app's timeline with links to their blobs.
 
+## Beyond memory: Walrus storage and Walrus Sites
+
+- **PDF receipts on Walrus.** A paid invoice gets a "Store PDF receipt on Walrus" button: the server renders the receipt (pdf-lib, every payment with its Suiscan link), stores it as a non-deletable blob for 26 epochs (~1 year) through the Mysten upload relay, and remembers the blob id in the client's Walrus Memory namespace, so a Total Recall rebuild finds it again. The payer sees the same link on the public pay page. Example on Mainnet: [receipt for inv-mvzyioev](https://aggregator.walrus-mainnet.walrus.space/v1/blobs/maCqeFY1G5eSVx_ji5zrqXM308rCMUMY-nGWqBMNNPM). A dedicated storage wallet (`WALRUS_STORAGE_KEY`) pays in WAL; it was funded by swapping SUI -> WAL through the Cetus aggregator.
+- **The UI is also a Walrus Site.** The same React build (with `VITE_API_BASE` pointing at the API) is published with `site-builder` on Mainnet: site object `0x980e107e8226a9229fafb1b6cfb1378bc7dcf9fe409a69125cbf6f8ab9e569d0`. The API allows `*.wal.app` origins.
+
+## Reminders, calendar and automation
+
+- **Reminder drafts from memory (Vercel AI Gateway).** The engine picks tone and date; an LLM (`anthropic/claude-haiku-5.5`, OIDC auth on Vercel) writes the words from the memories the plan cited. It only writes prose around placeholders; the server inserts the invoice id, amount, due date and pay link, and rejects any draft containing a link, number or address. Without gateway access it falls back to a template and says so.
+- **Calendar.** `GET /api/chaser/reminders.ics` exports every open invoice's memory-driven plan (Acme's reminders land after the 10th because of its rule).
+- **Daily cron.** Vercel Cron calls `/api/chaser/cron/sync` (guarded by `CRON_SECRET`) to settle Payment Kit payments nobody reported.
+
 ## Use the memory from Claude / Cursor (MCP)
 
 Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): any agent can ask what it has learned.
@@ -171,6 +182,8 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 ## Known limits
 
 - Reminders are drafted, logged and opened in your email app (`mailto:` with the pay link); the app does not send email itself.
+- The Walrus Site needs a SuiNS name to be reachable at `<name>.wal.app`; until then it is on-chain but only browsable through a self-hosted portal.
+- Receipt de-duplication is per instance plus the memory check; two instances storing the same receipt at the same moment could write two blobs (same content).
 - Rules are parsed from the sentence (yours, or a fact extracted by Walrus `analyze()`) with a small rule set: day-of-month, pay weekdays, skip weekdays, weekends, tone.
 - Recall caps at 100 memories per namespace, which is plenty for one client but would need paging for heavy users.
 - The default relayer sees memory plaintext (it does encryption and embeddings). Memories hold client aliases and amounts only, no emails. `MemWalManual` would keep plaintext client-side.
