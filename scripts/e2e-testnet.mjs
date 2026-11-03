@@ -105,4 +105,17 @@ assert.equal(v5[0], 200, JSON.stringify(v5[1]))
 assert.equal(v5[1].unexpectedPayer, true)
 assert.equal(v5[1].payerScreen?.verdict, 'clean')
 ok('payment from a wallet other than the expected payer is flagged; payer screened by Tatum (clean)')
+// (i) a Payment Kit payment made for one invoice cannot be pasted to settle another
+const mk = (d) => api('/invoices', { method: 'POST', body: JSON.stringify({ clientId: paid.invoice.clientId, amount: 0.02, dueDate: paid.invoice.dueDate, description: d }) })
+const [, x] = await mk('misattribution X')
+const [, y] = await mk('misattribution Y')
+const bx = await buildInvoicePayment(me, paid.invoice.payeeAddress, toMicro(x.invoice.payAmount), x.invoice.id)
+const { signature: sx } = await kp.signTransaction(Buffer.from(bx, 'base64'))
+const ex = await executeSigned(bx, sx)
+const dx = ex?.Transaction?.digest || ex?.transaction?.digest || ex?.digest
+let c6, b6
+for (let i = 0; i < 8; i++) { await sleep(3000); [c6, b6] = await api('/verify-payment', { method: 'POST', body: JSON.stringify({ invoiceId: y.invoice.id, digest: dx }) }); if (c6 !== 404) break }
+assert.equal(c6, 409, JSON.stringify(b6))
+assert.match(b6.error, /different invoice/)
+ok(`another invoice's Payment Kit payment is rejected: ${b6.error}`)
 console.log('all testnet e2e checks passed')

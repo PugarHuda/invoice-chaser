@@ -93,7 +93,8 @@ AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-
 6. the payment memory records the payer wallet and channel;
 7. a partial payment leaves a remaining balance and the pay page asks only for that;
 8. the remaining balance, paid through the registry, auto-settles the invoice;
-9. a payment from a wallet other than the client's expected payer is flagged, and the payer is screened by Tatum.
+9. a payment from a wallet other than the client's expected payer is flagged, and the payer is screened by Tatum;
+10. a Payment Kit payment made for one invoice cannot be used to settle another (nonce bound through the registry).
 
 ```bash
 SUI_NETWORK=testnet MEMWAL_NS_PREFIX=ic:test: PORT=3088 node --env-file=.env.local server/index.mjs

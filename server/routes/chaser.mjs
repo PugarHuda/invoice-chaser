@@ -321,8 +321,15 @@ async function settleDigest(invoiceId, requested, channel) {
     if (tx.timestamp && tx.timestamp < inv.createdAt) return [400, { error: 'Transaction is older than the invoice' }]
     const expected = sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
     // A transfer that exactly matches another open invoice's unique amount belongs to that one.
-    const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && sui.toMicro(i.payAmount) === tx.received)
-    if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
+    // A Payment Kit payment names its invoice (nonce): it must be THIS invoice's registry record.
+    if (tx.paymentKit) {
+      const bound = await sui.findInvoicePayment(PAYEE(), tx.received, inv.id).catch(() => null)
+      if (bound !== digest) return [409, { error: `This Payment Kit payment was made for a different invoice, not ${inv.id}` }]
+    } else {
+      // Plain transfer: the unique amount is the fingerprint, including what's left on partially paid invoices.
+      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || sui.toMicro(owed(i)) === tx.received))
+      if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
+    }
 
     const full = tx.received >= expected
     const totalReceived = sui.toMicro(inv.payAmount) - expected + tx.received

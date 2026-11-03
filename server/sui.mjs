@@ -84,7 +84,7 @@ export async function usdcReceived(digest, payee) {
   await throttle()
   const { response } = await once(() => sui().ledgerService.getTransaction({
     digest,
-    readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint', 'timestamp'] },
+    readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint', 'timestamp', 'events'] },
   }))
   const tx = json(response.transaction)
   const ok = tx?.effects?.status?.success === true
@@ -92,7 +92,9 @@ export async function usdcReceived(digest, payee) {
     .filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE)
     .reduce((sum, c) => sum + BigInt(c.amount), 0n)
   const ts = tx?.timestamp ? new Date(Number(tx.timestamp.seconds) * 1000).toISOString() : null
-  return { ok, received, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
+  // did this transaction go through the Sui Payment Kit (any payment_kit event)?
+  const paymentKit = (tx?.events?.events || []).some((e) => /::payment_kit::/.test(e.eventType || ''))
+  return { ok, received, paymentKit, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
 }
 
 const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')
