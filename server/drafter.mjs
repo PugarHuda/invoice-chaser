@@ -12,7 +12,11 @@ const TEMPLATES = {
   firm: '{{CLIENT}}, invoice {{INVOICE}} ({{AMOUNT}} USDC) is now significantly overdue. Please settle it within two business days.\nPay here: {{LINK}}',
 }
 
-const fill = (tpl, v) => tpl.replaceAll('{{CLIENT}}', v.client).replaceAll('{{INVOICE}}', v.invoice.id).replaceAll('{{AMOUNT}}', v.invoice.owed).replaceAll('{{DUE}}', v.invoice.dueDate).replaceAll('{{LINK}}', v.payLink)
+// one pass with a function replacer: substituted values are never re-scanned (no {{..}} re-expansion, no $& patterns)
+const fill = (tpl, v) => {
+  const map = { CLIENT: v.client, INVOICE: v.invoice.id, AMOUNT: v.invoice.owed, DUE: v.invoice.dueDate, LINK: v.payLink }
+  return tpl.replace(/\{\{(CLIENT|INVOICE|AMOUNT|DUE|LINK)\}\}/g, (_, k) => map[k])
+}
 // Only behavioural facts reach the model: no wallets, digests, screening verdicts or amounts.
 const safeFacts = (facts) => facts.filter((f) => !/0x[0-9a-f]{6,}|flagged|screen|wallet|digest/i.test(f)).map((f) => f.replace(/[\d.,]+\s*USDC/g, 'an amount')).slice(0, 8)
 
@@ -37,9 +41,9 @@ export async function draftReminder(input) {
     })
     const draft = text.trim()
     if (!SLOTS.every((s) => draft.split(s).length === 2)) return fallback('model did not use every placeholder exactly once')
-    const prose = SLOTS.reduce((t, s) => t.replaceAll(s, ''), draft)
+    const prose = [...SLOTS, '{{CLIENT}}'].reduce((t, s) => t.replaceAll(s, ''), draft)
     if (/https?:|www\.|\d|0x|@/i.test(prose)) return fallback('model output contained a link, number or address')
-    return { text: fill(draft.replaceAll('{{CLIENT}}', input.client), input), source: 'llm', model: MODEL, usage }
+    return { text: fill(draft, input), source: 'llm', model: MODEL, usage }
   } catch (e) {
     return fallback(`AI Gateway: ${e.message}`)
   }
