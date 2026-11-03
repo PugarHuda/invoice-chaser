@@ -10,7 +10,7 @@ Every freelancer has a client like Acme. The invoice is due on the 5th, nothing 
 I built **Invoice Chaser** for the Total Recall hackathon (Tatum × Walrus Memory) to fix exactly that. It's an invoice tracker for freelancers who get paid in USDC on Sui, and it remembers how each client pays.
 
 - Live demo: https://invoice-chaser-sigma.vercel.app
-- Video (2:30): TODO
+- Video (2:50): TODO
 - Code: https://github.com/PugarHuda/invoice-chaser
 
 ## What it does
@@ -73,6 +73,14 @@ Every invoice is also an HTTP resource. An accounts-payable agent that requests 
 ## Tested on testnet first
 
 The same code runs against Sui Testnet with one env var (Tatum's testnet gateway, Circle testnet USDC, testnet Payment Kit) and a separate memory namespace. An end-to-end script pays a real invoice as an x402 agent, then checks on-chain that a second payment is rejected, that an unreported payment is found and settled automatically, and that a replayed transaction is refused. All six checks pass.
+
+## Then on Mainnet
+
+On Sui Mainnet, an agent asked for invoice `inv-mvzyioev`, got `402 Payment Required`, noticed it held no USDC, swapped just enough SUI through the Cetus aggregator, paid through the Payment Kit registry and got its receipt ([payment](https://suiscan.xyz/mainnet/tx/4BTevagvT34X166FBGsqj9tQSxisY1PDGwXXtrxLSC3z)). A second invoice was paid through the registry and nobody told the app; the production server found it by invoice nonce and settled it ([payment](https://suiscan.xyz/mainnet/tx/G5r8eC1hwTkrj4Dg7FFWTcP1P5LTJaRn8FvGUx7WbAJP)). Delta Studio, a client with no history that morning, now has two remembered on-time payments, and its profile changed accordingly.
+
+## Agents can read the memory too (MCP)
+
+The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude tools like `client_profile`, `plan_reminder` and `search_client_memory` over the same Walrus memories.
 
 ## Starting with Tatum AI Builder
 
