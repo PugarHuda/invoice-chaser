@@ -168,6 +168,7 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   const [newInvoice, setNewInvoice] = useState({ clientId: 'c4', amount: '0.05', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '' });
   const [reminderText, setReminderText] = useState<string>('');
+  const [reminderSource, setReminderSource] = useState<string>('');
   const [newClientName, setNewClientName] = useState<string>('');
   const [walletBusy, setWalletBusy] = useState<string | null>(null);
   const [qr, setQr] = useState<string>('');
@@ -501,6 +502,7 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) return showToast(data.error || 'Could not log reminder');
       setReminderText(data.text);
+      setReminderSource(data.draftedBy === 'llm' ? `Drafted by ${data.model} via Vercel AI Gateway from this client's memories` : `Template (AI drafting unavailable${data.fallbackReason ? `: ${String(data.fallbackReason).replace(/\[[0-9;]*m/g, '').split('.')[0]}` : ''})`);
       navigator.clipboard?.writeText(data.text);
       showToast('Reminder copied and saved to Walrus Memory');
       fetchInvoiceDetail(selectedInvoiceId);
@@ -1235,7 +1237,8 @@ export default function App() {
                         </div>
                         {reminderText && (
                           <div className="text-xs text-secondary bg-secondary rounded-lg border border-secondary p-md space-y-xs">
-                            <p>{reminderText}</p>
+                            <p className="whitespace-pre-line">{reminderText}</p>
+                            {reminderSource && <p className="text-tertiary italic">{reminderSource}</p>}
                             <a href={`mailto:?subject=${encodeURIComponent(`Invoice ${invoiceDetail.invoice.id}`)}&body=${encodeURIComponent(`${reminderText}\n\nPay here: ${window.location.origin}/?pay=${invoiceDetail.invoice.id}`)}`} className="inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline">
                               Open in your email app <ExternalLink className="w-3 h-3" />
                             </a>

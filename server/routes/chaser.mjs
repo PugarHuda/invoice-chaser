@@ -5,6 +5,7 @@ import * as sui from '../sui.mjs'
 import { usdRate } from '../rates.mjs'
 import { screenAddress } from '../security.mjs'
 import { mcpHandler } from '../mcp.mjs'
+import { draftReminder } from '../drafter.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
 
 const router = Router()
@@ -266,12 +267,7 @@ router.get('/invoices/:id', (req, res) => {
   })
 })
 
-const TEMPLATES = {
-  friendly: (n, inv) => `Hi ${n}, just a friendly reminder that invoice ${inv.id} (${inv.payAmount} USDC) was due on ${inv.dueDate}. Thanks!`,
-  formal: (n, inv) => `Dear ${n}, our records show invoice ${inv.id} for ${inv.payAmount} USDC, due ${inv.dueDate}, is outstanding. Kindly arrange payment at your earliest convenience.`,
-  firm: (n, inv) => `${n}, invoice ${inv.id} (${inv.payAmount} USDC) is now significantly overdue. Please settle it within 2 business days.`,
-}
-router.post('/invoices/:id/remind', (req, res) => {
+router.post('/invoices/:id/remind', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
@@ -279,8 +275,16 @@ router.post('/invoices/:id/remind', (req, res) => {
   const tone = ['friendly', 'formal', 'firm'].includes(req.body?.tone) ? req.body.tone : p.steps[0].tone
   const name = clientName(clients, inv.clientId)
   const offset = Math.round((Date.now() - new Date(`${inv.dueDate}T00:00:00Z`)) / DAY)
-  const m = mem.remember(mem.clientNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean) })
-  res.json({ text: TEMPLATES[tone](name, inv), memory: m })
+  // the LLM writes the words; tone, amount, dates and the facts it may use come from the engine + Walrus
+  const draft = await draftReminder({
+    client: name,
+    tone,
+    invoice: { id: inv.id, owed: owed(inv), dueDate: inv.dueDate, description: inv.description },
+    payLink: `${req.protocol}://${req.get('host')}/?pay=${inv.id}`,
+    facts: (p.cites || []).map((c) => c.sentence),
+  })
+  const m = mem.remember(mem.clientNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean), drafted_by: draft.source === 'llm' ? draft.model : 'template' })
+  res.json({ text: draft.text, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
 })
 
 // ---- Payments ------------------------------------------------------------------------------
