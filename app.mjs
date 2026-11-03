@@ -43,8 +43,15 @@ app.use('/api/chaser', chaserRoutes)
 // Production UI (vite build -> public/). In dev, server/index.mjs serves it through Vite instead.
 const dist = path.join(process.cwd(), 'public')
 if (fs.existsSync(path.join(dist, 'index.html'))) {
+  // hashed assets never change; a missing one is a 404 (never index.html served as JavaScript)
+  app.use('/assets', express.static(path.join(dist, 'assets'), { immutable: true, maxAge: '1y', fallthrough: false }))
   app.use(express.static(dist, { index: false, maxAge: '1h' }))
-  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(dist, 'index.html')))
+  // index.html must never be revalidated into a stale copy: bundle files can share size/mtime across
+  // deploys, so an ETag 304 would keep an old index pointing at assets that no longer exist (blank page)
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.set('Cache-Control', 'no-store')
+    res.sendFile(path.join(dist, 'index.html'), { etag: false, lastModified: false })
+  })
 }
 
 // JSON errors for the API (e.g. malformed request bodies), never an HTML stack page.
