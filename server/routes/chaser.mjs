@@ -164,6 +164,29 @@ router.get('/export.csv', (_req, res) => {
   res.set('Content-Disposition', 'attachment; filename="invoice-chaser.csv"').type('text/csv').send(rows.join('\n'))
 })
 
+// Calendar export of every open invoice's memory-driven reminder plan (RFC 5545, all-day events).
+router.get('/reminders.ics', (req, res) => {
+  const { clients, invoices } = state()
+  const esc = (v) => String(v).replace(/[\\;,]/g, (c) => `\\${c}`).replace(/\r?\n/g, '\\n')
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '')
+  const base = `${req.protocol}://${req.get('host')}`
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Invoice Chaser//EN', 'X-WR-CALNAME:Invoice Chaser reminders']
+  for (const raw of invoices) {
+    const i = withStatus(raw)
+    if (i.status === 'paid' || (i.seed && i.status === 'partial')) continue
+    const name = clientName(clients, i.clientId)
+    for (const st of plan(i, profileOf(i.clientId)).steps) {
+      const day = st.date.replace(/-/g, '')
+      const next = isoDayPlus(st.date, 1).replace(/-/g, '')
+      lines.push('BEGIN:VEVENT', `UID:${i.id}-${day}-${st.tone}@invoice-chaser`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${day}`, `DTEND;VALUE=DATE:${next}`,
+        `SUMMARY:${esc(`Send ${st.tone} reminder to ${name} (${i.id})`)}`, `DESCRIPTION:${esc(`${st.reason}. Owed: ${owed(i)} USDC. Pay link: ${base}/?pay=${i.id}`)}`, `URL:${base}/?pay=${i.id}`, 'END:VEVENT')
+    }
+  }
+  lines.push('END:VCALENDAR')
+  res.set('Content-Disposition', 'attachment; filename="invoice-chaser-reminders.ics"').type('text/calendar').send(lines.join('\r\n') + '\r\n')
+})
+const isoDayPlus = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10)
+
 // Semantic search across a client's memories (Walrus recall ranks by meaning, not keywords).
 router.get('/clients/:id/search', async (req, res) => {
   const q = String(req.query.q || '').trim()
@@ -395,6 +418,17 @@ async function syncPayments() {
 router.post('/sync-payments', async (_req, res) => {
   // ponytail: one sync per instance per 10 s; each open invoice costs one gRPC lookup
   if (Date.now() - lastSync < 10_000 && !syncing) return res.json({ checked: 0, settled: [], cached: true })
+  try {
+    syncing ??= syncPayments().finally(() => (syncing = null))
+    res.json(await syncing)
+  } catch (e) {
+    res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
+  }
+})
+
+// Vercel Cron (daily): settle Payment Kit payments nobody reported. Vercel sends "Bearer $CRON_SECRET".
+router.get('/cron/sync', async (req, res) => {
+  if (!process.env.CRON_SECRET || req.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'cron only' })
   try {
     syncing ??= syncPayments().finally(() => (syncing = null))
     res.json(await syncing)

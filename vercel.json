@@ -6,5 +6,11 @@
     "app.mjs": {
       "includeFiles": "public/**"
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/chaser/cron/sync",
+      "schedule": "0 6 * * *"
+    }
+  ]
 }

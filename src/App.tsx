@@ -1008,7 +1008,7 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <h1 className="text-heading-lg font-semibold text-primary flex items-center gap-md">Invoice Detail <a href="/api/chaser/export.csv" className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a></h1>
+                <h1 className="text-heading-lg font-semibold text-primary flex items-center gap-md">Invoice Detail <a href="/api/chaser/export.csv" className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href="/api/chaser/reminders.ics" className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></h1>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>
