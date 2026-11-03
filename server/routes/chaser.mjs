@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import * as mem from '../memory.mjs'
 import * as sui from '../sui.mjs'
+import { usdRate } from '../rates.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay } from '../engine.mjs'
 
 const router = Router()
@@ -14,6 +15,29 @@ router.use(async (_req, _res, next) => {
 })
 
 const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/sync-payments'])
+
+// Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
+// ponytail: per-instance in-memory buckets; a shared store would make it global across instances
+const buckets = new Map()
+const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000] }
+router.use((req, res, next) => {
+  const isPayment = PUBLIC_WRITES.has(req.path) || req.path.startsWith('/x402/')
+  if (req.method === 'GET' && !isPayment) return next()
+  const kind = isPayment ? 'payment' : 'write'
+  const [max, windowMs] = LIMITS[kind]
+  const ip = (req.get('x-forwarded-for') || req.socket.remoteAddress || '?').split(',')[0].trim()
+  const key = `${kind}:${ip}`
+  const now = Date.now()
+  const b = buckets.get(key)?.reset > now ? buckets.get(key) : { n: 0, reset: now + windowMs }
+  b.n++
+  buckets.set(key, b)
+  if (b.n > max) {
+    res.set('Retry-After', String(Math.ceil((b.reset - now) / 1000)))
+    return res.status(429).json({ error: 'Too many requests from this address; try again later' })
+  }
+  if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k)
+  next()
+})
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
@@ -94,6 +118,19 @@ router.post('/clients/:id/preference', (req, res) => {
   if (!client) return res.status(404).json({ error: 'Client not found' })
   const m = mem.remember(mem.clientNs(client.id), `Rule for ${client.name}: "${note}"`, { type: 'preference', client: client.id, note })
   res.json({ success: true, memory: m, profile: profileOf(client.id) })
+})
+
+// Semantic search across a client's memories (Walrus recall ranks by meaning, not keywords).
+router.get('/clients/:id/search', async (req, res) => {
+  const q = String(req.query.q || '').trim()
+  if (q.length < 2 || q.length > 200) return res.status(400).json({ error: 'query must be 2-200 characters' })
+  const client = state().clients.find((c) => c.id === req.params.id)
+  if (!client) return res.status(404).json({ error: 'Client not found' })
+  try {
+    res.json({ query: q, results: await mem.search(mem.clientNs(client.id), q, 5) })
+  } catch (e) {
+    res.status(502).json({ error: `Walrus Memory recall: ${e.message}` })
+  }
 })
 
 // Free-form notes (an email from the client, a call summary): Walrus Memory's analyze() extracts the
@@ -348,7 +385,10 @@ router.post('/pay-tx', async (req, res) => {
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
   if (sender.toLowerCase() === PAYEE().toLowerCase()) return res.status(400).json({ error: 'Pay from a different wallet than the payee' })
   try {
-    res.json({ bytes: await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(inv.payAmount), inv.id), amount: inv.payAmount, payee: PAYEE(), network: sui.NETWORK })
+    const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(inv.payAmount), inv.id)
+    // simulate through Tatum for the real fee, priced in USD with Tatum's rate API (best effort)
+    const [fee, rate] = await Promise.all([sui.estimateFee(bytes).catch(() => null), usdRate('SUI').catch(() => null)])
+    res.json({ bytes, amount: inv.payAmount, payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
   } catch (e) {
     const msg = e.message || ''
     res.status(400).json({ error: /EDuplicatePayment|duplicate/i.test(msg) ? 'This invoice was already paid on-chain' : /insufficient|balance|coin/i.test(msg) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}… on ${NET}` : `Could not build transaction: ${msg}` })
@@ -373,7 +413,7 @@ router.get('/cron-check', async (_req, res) => {
 })
 
 router.get('/proof', async (_req, res) => {
-  const [cp, bal, h, nss] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts()])
+  const [cp, bal, h, nss, rSui, rUsdc] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC')])
   const counts = nss.status === 'fulfilled' ? nss.value : []
   res.json({
     tatumSuiGrpc: {
@@ -387,6 +427,7 @@ router.get('/proof', async (_req, res) => {
       payeeBalance: bal.status === 'fulfilled' ? `${sui.fromMicro(bal.value)} USDC` : null,
       usdcCoinType: sui.USDC_COIN_TYPE,
       network: sui.NETWORK,
+      rates: { SUI: rSui.status === 'fulfilled' ? rSui.value : null, USDC: rUsdc.status === 'fulfilled' ? rUsdc.value : null, api: 'Tatum Data API /v4/data/rate/symbol' },
       paymentKit: { registry: sui.REGISTRY_NAME, registryId: sui.registryId(), explorer: `${sui.EXPLORER}/object/${sui.registryId()}` },
       errorDetail: [cp, bal].find((x) => x.status === 'rejected')?.reason?.message || null,
     },

@@ -24,7 +24,7 @@ export const EXPLORER = `https://suiscan.xyz/${NETWORK}`
 export const USDC_DECIMALS = 6
 
 let client
-function sui() {
+export function sui() {
   if (!process.env.TATUM_API_KEY) throw new Error('TATUM_API_KEY is not set')
   client ??= new SuiGrpcClient({
     network: NETWORK,
@@ -174,6 +174,16 @@ export async function suinsName(address) {
   } catch {
     return null
   }
+}
+
+// Real network fee for a built transaction: simulate it through Tatum and read the gas used.
+export async function estimateFee(bytesB64) {
+  await throttle()
+  const r = await once(() => sui().core.simulateTransaction({ transaction: Buffer.from(bytesB64, 'base64'), include: { effects: true } }))
+  const g = json(r)?.Transaction?.effects?.gasUsed || json(r)?.transaction?.effects?.gasUsed
+  if (!g) return null
+  const mist = BigInt(g.computationCost) + BigInt(g.storageCost) - BigInt(g.storageRebate)
+  return { mist: mist.toString(), sui: Number(mist) / 1e9 }
 }
 
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{64}$/

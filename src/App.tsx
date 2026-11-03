@@ -173,6 +173,21 @@ export default function App() {
   const [qr, setQr] = useState<string>('');
   const [noteText, setNoteText] = useState<string>('');
   const [noteBusy, setNoteBusy] = useState<boolean>(false);
+  const [memQuery, setMemQuery] = useState<string>('');
+  const [memHits, setMemHits] = useState<any[] | null>(null);
+  const [memBusy, setMemBusy] = useState<boolean>(false);
+  const handleMemorySearch = async () => {
+    if (memQuery.trim().length < 2) return;
+    setMemBusy(true);
+    try {
+      const r = await fetch(`/api/chaser/clients/${selectedClientId}/search?q=${encodeURIComponent(memQuery.trim())}`);
+      const d = await r.json();
+      if (!r.ok) return showToast(d.error || 'Search failed');
+      setMemHits(d.results);
+    } finally {
+      setMemBusy(false);
+    }
+  };
   // Tour targets: the client with the most payment history, and one of its open invoices.
   const tourClient = [...clientsList].sort((a, b) => (b.profile?.totalPaidInvoices ?? 0) - (a.profile?.totalPaidInvoices ?? 0))[0];
   const tourInvoice = allInvoices.find((i) => i.clientId === tourClient?.id && i.status !== 'paid') || allInvoices[0];
@@ -412,7 +427,14 @@ export default function App() {
       const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address }) });
       const built = await r.json();
       if (!r.ok) throw new Error(built.error);
-      setWalletBusy('Approve in your wallet…');
+      const fee = built.fee;
+      setWalletBusy(
+        fee
+          ? fee.sui < 0
+            ? `Approve in your wallet · you get a ${(-fee.sui).toFixed(4)} SUI storage rebate`
+            : `Approve in your wallet · network fee ≈ ${fee.sui.toFixed(4)} SUI${fee.usd != null ? ` ($${fee.usd.toFixed(4)})` : ''}`
+          : 'Approve in your wallet…',
+      );
       const tx = Transaction.from(built.bytes);
       const out = await (wallet.features['sui:signAndExecuteTransaction'] as any).signAndExecuteTransaction({
         transaction: { toJSON: async () => tx.toJSON() },
@@ -885,6 +907,36 @@ export default function App() {
                       <span className="text-xs text-secondary">{clientDetail.memories.length} memories recorded</span>
                     </div>
 
+                    {/* Semantic search over this client's memories (Walrus recall) */}
+                    <div className="mb-lg space-y-sm">
+                      <div className="flex gap-sm">
+                        <input
+                          value={memQuery}
+                          onChange={(e) => setMemQuery(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleMemorySearch(); }}
+                          placeholder='Ask this memory, e.g. "when do they usually pay?" or "what tone works?"'
+                          aria-label="Search this client's memory"
+                          className="flex-1 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                        />
+                        <button onClick={handleMemorySearch} disabled={memBusy} className="rounded-lg border border-primary bg-primary px-md py-xs text-xs font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled">
+                          {memBusy ? 'Recalling…' : 'Recall'}
+                        </button>
+                      </div>
+                      {memHits && (
+                        <div className="rounded-lg border border-utility-brand-200 bg-utility-brand-50 p-md space-y-xs">
+                          <p className="text-xs font-semibold text-utility-brand-700">Walrus recall: closest memories by meaning</p>
+                          {memHits.length === 0 && <p className="text-xs text-tertiary">Nothing relevant remembered yet.</p>}
+                          {memHits.map((h, i) => (
+                            <div key={i} className="text-xs text-secondary flex gap-xs">
+                              <span className="shrink-0 font-mono text-tertiary" title="cosine distance (smaller = closer)">{h.distance.toFixed(2)}</span>
+                              <span className="flex-1">{h.sentence}</span>
+                              <a href={`https://walruscan.com/mainnet/blob/${h.blobId}`} target="_blank" rel="noreferrer" className="shrink-0 text-utility-brand-700 hover:underline">blob</a>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
                     <div className="space-y-md border-l-2 border-secondary ml-xs pl-md">
                       {clientDetail.memories.length > 0 ? (
                         clientDetail.memories.map((mem) => (
@@ -1344,13 +1396,19 @@ export default function App() {
                     <code className="text-primary font-mono text-xs">#{proofData?.tatumSuiGrpc.latestCheckpoint ?? 'loading…'}</code>
                   </div>
                   <div className="flex justify-between py-xxs">
+                    <span className="text-secondary">SUI / USDC in USD (Tatum Data API):</span>
+                    <span className="font-semibold text-primary">
+                      {(proofData as any)?.tatumSuiGrpc.rates?.SUI ? `$${(proofData as any).tatumSuiGrpc.rates.SUI.usd.toFixed(4)} / $${(proofData as any).tatumSuiGrpc.rates.USDC?.usd.toFixed(4)}` : 'loading…'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between py-xxs">
                     <span className="text-secondary">Payee USDC Balance:</span>
                     <span className="font-semibold text-primary">{proofData?.tatumSuiGrpc.payeeBalance ?? 'loading…'}</span>
                   </div>
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">USDC Coin Type:</span>
                     <code className="text-primary font-mono text-xs truncate max-w-[200px]">
-                      {proofData?.tatumSuiGrpc.usdcCoinType || '0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC'}
+                      {proofData?.tatumSuiGrpc.usdcCoinType ?? 'loading…'}
                     </code>
                   </div>
                 </div>

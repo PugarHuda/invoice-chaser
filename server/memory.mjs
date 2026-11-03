@@ -173,6 +173,15 @@ export async function restoreAll() {
   return sum
 }
 
+// Semantic search over one client's memories (Walrus recall: embeddings + cosine distance).
+export async function search(ns, query, limit = 5) {
+  const r = await memwal().recall({ query, namespace: ns, limit })
+  return r.results.map((h) => {
+    const d = decode(h.text) || { sentence: h.text.trim(), tag: { type: 'note' } }
+    return { sentence: d.sentence, type: d.tag?.type, distance: Math.round(h.distance * 1000) / 1000, blobId: h.blob_id, at: d.tag?.at || h.created_at }
+  })
+}
+
 export async function health() {
   const t = Date.now()
   const h = await memwal().health()

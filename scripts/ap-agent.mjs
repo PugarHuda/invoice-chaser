@@ -4,7 +4,8 @@
 // The agent needs a little USDC and SUI (gas) on Mainnet. It refuses anything over AP_MAX_USDC.
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
-import { buildInvoicePayment, buildUsdcTransfer, executeSigned, USDC_COIN_TYPE, NETWORK, EXPLORER, toMicro } from '../server/sui.mjs'
+import { buildInvoicePayment, buildUsdcTransfer, executeSigned, usdcBalance, USDC_COIN_TYPE, NETWORK, EXPLORER, toMicro, fromMicro } from '../server/sui.mjs'
+import { buildSwapSuiForUsdc } from '../server/swap.mjs'
 
 const url = process.argv[2]
 if (!url || !process.env.AP_AGENT_KEY) {
@@ -25,6 +26,21 @@ const terms = accepts.find((a) => a.scheme === 'exact' && a.network === `sui:${N
 if (!terms) throw new Error(`No sui:${NETWORK} USDC payment option offered`)
 if (BigInt(terms.maxAmountRequired) > budget) throw new Error(`Invoice asks ${terms.amount} USDC, over this agent's budget`)
 console.log(`402: ${terms.description} → pay ${terms.amount} USDC to ${terms.payTo} from ${me}`)
+
+// Not enough USDC? Swap just enough SUI -> USDC (Cetus aggregator, built + executed through Tatum).
+const need = BigInt(terms.maxAmountRequired)
+const have = await usdcBalance(me)
+if (have < need) {
+  if (NETWORK !== 'mainnet') throw new Error(`agent holds ${fromMicro(have)} USDC, needs ${terms.amount}`)
+  const shortfall = ((need - have) * 101n) / 100n + 1n // +1% so rounding never leaves us short
+  const swap = await buildSwapSuiForUsdc(me, shortfall)
+  console.log(`swapping ~${Number(swap.suiIn) / 1e9} SUI -> ${fromMicro(swap.usdcOut)} USDC via ${swap.providers.join(', ')}`)
+  const { signature: sig } = await kp.signTransaction(Buffer.from(swap.bytes, 'base64'))
+  const res = await executeSigned(swap.bytes, sig)
+  const d = res?.Transaction?.digest || res?.transaction?.digest || res?.digest
+  console.log('swap tx:', `${EXPLORER}/tx/${d}`)
+  for (let i = 0; i < 10 && (await usdcBalance(me)) < need; i++) await new Promise((r) => setTimeout(r, 2000))
+}
 
 // Prefer Sui Payment Kit (nonce = invoice): the registry makes a double payment impossible on-chain.
 const pk = terms.extra?.paymentKit
