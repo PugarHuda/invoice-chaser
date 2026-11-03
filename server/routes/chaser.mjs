@@ -432,6 +432,12 @@ router.get('/x402/:id', async (req, res) => {
 })
 
 // MCP (Streamable HTTP, stateless): read-only tools over the learned memory for Claude/Cursor/agents.
+// One JSON-RPC message per request so each tool call is charged to the rate-limit bucket; small bodies only.
+router.post('/mcp', (req, res, next) => {
+  if (Array.isArray(req.body)) return res.status(400).json({ jsonrpc: '2.0', error: { code: -32600, message: 'Batch requests are not supported' }, id: null })
+  if (Number(req.get('content-length') || 0) > 16_384) return res.status(413).json({ jsonrpc: '2.0', error: { code: -32600, message: 'Request too large' }, id: null })
+  next()
+})
 router.post('/mcp', mcpHandler((req) => ({
   state,
   profileOf,
