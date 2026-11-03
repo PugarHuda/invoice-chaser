@@ -40,7 +40,7 @@ app.get('/llms.txt', (req, res) => {
 - [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, learning_summary)
 
 ## Receipts and calendar
-- Paid invoices can carry a PDF receipt stored on Walrus; `GET ${base}/api/chaser/invoices/{invoiceId}` returns `receipt.url` (Walrus aggregator).
+- Paid invoices can carry a PDF receipt stored on Walrus; \`GET ${base}/api/chaser/invoices/{invoiceId}\` returns \`receipt.url\` (Walrus aggregator).
 - [Reminder calendar](${base}/api/chaser/reminders.ics): every open invoice's reminder plan as iCalendar.
 
 ## Docs
