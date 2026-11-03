@@ -28,8 +28,9 @@ router.use((req, res, next) => {
   if (req.method === 'GET' && !isPayment && !expensive) return next()
   const kind = isPayment ? 'payment' : expensive ? 'expensive' : 'write'
   const [max, windowMs] = LIMITS[kind]
-  // Vercel's edge sets these (clients can't spoof them); the leftmost X-Forwarded-For is client-controlled
-  const ip = (req.get('x-vercel-forwarded-for') || req.get('x-real-ip') || req.socket.remoteAddress || '?').split(',')[0].trim()
+  // On Vercel the edge sets x-vercel-forwarded-for (clients can't spoof it). Elsewhere use req.ip,
+  // which honours only the configured proxy hop ('trust proxy' = 1), never the client-supplied leftmost XFF.
+  const ip = (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
   const key = `${kind}:${ip}`
   const now = Date.now()
   const b = buckets.get(key)?.reset > now ? buckets.get(key) : { n: 0, reset: now + windowMs }

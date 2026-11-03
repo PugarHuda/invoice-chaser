@@ -25,11 +25,12 @@ app.get('/llms.txt', (req, res) => {
 ## For paying agents (x402)
 - \`GET ${base}/api/chaser/x402/{invoiceId}\` returns \`402 Payment Required\` with x402 terms: scheme \`exact\`, network \`sui:mainnet\`, USDC asset, \`maxAmountRequired\` (base units), \`payTo\`, and \`extra.paymentKit\` (Sui Payment Kit registry + nonce).
 - Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
-- Reference agent: https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs
+- [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
 
-## For people
-- Pay page for a client: \`${base}/?pay={invoiceId}\`
-- Source and docs: https://github.com/PugarHuda/invoice-chaser
+## Docs
+- [README](https://github.com/PugarHuda/invoice-chaser/blob/main/README.md): how it uses Walrus Memory, Tatum and Sui Payment Kit
+- [Live proof](${base}/api/chaser/proof): current Sui checkpoint via Tatum, memory counts from the Walrus relayer
+- [Client pay page](${base}/?pay=inv-101): example payer-facing page (replace the invoice id)
 `)
 })
 
