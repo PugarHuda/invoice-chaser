@@ -48,7 +48,7 @@ async function throttle() {
 // Retry transient gateway errors: idle channels reset (fresh channel) and the free tier's 429s
 // (backoff 0.8 s, 1.6 s, 3.2 s). Errors are matched through `cause` because the SDK wraps them.
 const TRANSIENT = /ECONNRESET|UNAVAILABLE|GOAWAY|socket hang up|status code 429|RESOURCE_EXHAUSTED/i
-async function once(fn) {
+export async function once(fn) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn()

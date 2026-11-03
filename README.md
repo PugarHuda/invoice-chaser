@@ -81,6 +81,15 @@ The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` an
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
 ```
 
+## Live on Sui Mainnet
+
+| What happened | Proof |
+|---|---|
+| An x402 agent hit `inv-mvzyioev`, got `402`, swapped SUI -> USDC through the Cetus aggregator (via Tatum), paid through the Payment Kit registry, retried with `X-PAYMENT` and got a `200` receipt | [swap](https://suiscan.xyz/mainnet/tx/3vpeRNsKxvWSN5xykrsskxRw31Pt3rq6f7r6NjU6Rk5N) · [payment](https://suiscan.xyz/mainnet/tx/4BTevagvT34X166FBGsqj9tQSxisY1PDGwXXtrxLSC3z) |
+| `inv-mvzyinun` was paid through the Payment Kit registry and **nobody told the app**; the production `/sync-payments` found it by invoice nonce and settled it | [swap](https://suiscan.xyz/mainnet/tx/3kYawfmx4W7dKGJEoa6VNA6J8iNtZUrn6pFTNLwjNzfC) · [payment](https://suiscan.xyz/mainnet/tx/G5r8eC1hwTkrj4Dg7FFWTcP1P5LTJaRn8FvGUx7WbAJP) |
+
+Both payments are now memories in Delta Studio's Walrus namespace (`ic:main:client:c4`), visible in the app's timeline with links to their blobs.
+
 ## Use the memory from Claude / Cursor (MCP)
 
 Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): any agent can ask what it has learned.

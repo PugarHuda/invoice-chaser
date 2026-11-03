@@ -2,7 +2,7 @@
 // aggregator API; the transaction is built and executed through Tatum's gRPC gateway like everything else.
 import { AggregatorClient, Env } from '@cetusprotocol/aggregator-sdk'
 import { Transaction } from '@mysten/sui/transactions'
-import { sui, USDC_COIN_TYPE, NETWORK } from './sui.mjs'
+import { sui, once, USDC_COIN_TYPE, NETWORK } from './sui.mjs'
 
 const SUI = '0x2::sui::SUI'
 
@@ -13,7 +13,7 @@ function aggregator(sender) {
 
 // Quote: how much SUI buys exactly `usdcMicro` USDC.
 export async function quoteSuiForUsdc(sender, usdcMicro) {
-  const r = await aggregator(sender).findRouters({ from: SUI, target: USDC_COIN_TYPE, amount: BigInt(usdcMicro).toString(), byAmountIn: false })
+  const r = await once(() => aggregator(sender).findRouters({ from: SUI, target: USDC_COIN_TYPE, amount: BigInt(usdcMicro).toString(), byAmountIn: false }))
   if (!r || r.insufficientLiquidity) throw new Error('no route for SUI -> USDC')
   return { router: r, suiIn: BigInt(r.amountIn.toString()), usdcOut: BigInt(r.amountOut.toString()), providers: [...new Set(r.paths?.map((p) => p.provider) || [])] }
 }
@@ -23,7 +23,8 @@ export async function buildSwapSuiForUsdc(sender, usdcMicro, slippage = 0.01) {
   const q = await quoteSuiForUsdc(sender, usdcMicro)
   const tx = new Transaction()
   tx.setSender(sender)
-  await aggregator(sender).fastRouterSwap({ router: q.router, txb: tx, slippage })
-  const bytes = await tx.build({ client: sui() })
+  await once(() => aggregator(sender).fastRouterSwap({ router: q.router, txb: tx, slippage }))
+  // the aggregator's own gateway calls bypass our throttle, so retry 429s on the final build too
+  const bytes = await once(() => tx.build({ client: sui() }))
   return { ...q, bytes: Buffer.from(bytes).toString('base64') }
 }
