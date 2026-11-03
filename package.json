@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --env-file-if-exists=.env.local server/index.mjs",
-    "test": "node --test server/engine.test.mjs",
+    "test": "node --test server/engine.test.mjs server/drafter.test.mjs",
     "seed": "node --env-file=.env.local scripts/seed.mjs",
     "build": "vite build"
   },
@@ -16,12 +16,14 @@
     "@mysten/payment-kit": "^0.2.36",
     "@mysten/sui": "^2.38.0",
     "@mysten/wallet-standard": "^0.21.36",
+    "@mysten/walrus": "^1.2.37",
     "@protobuf-ts/grpc-transport": "^2.11.1",
     "@vercel/functions": "^3.10.5",
     "@vitejs/plugin-react": "^4.3.1",
     "ai": "^7.0.162",
     "express": "^4.21.0",
     "lucide-react": "^1.31.0",
+    "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
