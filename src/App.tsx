@@ -684,9 +684,9 @@ export default function App() {
                   <table className="w-full">
                     <thead className="bg-secondary">
                       <tr className="border-b border-secondary text-left">
-                        <th className="px-md py-sm text-xs font-semibold text-quaternary">Client & Invoice</th>
-                        <th className="px-md py-sm text-xs font-semibold text-quaternary">Predicted Date</th>
-                        <th className="px-md py-sm text-xs font-semibold text-quaternary text-right">Amount</th>
+                        <th className="px-md py-sm text-xs font-semibold text-tertiary">Client & Invoice</th>
+                        <th className="px-md py-sm text-xs font-semibold text-tertiary">Predicted Date</th>
+                        <th className="px-md py-sm text-xs font-semibold text-tertiary text-right">Amount</th>
                       </tr>
                     </thead>
                     <tbody>

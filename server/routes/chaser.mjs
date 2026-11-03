@@ -19,13 +19,17 @@ const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/sync-payments'])
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
 const buckets = new Map()
-const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000] }
+const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
+// GETs that call an external service on every request
+const isExpensiveRead = (req) => req.method === 'GET' && /^\/clients\/[^/]+\/search$/.test(req.path)
 router.use((req, res, next) => {
   const isPayment = PUBLIC_WRITES.has(req.path) || req.path.startsWith('/x402/')
-  if (req.method === 'GET' && !isPayment) return next()
-  const kind = isPayment ? 'payment' : 'write'
+  const expensive = isExpensiveRead(req)
+  if (req.method === 'GET' && !isPayment && !expensive) return next()
+  const kind = isPayment ? 'payment' : expensive ? 'expensive' : 'write'
   const [max, windowMs] = LIMITS[kind]
-  const ip = (req.get('x-forwarded-for') || req.socket.remoteAddress || '?').split(',')[0].trim()
+  // Vercel's edge sets these (clients can't spoof them); the leftmost X-Forwarded-For is client-controlled
+  const ip = (req.get('x-vercel-forwarded-for') || req.get('x-real-ip') || req.socket.remoteAddress || '?').split(',')[0].trim()
   const key = `${kind}:${ip}`
   const now = Date.now()
   const b = buckets.get(key)?.reset > now ? buckets.get(key) : { n: 0, reset: now + windowMs }

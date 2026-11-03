@@ -12,6 +12,25 @@ const app = express()
 app.use(express.json())
 // Redact the Tatum API key from every response before it leaves the process.
 app.use(credentialGuard)
+// Crawlers and AI agents: robots.txt and llms.txt (how an agent can pay an invoice over x402).
+app.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *\nAllow: /\nDisallow: /api/\n'))
+app.get('/llms.txt', (req, res) => {
+  const base = `${req.protocol}://${req.get('host')}`
+  res.type('text/markdown').send(`# Invoice Chaser
+
+> Invoice tracker for freelancers paid in USDC on Sui. It learns how each client pays (Walrus Memory) and verifies every payment on Sui through Tatum's gRPC gateway.
+
+## For paying agents (x402)
+- \`GET ${base}/api/chaser/x402/{invoiceId}\` returns \`402 Payment Required\` with x402 terms: scheme \`exact\`, network \`sui:mainnet\`, USDC asset, \`maxAmountRequired\` (base units), \`payTo\`, and \`extra.paymentKit\` (Sui Payment Kit registry + nonce).
+- Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
+- Reference agent: https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs
+
+## For people
+- Pay page for a client: \`${base}/?pay={invoiceId}\`
+- Source and docs: https://github.com/PugarHuda/invoice-chaser
+`)
+})
+
 app.use('/api/tatum', tatumRoutes)
 app.use('/api/chaser', chaserRoutes)
 
