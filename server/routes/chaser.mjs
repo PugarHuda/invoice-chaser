@@ -6,6 +6,7 @@ import { usdRate } from '../rates.mjs'
 import { screenAddress } from '../security.mjs'
 import { mcpHandler } from '../mcp.mjs'
 import { draftReminder } from '../drafter.mjs'
+import { storeReceipt, receiptsEnabled } from '../receipts.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
 
 const router = Router()
@@ -268,6 +269,36 @@ router.get('/pay/:id', (req, res) => {
   })
 })
 
+// Receipt PDFs live on Walrus; the blob id is remembered in the client's Walrus Memory namespace.
+const receiptOf = (inv) => {
+  const m = memsFor(inv.clientId).find((x) => x.tag?.type === 'receipt_stored' && x.tag.invoice === inv.id)
+  return m ? { blobId: m.tag.blob_id, objectId: m.tag.object_id, url: m.tag.url, at: m.tag.at } : null
+}
+const receiptInflight = new Map()
+router.post('/invoices/:id/receipt', async (req, res) => {
+  const { clients, invoices } = state()
+  const raw = invoices.find((i) => i.id === req.params.id)
+  if (!raw) return res.status(404).json({ error: 'Invoice not found' })
+  const inv = withStatus(raw)
+  if (inv.status !== 'paid' || !(inv.payments || []).some((p) => p.digest)) return res.status(409).json({ error: 'Only invoices paid on-chain get a receipt' })
+  const existing = receiptOf(inv)
+  if (existing) return res.json({ ...existing, existing: true })
+  if (!receiptsEnabled()) return res.status(503).json({ error: 'Walrus receipt storage is not configured on this server' })
+  try {
+    if (!receiptInflight.has(inv.id)) {
+      receiptInflight.set(inv.id, (async () => {
+        const name = clientName(clients, inv.clientId)
+        const r = await storeReceipt({ invoiceId: inv.id, client: name, description: inv.description, amount: inv.payAmount, dueDate: inv.dueDate, paidOn: inv.settledAt, payee: PAYEE(), network: sui.NETWORK, explorer: sui.EXPLORER, payments: inv.payments.filter((p) => p.digest) })
+        mem.remember(mem.clientNs(inv.clientId), `Stored a PDF receipt for ${inv.id} (${name}) on Walrus as blob ${r.blobId}.`, { type: 'receipt_stored', client: inv.clientId, invoice: inv.id, blob_id: r.blobId, object_id: r.objectId, url: r.url, end_epoch: r.endEpoch })
+        return r
+      })().finally(() => receiptInflight.delete(inv.id)))
+    }
+    res.json(await receiptInflight.get(inv.id))
+  } catch (e) {
+    res.status(502).json({ error: `Walrus: ${e.message}` })
+  }
+})
+
 router.get('/invoices/:id', (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
@@ -283,6 +314,8 @@ router.get('/invoices/:id', (req, res) => {
       paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(inv.payAmount), nonce: inv.id, label: 'Invoice Chaser', message: `Invoice ${inv.id}` }),
       registry: sui.REGISTRY_NAME,
       explorerTx: inv.digest ? `${sui.EXPLORER}/tx/${inv.digest}` : null,
+      receipt: receiptOf(inv),
+      receiptsEnabled: receiptsEnabled(),
     },
     adaptivePlan: plan(inv, profile),
     defaultPlan: plan(inv, profile, { ignoreMemory: true }),

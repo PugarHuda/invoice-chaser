@@ -102,6 +102,8 @@ interface InvoiceDetail {
     paymentUri?: string;
     registry?: string;
     explorerTx?: string | null;
+    receipt?: { blobId: string; url: string; at: string } | null;
+    receiptsEnabled?: boolean;
   };
   adaptivePlan: {
     cites?: Array<{ sentence: string; blobId: string | null; status: string; at: string }>;
@@ -323,6 +325,21 @@ export default function App() {
     } catch (_err) {}
   };
 
+  const [storingReceipt, setStoringReceipt] = useState(false);
+  const storeReceipt = async (id: string) => {
+    setStoringReceipt(true);
+    try {
+      const res = await fetch(`/api/chaser/invoices/${id}/receipt`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Receipt failed');
+      showToast(`Receipt stored on Walrus: ${data.blobId.slice(0, 10)}…`);
+      await fetchInvoiceDetail(id);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Receipt failed');
+    } finally {
+      setStoringReceipt(false);
+    }
+  };
   const fetchInvoiceDetail = async (id: string) => {
     try {
       const res = await fetch(PAY_ONLY ? `/api/chaser/pay/${id}` : `/api/chaser/invoices/${id}`);
@@ -1130,6 +1147,13 @@ export default function App() {
                       {invoiceDetail.invoice.explorerTx && (
                         <a href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer" className="block text-center text-xs text-utility-brand-700 hover:underline">View payment on Suiscan</a>
                       )}
+                      {invoiceDetail.invoice.status === 'paid' && invoiceDetail.invoice.explorerTx && (invoiceDetail.invoice.receipt ? (
+                        <a href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer" className="block text-center text-xs text-utility-brand-700 hover:underline">PDF receipt on Walrus ({invoiceDetail.invoice.receipt.blobId.slice(0, 10)}…)</a>
+                      ) : invoiceDetail.invoice.receiptsEnabled ? (
+                        <button type="button" disabled={storingReceipt} onClick={() => storeReceipt(invoiceDetail.invoice.id)} className="w-full rounded-lg border border-primary px-lg py-sm text-xs font-semibold text-secondary hover:bg-primary-hover disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-focus-ring">
+                          {storingReceipt ? 'Storing receipt on Walrus (~15 s)…' : 'Store PDF receipt on Walrus'}
+                        </button>
+                      ) : null)}
                     </div>
                   </section>
                 </div>
