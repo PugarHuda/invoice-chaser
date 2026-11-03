@@ -9,6 +9,8 @@ import chaserRoutes from './server/routes/chaser.mjs'
 import { credentialGuard } from './server/credential-guard.mjs'
 
 const app = express()
+// Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
+app.set('trust proxy', 1)
 app.use(express.json())
 // Redact the Tatum API key from every response before it leaves the process.
 app.use(credentialGuard)
