@@ -97,8 +97,12 @@ export function loadAll() {
   loading ??= doLoad().finally(() => (loading = null))
   return loading
 }
+// Serverless instances don't see each other's writes; re-sync from Walrus in the background when
+// local state is older than 2 minutes (unsaved local memories are always kept across reloads).
+const STALE_MS = 120_000
 export async function ready() {
-  if (!loadState.loaded) await loadAll()
+  if (!loadState.loaded) return loadAll()
+  if (!loading && Date.now() - Date.parse(loadState.loadedAt) > STALE_MS) waitUntil(loadAll())
 }
 async function doLoad() {
   loadState.loading = true
