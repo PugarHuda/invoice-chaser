@@ -12,6 +12,15 @@ const app = express()
 // Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
 app.set('trust proxy', 1)
 app.use(express.json())
+// The same UI is also published on Walrus Sites (*.wal.app); let it call this API cross-origin.
+app.use('/api', (req, res, next) => {
+  const o = req.get('origin')
+  if (o && /^https:\/\/[a-z0-9-]+\.wal\.app$/.test(o)) {
+    res.set({ 'Access-Control-Allow-Origin': o, Vary: 'Origin', 'Access-Control-Allow-Headers': 'content-type, x-passcode, x-payment', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE' })
+    if (req.method === 'OPTIONS') return res.sendStatus(204)
+  }
+  next()
+})
 // Redact the Tatum API key from every response before it leaves the process.
 app.use(credentialGuard)
 // Crawlers and AI agents: robots.txt and llms.txt (how an agent can pay an invoice over x402).

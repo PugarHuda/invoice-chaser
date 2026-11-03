@@ -5,7 +5,10 @@ import './index.css'
 
 // Owner passcode (APP_PASSCODE on the server): sent on writes, asked for once on a 401.
 const rawFetch = window.fetch.bind(window)
+// Built for Walrus Sites (static, served from wal.app), the API lives on the Vercel deployment.
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 window.fetch = async (input, init = {}) => {
+  if (API_BASE && typeof input === 'string' && input.startsWith('/api/')) input = API_BASE + input
   const isWrite = (init.method || 'GET').toUpperCase() !== 'GET'
   const withPass = () => ({ ...init, headers: { ...(init.headers as Record<string, string>), 'x-passcode': localStorage.getItem('ic-passcode') || '' } })
   let res = await rawFetch(input, isWrite ? withPass() : init)
