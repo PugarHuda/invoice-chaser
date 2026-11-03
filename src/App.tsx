@@ -405,7 +405,8 @@ export default function App() {
     try {
       setWalletBusy(`Connecting ${wallet.name}…`);
       const { accounts } = await (wallet.features['standard:connect'] as any).connect();
-      const account = accounts.find((a: any) => a.chains.includes('sui:mainnet')) || accounts[0];
+      const chain = `sui:${invoiceDetail?.invoice.network || 'mainnet'}`;
+      const account = accounts.find((a: any) => a.chains.includes(chain)) || accounts[0];
       if (!account) throw new Error('No account approved');
       setWalletBusy('Building transfer via Tatum…');
       const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address }) });
@@ -416,7 +417,7 @@ export default function App() {
       const out = await (wallet.features['sui:signAndExecuteTransaction'] as any).signAndExecuteTransaction({
         transaction: { toJSON: async () => tx.toJSON() },
         account,
-        chain: 'sui:mainnet',
+        chain,
       });
       setWalletBusy(`Verifying on ${netLabel}…`);
       let data: any = null;

@@ -225,6 +225,8 @@ async function settleDigest(invoiceId, requested, channel) {
     try {
       tx = await sui.usdcReceived(requested, PAYEE())
     } catch (e) {
+      // a just-executed transaction can take a moment to reach the gateway: retriable, not a server error
+      if (/not found|NOT_FOUND/i.test(e.message)) return [404, { error: `Transaction not visible on ${NET} yet; try again in a few seconds`, retry: true }]
       return [502, { error: `Tatum Sui gRPC: ${e.message}` }]
     }
     // Key everything on the chain's canonical digest, not on what the client sent.
