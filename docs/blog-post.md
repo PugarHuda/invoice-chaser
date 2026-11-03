@@ -16,7 +16,7 @@ I built **Invoice Chaser** for the Total Recall hackathon (Tatum × Walrus Memor
 ## What it does
 
 1. You issue an invoice. Instead of "300 USDC" the client is asked to pay something like **300.004217 USDC**. Those extra micro-decimals are the invoice's fingerprint on-chain.
-2. The client pays from any Sui wallet and pastes the transaction digest (or you do). The server checks the transaction **on Sui Mainnet through Tatum's gRPC gateway**: did it succeed, how much USDC landed on my address, is it newer than the invoice, has this digest been used before.
+2. The client opens a pay link with a real `sui:pay` QR code and pays from any Sui wallet. The payment goes through the **Sui Payment Kit** registry with the invoice as the nonce, so the chain refuses a second payment for the same invoice, and the app finds the payment by invoice on its own. Every payment is checked **on Sui Mainnet through Tatum's gRPC gateway**: did it succeed, how much USDC landed on my address, is it newer than the invoice, has this transaction been used before, and which wallet paid.
 3. Everything that happens (invoice sent, reminder sent and in what tone, paid how many days late, underpaid by how much, and any rule you tell it) is written to **Walrus Memory**.
 4. Before the next reminder, the app recalls that client's history and decides **when** to chase, **in what tone**, and **what it expects** to happen. A "Why?" panel shows the memories behind each decision.
 
@@ -32,7 +32,7 @@ Here is the same invoice for Acme (due 5 Nov) with memory switched off and on:
 
 And the prediction got better with each invoice it saw. Before each of Acme's last four payments the app predicted how late it would be. It was off by **4 days, then 2, then 0, then 0**. That chart is in the app, on every client page.
 
-Rules work the same way. Type "never chase Acme before the 10th" into the client page and it becomes a memory; the next plan moves the reminder to the 10th, and the Why panel says so.
+Rules work the same way. Type "never chase Acme before the 10th" into the client page and it becomes a memory; the next plan moves the reminder to the 10th, and the Why panel says so. Or paste the client's email: Walrus Memory's `analyze()` pulls out "vendor payments are only run on Thursdays and never before the 15th" as a fact, and the plan predicts a Thursday payment and holds reminders until the 15th, even for a client with no payment history yet. (My first parser read that sentence as "don't remind on Thursdays". A Playwright QA pass caught it.)
 
 ## How it uses Walrus Memory
 
@@ -61,18 +61,27 @@ All chain reads go through Tatum's **Sui Mainnet gRPC gateway** (`sui-mainnet-gr
 - `LedgerService.GetTransaction`: verify a payment from `effects.status` and `balance_changes`
 - `StateService.GetBalance`: watch the payee's USDC balance
 - `LedgerService.GetCheckpoint`: the live proof page
+- building the payer's Payment Kit transaction (coin selection, gas) and executing an agent's signed payment
+- looking an invoice's payment up in the Payment Kit registry, and the payer's SuiNS name
 
-Sui's JSON-RPC was deprecated during the hackathon, and gRPC has no "list transactions for an address" call. That constraint is why invoices carry a unique amount and settle by digest: it turned out to be the simplest design anyway. The free plan allows 3 requests per second, so all calls go through a small throttle, and an idle channel that gets reset is retried once on a fresh connection.
+Sui's JSON-RPC was deprecated during the hackathon, and gRPC has no "list transactions for an address" call. The Sui Payment Kit fixed that for me: a payment is a record keyed by the invoice, so I look it up directly instead of scanning history. (One gotcha: the SDK's `getPaymentRecord` builds a malformed type name, `PaymentKey<phantom T><coin>`, so I query the dynamic field myself.) The free plan allows 3 requests per second, so calls are throttled and 429s are retried with backoff.
+
+## Agents can pay too (x402)
+
+Every invoice is also an HTTP resource. An accounts-payable agent that requests it gets `402 Payment Required` with the terms (USDC on Sui, amount, payee, and the Payment Kit registry + nonce), pays, and retries with `X-PAYMENT: <digest>` to get a receipt. The repo has a reference agent that checks its own budget before paying.
+
+## Tested on testnet first
+
+The same code runs against Sui Testnet with one env var (Tatum's testnet gateway, Circle testnet USDC, testnet Payment Kit) and a separate memory namespace. An end-to-end script pays a real invoice as an x402 agent, then checks on-chain that a second payment is rejected, that an unreported payment is found and settled automatically, and that a replayed transaction is refused. All six checks pass.
 
 ## Starting with Tatum AI Builder
 
-The first version came from one prompt in [Tatum AI Builder](https://ai.tatum.io) (the prompt is in the repo, the generated commit is tagged `ai-builder-v0`). It produced a clean UI with all five screens and a sensible profile algorithm. The backend was a mock: in-memory data, fake memories, a simulated wallet payment. I kept the UI and replaced every mock with the real thing: Tatum gRPC, Walrus Memory, a payment check that can say no.
+The first version came from one prompt in [Tatum AI Builder](https://ai.tatum.io) (the prompt is in the repo, the generated commit is tagged `ai-builder-v0`). It produced a clean UI with all five screens and a sensible profile algorithm. The backend was a mock: in-memory data, fake memories, a simulated wallet payment, and a QR code that was just an icon. I kept the UI and replaced every mock with the real thing: Tatum gRPC, Walrus Memory, Sui Payment Kit, and a payment check that can say no.
 
-## What I'd do next
+## Limits I know about
 
-- Send reminders by email directly instead of copy-to-clipboard
-- An LLM extractor for freer rules ("they pay after their board meets on the first Tuesday")
-- x402: let a client's accounts-payable agent pay an invoice with a single HTTP 402 round trip on Sui
+- Reminders open in your email app with the pay link; the app does not send email itself.
+- Rules are read with a small parser (day of month, pay days, days to avoid, tone). Stranger phrasing ("after their board meets on the first Tuesday") isn't understood yet.
 
 Thanks to the Tatum and Walrus teams for the quick answers in Discord.
 

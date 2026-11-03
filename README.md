@@ -11,9 +11,9 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 
 ## What it does
 
-1. **Issue a USDC invoice** with a *unique payable amount* (e.g. `300.004217`): the micro-decimals identify the invoice on-chain.
-2. **Get paid on Sui Mainnet**: the client clicks *Connect Sui wallet & pay* (any Wallet Standard wallet; the exact USDC transfer is built server-side through Tatum) or pays manually and pastes the digest. Either way the server verifies the transaction through **Tatum's gRPC gateway** (`balance_changes`) and settles the invoice as paid or partial.
-3. **Remember everything in Walrus Memory**: invoices, reminders (with tone), payments (delay, amount), and your own rules ("never chase Acme before the 10th").
+1. **Issue a USDC invoice** and send the client a **pay link** (`/?pay=<invoice>`): a payer-only page with a real `sui:pay` QR code (Sui Payment Kit URI) that shows nothing about how you see them.
+2. **Get paid on Sui Mainnet through the Sui Payment Kit**: the client scans the QR, clicks *Connect Sui wallet & pay* (the registry payment is built server-side through Tatum), or pays manually and pastes the digest. Payments go through the shared Payment Kit **registry with nonce = invoice id**, so the chain itself refuses a second payment for the same invoice, and the app finds the payment by invoice without anyone reporting a digest (`/sync-payments`). Every path is verified through **Tatum's gRPC gateway** (`balance_changes`) and settles the invoice as paid or partial; the payer's wallet (and SuiNS name) is remembered, and a payment from a wallet this client never used before is flagged.
+3. **Remember everything in Walrus Memory**: invoices, reminders (with tone), payments (delay, amount, payer), your own rules ("never chase Acme before the 10th"), and facts that Walrus `analyze()` extracts from a pasted client email ("we only pay on Thursdays, never before the 15th").
 4. **Plan the next reminder from memory**: predicted pay date (EWMA of past delays), the tone that actually worked for this client, your hard rules. A **"Why?" panel** cites the exact memories behind the decision (each linked to its Walrus blob), every logged reminder stores which memories its plan cited, and an **"Ignore memory"** switch shows what a memory-less tool would do.
 
 ## How it learned (same invoice, two plans)
@@ -34,6 +34,8 @@ Walrus Memory is the **system of record**, not a log on the side.
   `Acme Corp paid inv-095 in full (3500.002202 USDC) on 2026-10-20, 5 day(s) after due… \n#ic {"type":"invoice_paid","delay_days":5,"reminders":1,"last_tone":"formal",…}`
 - One namespace per client (`ic:main:client:<id>`), so each stays far below the 100-record recall window.
 - **On boot the server holds no data.** It lists the `ic:main:*` namespaces, recalls each one and rebuilds clients, invoices and learned profiles from Walrus ([`server/memory.mjs`](server/memory.mjs)). The **Total Recall** button does the same on demand: wipe local state, rebuild from Walrus.
+- **`analyze()`**: paste an email or call notes on a client page; the relayer extracts each fact and stores it as its own memory. Scheduling rules inside them ("only pay on Thursdays" = predicted pay day; "never before the 15th" = no reminder before then) become hard constraints, even for a client with no payment history.
+- **`restore()`**: the Total Recall button first asks the relayer to re-index every blob it holds per namespace, then recalls everything.
 - Writes are queued in the background (a mainnet write takes ~25 s) with retries; the UI shows *writing to Walrus…* until the relayer confirms, then links the blob on Walruscan. Nothing is shown as saved before it is.
 
 ## How it uses Tatum
@@ -47,8 +49,13 @@ All chain reads go through **Tatum's Sui Mainnet gRPC gateway** (`sui-mainnet-gr
 | Live proof | `LedgerService.GetCheckpoint` (latest) |
 | Build the payer's USDC transfer (coin selection, gas price, budget) | `Transaction.build` through the same gateway (`/api/chaser/pay-tx`) |
 | Execute an agent-signed payment | `TransactionExecutionService` (`scripts/ap-agent.mjs`) |
+| Build the Payment Kit registry payment for a wallet / agent | `processRegistryPayment` built through the gateway (`/api/chaser/pay-tx`) |
+| Find an invoice's payment with no digest | Payment Kit registry dynamic field `PaymentKey<USDC>{nonce, amount, receiver}` (`/api/chaser/sync-payments`) |
+| Payer recognition | `GetTransaction` → `transaction.sender`, `NameService.ReverseLookupName` (SuiNS) |
 
-Sui JSON-RPC is deprecated, and gRPC has no "transactions by address" query. That is why invoices carry unique amounts and settle by digest. Calls are throttled to stay under the free tier's 3 req/s.
+Sui JSON-RPC is deprecated, and gRPC has no "transactions by address" query. The Payment Kit registry solves that: a payment is a record keyed by the invoice, so we look it up directly. Unique amounts remain as the fingerprint for plain transfers. Calls are throttled under the free tier's 3 req/s, and 429s / reset channels are retried with backoff.
+
+> Note: `@mysten/payment-kit`'s `getPaymentRecord` builds a malformed type name (`PaymentKey<phantom T><coin>`), so `server/sui.mjs` looks the dynamic field up directly.
 
 ## Agent payments (x402 on Sui)
 
@@ -61,10 +68,26 @@ GET /api/chaser/x402/<invoice>            -> 200 receipt   (with  X-PAYMENT: <Su
     X-PAYMENT: <digest>
 ```
 
-The server verifies the digest on Mainnet through Tatum exactly like a human payment (success, USDC to `payTo`, unique amount, newer than the invoice, never used before) and the payment is remembered with `channel: "x402"`. [`scripts/ap-agent.mjs`](scripts/ap-agent.mjs) is a reference agent: reads the 402 terms, enforces its own budget, builds and signs the USDC transfer, executes it through Tatum, retries with `X-PAYMENT`.
+The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` and a `sui:pay` URI, so an agent pays through the Payment Kit registry and the chain rejects a second payment. The server verifies the digest through Tatum exactly like a human payment (success, USDC to `payTo`, unique amount, newer than the invoice, never used before), answers with an `X-PAYMENT-RESPONSE` header, and the payment is remembered with `channel: "x402"`. [`scripts/ap-agent.mjs`](scripts/ap-agent.mjs) is a reference agent: reads the 402 terms, enforces its own budget, builds and signs the USDC transfer, executes it through Tatum, retries with `X-PAYMENT`.
 
 ```bash
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
+```
+
+## Tested end to end on Sui Testnet
+
+`SUI_NETWORK=testnet` switches the Tatum gateway, the USDC type (Circle testnet USDC) and the Payment Kit package; `MEMWAL_NS_PREFIX=ic:test:` keeps test memories out of the demo. [`scripts/e2e-testnet.mjs`](scripts/e2e-testnet.mjs) runs against a live server and checks, on-chain:
+
+1. an x402 agent pays an invoice through the Payment Kit registry and gets a 200 receipt (first run: [tx](https://suiscan.xyz/testnet/tx/CTXc9cDKTXBJFDJjf1pwip43cVY7TB7eyuGWTyKeyqwD));
+2. a paid invoice no longer asks for payment;
+3. the registry **rejects a second payment** for the same invoice;
+4. a payment nobody reported is found through the registry and settled automatically;
+5. replaying a used digest on another invoice is rejected; malformed input is rejected;
+6. the payment memory records the payer wallet and channel.
+
+```bash
+SUI_NETWORK=testnet MEMWAL_NS_PREFIX=ic:test: PORT=3088 node --env-file=.env.local server/index.mjs
+SUI_NETWORK=testnet node --env-file=.env.local --env-file=.env.testagent scripts/e2e-testnet.mjs http://localhost:3088 <paid-invoice>
 ```
 
 ## For judges
@@ -111,12 +134,13 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 
 ## Known limits
 
-- Reminders are drafted and logged; sending email is up to you (copy button). No automatic email.
-- Preference parsing is a small rule set (day-of-month, weekdays, weekends, tone). Freer text would need an LLM extractor.
+- Reminders are drafted, logged and opened in your email app (`mailto:` with the pay link); the app does not send email itself.
+- Rules are parsed from the sentence (yours, or a fact extracted by Walrus `analyze()`) with a small rule set: day-of-month, pay weekdays, skip weekdays, weekends, tone.
 - Recall caps at 100 memories per namespace, which is plenty for one client but would need paging for heavy users.
 - The default relayer sees memory plaintext (it does encryption and embeddings). Memories hold client aliases and amounts only, no emails. `MemWalManual` would keep plaintext client-side.
 
-- Digest replay protection is per process (an in-flight lock plus the set of digests already in memory). Two serverless instances verifying the *same* digest at the *same* moment could both accept it; the unique-amount rule limits this to one invoice's exact amount. A shared atomic store (e.g. Redis `SET NX`) would close it fully.
+- Payments through the Payment Kit registry cannot be duplicated (enforced on-chain). For a *plain* transfer settled by pasted digest, replay protection is per process (in-flight lock + every digest already in memory); two serverless instances verifying the same digest at the same moment could both accept it, limited by the unique-amount rule to one invoice's exact amount.
+- If the process dies before a Walrus write finishes, that memory is lost; a payment made through the registry is recovered by the next `/sync-payments`.
 
 ## License
 
