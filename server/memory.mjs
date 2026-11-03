@@ -126,10 +126,12 @@ async function doLoad() {
       fresh.set(ns.name, mems)
       n += mems.length
     }
-    // keep anything still waiting to be written so a reload (even a wipe) never loses it
+    // Merge, never drop: keep every local memory the recall didn't return yet (still being written,
+    // or saved but not indexed by the relayer). Otherwise a reload could "un-pay" an invoice.
+    const seen = new Set([...fresh.values()].flat().map((m) => m.blobId))
     for (const [ns, mems] of store) {
-      const unsaved = mems.filter((m) => m.status !== 'saved')
-      if (unsaved.length) fresh.set(ns, [...unsaved, ...(fresh.get(ns) || [])])
+      const missing = mems.filter((m) => !m.blobId || !seen.has(m.blobId))
+      if (missing.length) fresh.set(ns, [...missing, ...(fresh.get(ns) || [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)))
     }
     store.clear()
     for (const [k, v] of fresh) store.set(k, v)

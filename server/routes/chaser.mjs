@@ -207,6 +207,8 @@ router.post('/invoices/:id/remind', (req, res) => {
 // Every path (pasted digest, wallet, x402 agent, Payment Kit auto-sync) ends in settleDigest():
 // verify on Sui through Tatum, then remember the outcome in Walrus Memory.
 const inflight = new Set()
+// Grows only: digests this process has settled. No reload can clear it.
+const settledDigests = new Set()
 const NET = sui.NETWORK === 'mainnet' ? 'Sui Mainnet' : 'Sui Testnet'
 
 async function settleDigest(invoiceId, requested, channel) {
@@ -232,7 +234,7 @@ async function settleDigest(invoiceId, requested, channel) {
     const { clients, invoices: now, usedDigests } = state()
     const inv = now.find((i) => i.id === invoiceId)
     if (inv.status === 'paid') return [409, { error: 'Invoice is already paid' }]
-    if (usedDigests.has(digest)) return [409, { error: 'This transaction has already settled an invoice' }]
+    if (usedDigests.has(digest) || settledDigests.has(digest)) return [409, { error: 'This transaction has already settled an invoice' }]
     if (!tx.ok) return [400, { error: `Transaction did not succeed on ${NET}` }]
     if (tx.received <= 0n) return [400, { error: 'Transaction sent no USDC to the payee address' }]
     if (tx.timestamp && tx.timestamp < inv.createdAt) return [400, { error: 'Transaction is older than the invoice' }]
@@ -254,6 +256,7 @@ async function settleDigest(invoiceId, requested, channel) {
     const name = clientName(clients, inv.clientId)
     const received = sui.fromMicro(tx.received)
     const who = payer ? ` from ${payerName || `${payer.slice(0, 8)}…`}${newPayer ? ' (a wallet this client never paid from before)' : ''}` : ''
+    settledDigests.add(digest)
     const m = mem.remember(
       mem.clientNs(inv.clientId),
       full
