@@ -164,6 +164,7 @@ export default function App() {
   const [clientsList, setClientsList] = useState<any[]>([]);
   const [clientDetail, setClientDetail] = useState<ClientDetail | null>(null);
   const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
+  const [detailError, setDetailError] = useState('');
   const [proofData, setProofData] = useState<ProofData | null>(null);
   const [allInvoices, setAllInvoices] = useState<any[]>([]);
 
@@ -366,12 +367,18 @@ export default function App() {
   };
   const fetchInvoiceDetail = async (id: string) => {
     try {
-      const res = await fetch(PAY_ONLY ? `/api/chaser/pay/${id}` : `/api/chaser/invoices/${id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setInvoiceDetail(data);
+      const res = await fetch(PAY_ONLY ? `/api/chaser/pay/${encodeURIComponent(id)}` : `/api/chaser/invoices/${encodeURIComponent(id)}`);
+      const data = await res.json().catch(() => ({}));
+      // never leave the previous invoice's amount on screen under a different invoice id
+      if (!res.ok) {
+        if (res.status === 404) setInvoiceDetail(null);
+        return setDetailError(res.status === 404 ? 'This invoice does not exist. Check the link you were sent.' : data.error || `Could not load the invoice (HTTP ${res.status}). Try again shortly.`);
       }
-    } catch (_err) {}
+      setDetailError('');
+      setInvoiceDetail(data);
+    } catch (_err) {
+      setDetailError('Network error while loading the invoice. Check your connection and retry.');
+    }
   };
 
   const fetchProof = async () => {
@@ -1407,6 +1414,10 @@ export default function App() {
               )}
             </div>
 
+            {detailError && (
+              <p role="alert" className="rounded-xl border border-utility-error-200 bg-utility-error-50 p-lg text-center text-sm font-medium text-utility-error-700">{detailError}</p>
+            )}
+            {invoiceDetail?.invoice.id === selectedInvoiceId && (
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
               {/* Amount Display */}
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
@@ -1507,6 +1518,7 @@ export default function App() {
                 </div>
               </div>
             </section>
+            )}
           </div>
         )}
 

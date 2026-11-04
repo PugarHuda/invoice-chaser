@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import tatumRoutes from './server/routes/tatum.mjs'
 import chaserRoutes from './server/routes/chaser.mjs'
 import { credentialGuard } from './server/credential-guard.mjs'
+import { openapi } from './server/openapi.mjs'
 
 const app = express()
 // Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
@@ -25,6 +26,8 @@ app.use('/api', (req, res, next) => {
 app.use(credentialGuard)
 // Crawlers and AI agents: robots.txt and llms.txt (how an agent can pay an invoice over x402).
 app.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *\nAllow: /\nDisallow: /api/\n'))
+// MPP service discovery: payable operations with x-payment-info offers.
+app.get('/openapi.json', (req, res) => res.set('Access-Control-Allow-Origin', '*').json(openapi(`${req.protocol}://${req.get('host')}`)))
 app.get('/llms.txt', (req, res) => {
   const base = `${req.protocol}://${req.get('host')}`
   res.type('text/markdown').send(`# Invoice Chaser
@@ -40,6 +43,9 @@ app.get('/llms.txt', (req, res) => {
 ## For paying agents (MPP)
 - \`GET ${base}/api/chaser/mpp/{invoiceId}\` returns \`402\` with \`WWW-Authenticate: Payment method="sui", intent="charge"\` (Machine Payments Protocol, @suimpp/mpp). Pay the exact USDC amount, then retry with \`Authorization: Payment <credential>\` (digest + payer signature) for a 200 and a \`Payment-Receipt\`.
 - [Reference MPP agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/mpp-agent.mjs)
+
+## Discovery
+- [OpenAPI with x-payment-info](${base}/openapi.json): MPP service discovery (draft-payment-discovery-01), every payable operation and its offers
 
 ## Live payment stream
 - \`GET ${base}/api/chaser/pay/{invoiceId}/live\`: Server-Sent Events (\`watching\`, \`checkpoint\`, \`seen\`, \`paid\`) fed by Tatum's Sui gRPC \`SubscribeCheckpoints\` stream.

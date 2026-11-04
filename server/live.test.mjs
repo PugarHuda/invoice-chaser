@@ -24,3 +24,18 @@ test('ics lines fold at 75 octets without splitting UTF-8', async () => {
   assert.equal(parts.map((p, i) => (i ? p.slice(1) : p)).join(''), line)
   assert.equal(foldIcs('SHORT:x'), 'SHORT:x')
 })
+
+test('openapi.json follows MPP discovery: every payable op has offers with intent, method, amount', async () => {
+  const { openapi } = await import('./openapi.mjs')
+  const d = openapi('https://x.example')
+  assert.equal(d.openapi, '3.1.0')
+  const payable = Object.values(d.paths).flatMap((p) => Object.values(p)).filter((op) => op['x-payment-info'])
+  assert.equal(payable.length, 2)
+  for (const op of payable) {
+    assert.ok(op.responses[402])
+    for (const o of op['x-payment-info'].offers) {
+      assert.ok(['charge', 'session'].includes(o.intent) && o.method)
+      assert.ok(o.amount === null || /^(0|[1-9]\d*)$/.test(o.amount))
+    }
+  }
+})
