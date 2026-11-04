@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { getWallets } from '@mysten/wallet-standard';
 import { Transaction } from '@mysten/sui/transactions';
 import QRCode from 'qrcode';
@@ -315,11 +315,14 @@ export default function App() {
     }
   }, [selectedInvoiceId]);
 
+  // on first render the [selectedInvoiceId] effect already loads the invoice: don't fetch it twice
+  const tabMounted = useRef(false);
   useEffect(() => {
     if (activeTab === 'proof') fetchProof();
     // plans depend on memories that may have changed on another tab
-    if (activeTab === 'invoices' || activeTab === 'pay') selectedInvoiceId && fetchInvoiceDetail(selectedInvoiceId);
-    if (activeTab === 'today') fetchSummary();
+    if (tabMounted.current && (activeTab === 'invoices' || activeTab === 'pay')) selectedInvoiceId && fetchInvoiceDetail(selectedInvoiceId);
+    if (tabMounted.current && activeTab === 'today') fetchSummary(); // the mount effect already loaded it
+    tabMounted.current = true;
   }, [activeTab]);
 
   const fetchSummary = async () => {

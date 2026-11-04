@@ -130,9 +130,19 @@ async function doLoad() {
     const fresh = new Map()
     const truncated = []
     let n = 0
-    for (const ns of nss) {
-      // ponytail: recall caps at 100 per namespace; one namespace per client keeps us far below that
-      const r = await memwal().recall({ query: 'invoice payment reminder client preference', namespace: ns.name, limit: 100, sort: 'recent' })
+    // recall every namespace with up to 4 in flight (sequential recalls made a cold start ~1 s per client)
+    const RECALL_CONCURRENCY = 4
+    const recalled = new Array(nss.length)
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(RECALL_CONCURRENCY, nss.length) }, async () => {
+      while (next < nss.length) {
+        const k = next++
+        recalled[k] = await memwal().recall({ query: 'invoice payment reminder client preference', namespace: nss[k].name, limit: 100, sort: 'recent' })
+      }
+    }))
+    for (const [k, ns] of nss.entries()) {
+      // shards keep every namespace at or under SHARD_MAX, inside recall's 100-result cap
+      const r = recalled[k]
       if (ns.memory_count > r.results.length) truncated.push(ns.name) // fail closed: payments refuse to settle
       const mems = []
       for (const hit of r.results) {
