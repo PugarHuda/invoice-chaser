@@ -35,7 +35,8 @@ Walrus Memory is the **system of record**, not a log on the side.
 
 - Every event is one memory: a human sentence plus a machine tag, e.g.
   `Acme Corp paid inv-095 in full (3500.002202 USDC) on 2026-10-20, 5 day(s) after due… \n#ic {"type":"invoice_paid","delay_days":5,"reminders":1,"last_tone":"formal",…}`
-- One namespace per client (`ic:main:client:<id>`), so each stays far below the 100-record recall window.
+- One namespace per client (`ic:main:client:<id>`), **sharded** once it holds 90 memories (`…/1`, `…/2`, …). `recall()` returns at most 100 records per namespace, so a long-lived client would otherwise hit a hard ceiling where payments refuse to settle. Writes go to the newest shard, reads and semantic search union all shards, and history can grow without limit.
+- **Durability audit** on [`/proof`](https://invoice-chaser-sigma.vercel.app/api/chaser/proof): `listMemories()` walks the relayer's full inventory (active count, anything saved locally but missing, earliest storage expiry and Walrus end epochs), and the newest blobs are fetched straight from a Walrus aggregator, independent of the relayer.
 - **On boot the server holds no data.** It lists the `ic:main:*` namespaces, recalls each one and rebuilds clients, invoices and learned profiles from Walrus ([`server/memory.mjs`](server/memory.mjs)). The **Total Recall** button does the same on demand: wipe local state, rebuild from Walrus.
 - **`analyze()`**: paste an email or call notes on a client page; the relayer extracts each fact and stores it as its own memory. Scheduling rules inside them ("only pay on Thursdays" = predicted pay day; "never before the 15th" = no reminder before then) become hard constraints, even for a client with no payment history.
 - **Semantic recall search**: every client page has an *Ask this memory* box (`/clients/:id/search`): Walrus recall ranks that client's memories by meaning (cosine distance shown), e.g. "what tone works for them?".
@@ -82,6 +83,9 @@ AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-
 ```
 
 ### x402 v2: the server is the facilitator
+
+Signatures are checked with Tatum's gRPC client attached, so zkLogin wallets (for example Slush with Google sign-in) verify against the current JWKs and epoch through Tatum's `SignatureVerificationService`. Without it they would be refused as invalid. A wrong signer, a malformed signature or a bad transaction is refused before any network call.
+
 
 The same endpoint also speaks [x402 v2](https://github.com/x402-foundation/x402/tree/main/specs) (`exact` scheme on Sui). Every 402 carries the v2 requirements base64-encoded in a `PAYMENT-REQUIRED` header (CAIP-2 `sui:mainnet`, amount in base units, USDC, `payTo`, Payment Kit nonce in `extra`). A v2 agent doesn't broadcast anything: it sends `PAYMENT-SIGNATURE` = `{ x402Version: 2, accepted, payload: { signature, transaction } }`. The server acts as the facilitator through Tatum. It checks that the signer is the transaction's sender, simulates the transaction to see exactly what it would move, and requires a Payment Kit `PaymentReceipt` for **this** invoice's nonce, so the chain itself rejects a second payment even if two submissions race. Only then does it broadcast, settle into Walrus Memory, and answer with a `PAYMENT-RESPONSE` header (`success`, `transaction`, `network`, `payer`). One settlement per invoice at a time; refuses while memory isn't fully loaded. `scripts/ap-agent.mjs` speaks v2 when offered (`--v1` for the old flow). **On Mainnet:** [tx](https://suiscan.xyz/mainnet/tx/BnnyNUwvAYVqWT7bM2HAAWVRuPgoMckD6Tk2DzTqftFJ) for `inv-mw1iflmeba52e5`; the agent only signed.
 
@@ -228,7 +232,8 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 - The Walrus Site needs a SuiNS name to be reachable at `<name>.wal.app`; until then it is on-chain but only browsable through a self-hosted portal.
 - Receipt de-duplication is per instance plus the memory check; two instances storing the same receipt at the same moment could write two blobs (same content).
 - Rules are parsed from the sentence (yours, or a fact extracted by Walrus `analyze()`) with a small rule set: day-of-month, pay weekdays, skip weekdays, weekends, tone.
-- Recall caps at 100 memories per namespace, which is plenty for one client but would need paging for heavy users.
+- Two instances writing the last slots of a shard at the same moment can overfill it by a few memories. `SHARD_MAX` (90) leaves 10 records of headroom below the 100 recall cap.
+- Memory storage is renewed by the Walrus Memory relayer, not by this app. The durability audit reports the earliest expiry so it is visible long before it matters.
 - The default relayer sees memory plaintext (it does encryption and embeddings). Memories hold client aliases and amounts only, no emails. `MemWalManual` would keep plaintext client-side.
 
 - Payments through the Payment Kit registry cannot be duplicated (enforced on-chain). For a *plain* transfer settled by pasted digest, replay protection is per process (in-flight lock + every digest already in memory); two serverless instances verifying the same digest at the same moment could both accept it, limited by the unique-amount rule to one invoice's exact amount.

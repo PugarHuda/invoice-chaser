@@ -143,6 +143,18 @@ interface ProofData {
     namespaceCount: number;
     namespaces: Record<string, number>;
     pendingMemoriesCount: number;
+    durability?: {
+      ok: boolean;
+      error?: string;
+      inventory?: number;
+      active?: number;
+      loadedLocally?: number;
+      missingFromInventory?: Array<{ blobId: string; sentence: string }>;
+      earliestExpiry?: string | null;
+      daysToEarliestExpiry?: number | null;
+      endEpochRange?: [number, number] | null;
+      spotCheck?: Array<{ blobId: string; onWalrus: boolean; bytes: number | null; ms: number }>;
+    };
     sampleMemories: Array<{
       namespace: string;
       count: number;
@@ -1539,9 +1551,7 @@ export default function App() {
                     <ShieldCheck className="w-5 h-5 text-fg-success-primary" />
                     <span className="font-semibold text-sm text-primary">Tatum Sui gRPC Gateway</span>
                   </div>
-                  <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
-                    {proofData?.tatumSuiGrpc.gatewayStatus === 'connected' ? 'Connected (TLS)' : 'Online (TLS)'}
-                  </span>
+                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : 'error'} ok="Connected (TLS)" error="Unreachable" />
                 </div>
 
                 <div className="space-y-xs text-xs">
@@ -1586,9 +1596,7 @@ export default function App() {
                     <Brain className="w-5 h-5 text-fg-brand-primary" />
                     <span className="font-semibold text-sm text-primary">Walrus Memory Relayer</span>
                   </div>
-                  <span className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-xs font-medium text-utility-success-700">
-                    Relayer Active
-                  </span>
+                  <StatusBadge state={!proofData ? 'loading' : proofData.walrusMemory.relayerStatus === 'ok' ? 'ok' : 'error'} ok="Relayer Active" error={`Relayer ${proofData?.walrusMemory.relayerStatus || 'error'}`} />
                 </div>
 
                 <div className="space-y-xs text-xs">
@@ -1603,14 +1611,31 @@ export default function App() {
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">Namespaces Indexed:</span>
                     <span className="font-semibold text-primary">
-                      {proofData?.walrusMemory.namespaceCount || 4} client namespaces
+                      {proofData ? `${proofData.walrusMemory.namespaceCount} client namespaces` : 'loading…'}
                     </span>
                   </div>
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">Pending Queue:</span>
-                    <span className="text-utility-success-700 font-medium">0 writes pending</span>
+                    <span className={proofData?.walrusMemory.pendingMemoriesCount ? 'text-utility-warning-700 font-medium' : 'text-utility-success-700 font-medium'}>{proofData ? `${proofData.walrusMemory.pendingMemoriesCount} writes pending` : 'loading…'}</span>
                   </div>
                 </div>
+
+                {proofData?.walrusMemory.durability && (() => {
+                  const d = proofData.walrusMemory.durability;
+                  const spot = d.spotCheck || [];
+                  return (
+                    <div className={`p-sm rounded-lg border text-xs space-y-xxs ${d.ok ? 'border-utility-success-200 bg-utility-success-50 text-utility-success-700' : 'border-utility-error-200 bg-utility-error-50 text-utility-error-700'}`}>
+                      <span className="block font-semibold">Durability audit {d.ok ? '· everything remembered is still held' : '· needs attention'}</span>
+                      {d.error ? <p>{d.error}</p> : (
+                        <>
+                          <p>Relayer inventory (listMemories): {d.active}/{d.inventory} active · {d.loadedLocally} loaded into state · {d.missingFromInventory?.length || 0} missing</p>
+                          <p>Fetched straight from a Walrus aggregator: {spot.filter((x) => x.onWalrus).length}/{spot.length} newest blobs present</p>
+                          {d.earliestExpiry && <p>Earliest storage expiry: {d.earliestExpiry.slice(0, 10)} ({d.daysToEarliestExpiry} days){d.endEpochRange ? ` · Walrus end epochs ${d.endEpochRange[0]}–${d.endEpochRange[1]}` : ''}</p>}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div className="p-sm bg-secondary rounded-lg border border-secondary">
                   <span className="text-xs text-tertiary block mb-xxs font-medium">Sample Memories Across Namespaces</span>
@@ -1637,4 +1662,11 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Status pill driven by the live /proof response: never green unless the check actually passed.
+function StatusBadge({ state, ok, error }: { state: 'loading' | 'ok' | 'error'; ok: string; error: string }) {
+  const tone = state === 'ok' ? 'success' : state === 'error' ? 'error' : 'gray';
+  const cls = { success: 'border-utility-success-200 bg-utility-success-50 text-utility-success-700', error: 'border-utility-error-200 bg-utility-error-50 text-utility-error-700', gray: 'border-secondary bg-secondary text-secondary' }[tone];
+  return <span role="status" className={`inline-flex items-center gap-xs rounded-full border px-md py-xxs text-xs font-medium ${cls}`}>{state === 'loading' ? 'Checking…' : state === 'ok' ? ok : error}</span>;
 }

@@ -136,3 +136,21 @@ test('overpayments add up to an exact client credit', () => {
   assert.equal(p.creditUsdc, '0.300001')
   assert.equal(computeProfile('acme', acme).creditUsdc, '0.000000')
 })
+
+test('a client past 100 memories is sharded so recall still returns all of it', async () => {
+  const mem = await import('./memory.mjs')
+  const base = mem.clientNs('shardtest')
+  const m = (i) => ({ id: `x${i}`, sentence: `e${i}`, tag: { type: 'note' }, timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString() })
+  assert.equal(mem.writeNs('shardtest'), base) // brand-new client
+  mem.store.set(base, Array.from({ length: mem.SHARD_MAX }, (_, i) => m(i)))
+  mem.store.set(`${mem.clientNs('shardtest2')}`, [m(999)]) // a different client whose id shares the prefix
+  assert.equal(mem.writeNs('shardtest'), `${base}/1`)
+  mem.store.set(`${base}/1`, [m(500)])
+  mem.store.set(`${base}/x`, [m(501)]) // not a shard
+  assert.deepEqual(mem.clientShards('shardtest'), [base, `${base}/1`])
+  assert.equal(mem.writeNs('shardtest'), `${base}/1`)
+  const all = mem.clientMemories('shardtest')
+  assert.equal(all.length, mem.SHARD_MAX + 1)
+  assert.equal(all[0].sentence, 'e500') // newest first across shards
+  for (const k of [base, `${base}/1`, `${base}/x`, mem.clientNs('shardtest2')]) mem.store.delete(k)
+})

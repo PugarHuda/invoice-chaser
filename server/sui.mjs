@@ -11,6 +11,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 import { createHmac, timingSafeEqual } from 'node:crypto'
 import { verifyTransactionSignature } from '@mysten/sui/verify'
+import { parseSerializedSignature } from '@mysten/sui/cryptography'
 
 export const NETWORK = process.env.SUI_NETWORK === 'testnet' ? 'testnet' : 'mainnet'
 export const GRPC_HOST = `sui-${NETWORK}-grpc.gateway.tatum.io:443`
@@ -132,11 +133,21 @@ export async function inspectSignedPayment(bytesB64, signature, payee, nonce) {
   } catch {
     return { ok: false, reason: 'invalid_transaction' }
   }
+  // zkLogin wallets (Slush with Google/Apple sign-in, Enoki) are checked against the current JWKs and
+  // epoch through Tatum's gRPC SignatureVerificationService; Ed25519/Secp/MultiSig verify locally.
+  // An invalid signature is a refusal; a lookup that could not run throws (the route answers 502).
   let signer
   try {
-    signer = (await verifyTransactionSignature(bytes, signature)).toSuiAddress()
+    if (parseSerializedSignature(signature).signatureScheme === 'ZkLogin') await throttle()
   } catch {
     return { ok: false, reason: 'invalid_signature' }
+  }
+  try {
+    signer = (await verifyTransactionSignature(bytes, signature, { client: sui(), address: sender })).toSuiAddress()
+  } catch (e) {
+    if (/provided address/.test(e.message)) return { ok: false, reason: 'signer_is_not_sender' }
+    if (/not valid|Unsupported|Invalid|length|parse/i.test(e.message)) return { ok: false, reason: 'invalid_signature' }
+    throw e
   }
   if (!sender || normAddr(signer) !== normAddr(sender)) return { ok: false, reason: 'signer_is_not_sender' }
   await throttle()

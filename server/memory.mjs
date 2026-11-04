@@ -6,6 +6,24 @@ import { waitUntil } from '@vercel/functions'
 
 export const NS_PREFIX = process.env.MEMWAL_NS_PREFIX || 'ic:main:'
 export const clientNs = (clientId) => `${NS_PREFIX}client:${clientId}`
+// recall() returns at most 100 memories per namespace, so a long-lived client is sharded:
+// ic:main:client:c1, ic:main:client:c1/1, /2 ... Writes go to the newest shard until it holds
+// SHARD_MAX, and every read unions all shards. Total recall survives any amount of history.
+// ponytail: two instances can both write the last slots of a shard; SHARD_MAX leaves 10 of headroom.
+export const SHARD_MAX = Number(process.env.MEMWAL_SHARD_MAX) || 90
+const shardOf = (ns, base) => (ns === base ? 0 : ns.startsWith(`${base}/`) && /^\d+$/.test(ns.slice(base.length + 1)) ? Number(ns.slice(base.length + 1)) : -1)
+export function clientShards(clientId) {
+  const base = clientNs(clientId)
+  return [...store.keys()].map((ns) => [ns, shardOf(ns, base)]).filter(([, k]) => k >= 0).sort((a, b) => a[1] - b[1]).map(([ns]) => ns)
+}
+export function writeNs(clientId) {
+  const base = clientNs(clientId)
+  const shards = clientShards(clientId)
+  const last = shards.at(-1) || base
+  const k = shardOf(last, base)
+  return (store.get(last)?.length || 0) >= SHARD_MAX ? `${base}/${k + 1}` : last
+}
+export const clientMemories = (clientId) => clientShards(clientId).flatMap((ns) => store.get(ns)).sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 export const RELAYER = process.env.MEMWAL_SERVER_URL || 'https://relayer.memory.walrus.xyz'
 
 let mw
@@ -176,9 +194,11 @@ export async function restoreAll() {
 }
 
 // Semantic search over one client's memories (Walrus recall: embeddings + cosine distance).
-export async function search(ns, query, limit = 5) {
-  const r = await memwal().recall({ query, namespace: ns, limit })
-  return r.results.map((h) => {
+export async function search(clientId, query, limit = 5) {
+  const shards = clientShards(clientId)
+  const hits = (await Promise.all((shards.length ? shards : [clientNs(clientId)]).map((namespace) => memwal().recall({ query, namespace, limit }))))
+    .flatMap((r) => r.results).sort((a, b) => a.distance - b.distance).slice(0, limit)
+  return hits.map((h) => {
     const d = decode(h.text) || { sentence: h.text.trim(), tag: { type: 'note' } }
     return { sentence: d.sentence, type: d.tag?.type, distance: Math.round(h.distance * 1000) / 1000, blobId: h.blob_id, at: d.tag?.at || h.created_at }
   })
@@ -192,4 +212,51 @@ export async function health() {
 
 export async function namespaceCounts() {
   return (await namespaces()).map((n) => ({ namespace: n.name, count: n.memory_count, updatedAt: n.updated_at }))
+}
+
+// Durability audit: is everything we remember still held, and for how long?
+// listMemories walks the relayer's full inventory (metadata only, no recall cap); then a few of
+// the newest blobs are fetched straight from a Walrus aggregator, so the check does not rely on
+// the relayer alone. Cached briefly: it walks every page of the account.
+const AGGREGATOR = process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space'
+const SPOT = 3
+let audit = null
+export async function durability() {
+  if (audit && Date.now() - audit.t < 60_000) return audit.v
+  const inv = []
+  let cursor
+  for (let more = true; more; ) {
+    const p = await memwal().listMemories({ cursor, limit: 500 })
+    inv.push(...p.memories.filter((m) => m.namespace_id.startsWith(NS_PREFIX)))
+    cursor = p.next_cursor ?? undefined
+    more = p.has_more && Boolean(cursor)
+  }
+  const held = new Set(inv.map((m) => m.blob_id))
+  const local = [...store.values()].flat()
+  // saved locally (relayer confirmed) but absent from the inventory: lost or not yet indexed
+  const missing = local.filter((m) => m.status === 'saved' && m.blobId && !held.has(m.blobId)).map((m) => ({ blobId: m.blobId, sentence: m.sentence.slice(0, 120) }))
+  const expiries = inv.map((m) => m.expires_at).filter(Boolean).sort()
+  const epochs = inv.map((m) => m.end_epoch).filter((e) => e != null)
+  const newest = [...inv].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, SPOT)
+  const spot = await Promise.all(newest.map(async (m) => {
+    const t = Date.now()
+    const r = await fetch(`${AGGREGATOR}/v1/blobs/${m.blob_id}`, { method: 'HEAD', signal: AbortSignal.timeout(8000) }).catch(() => null)
+    return { blobId: m.blob_id, onWalrus: r?.ok ?? false, bytes: Number(r?.headers.get('content-length')) || null, ms: Date.now() - t }
+  }))
+  const earliest = expiries[0] || null
+  const v = {
+    inventory: inv.length,
+    active: inv.filter((m) => m.status === 'active').length,
+    loadedLocally: local.filter((m) => m.status === 'saved').length,
+    missingFromInventory: missing,
+    earliestExpiry: earliest,
+    daysToEarliestExpiry: earliest ? Math.floor((Date.parse(earliest) - Date.now()) / 86_400_000) : null,
+    endEpochRange: epochs.length ? [Math.min(...epochs), Math.max(...epochs)] : null,
+    aggregator: AGGREGATOR,
+    spotCheck: spot,
+    ok: missing.length === 0 && spot.every((s) => s.onWalrus),
+    checkedAt: new Date().toISOString(),
+  }
+  audit = { t: Date.now(), v }
+  return v
 }

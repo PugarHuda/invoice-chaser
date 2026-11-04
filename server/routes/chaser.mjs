@@ -60,7 +60,7 @@ router.use((req, res, next) => {
 })
 
 const state = () => deriveState(mem.store)
-const memsFor = (clientId) => mem.store.get(mem.clientNs(clientId)) || []
+const memsFor = (clientId) => mem.clientMemories(clientId)
 const profileOf = (clientId) => computeProfile(clientId, memsFor(clientId))
 const clientName = (clients, id) => clients.find((c) => c.id === id)?.name || 'Unknown'
 const withStatus = (inv) => ({ ...inv, status: invoiceStatus(inv) })
@@ -120,14 +120,14 @@ router.post('/clients', (req, res) => {
   const contact = req.body?.contact == null || req.body.contact === '' ? null : req.body.contact
   if (contact !== null && (typeof contact !== 'string' || contact.length > 120)) return res.status(400).json({ error: 'contact must be text of 120 characters or fewer' })
   const id = newId('c')
-  const m = mem.remember(mem.clientNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact })
+  const m = mem.remember(mem.writeNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact })
   res.json({ client: { id, name }, memory: m })
 })
 
 router.get('/clients/:id', (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
-  res.json({ client: { ...client, email: client.contact, address: null }, profile: profileOf(client.id), memories: memsFor(client.id), namespace: mem.clientNs(client.id) })
+  res.json({ client: { ...client, email: client.contact, address: null }, profile: profileOf(client.id), memories: memsFor(client.id), namespace: mem.clientNs(client.id), namespaces: mem.clientShards(client.id) })
 })
 
 router.post('/clients/:id/preference', (req, res) => {
@@ -136,7 +136,7 @@ router.post('/clients/:id/preference', (req, res) => {
   if (note.length > 300) return res.status(400).json({ error: 'keep rules under 300 characters' })
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
-  const m = mem.remember(mem.clientNs(client.id), `Rule for ${client.name}: "${note}"`, { type: 'preference', client: client.id, note })
+  const m = mem.remember(mem.writeNs(client.id), `Rule for ${client.name}: "${note}"`, { type: 'preference', client: client.id, note })
   res.json({ success: true, memory: m, profile: profileOf(client.id) })
 })
 
@@ -147,7 +147,7 @@ router.post('/clients/:id/revoke', (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   if (!profileOf(client.id).preferences.includes(rule)) return res.status(400).json({ error: 'not an active rule for this client' })
-  const m = mem.remember(mem.clientNs(client.id), `Rule revoked for ${client.name}: "${rule}" no longer applies.`, { type: 'rule_revoked', client: client.id, rule })
+  const m = mem.remember(mem.writeNs(client.id), `Rule revoked for ${client.name}: "${rule}" no longer applies.`, { type: 'rule_revoked', client: client.id, rule })
   res.json({ success: true, memory: m, profile: profileOf(client.id) })
 })
 
@@ -166,7 +166,7 @@ router.post('/clients/:id/payer', async (req, res) => {
   }
   if (!sui.ADDRESS_RE.test(address)) return res.status(400).json({ error: 'Enter a Sui address (0x + 64 hex) or a SuiNS name (name.sui)' })
   const screen = await screenAddress(address).catch(() => null)
-  const m = mem.remember(mem.clientNs(client.id), `${client.name} pays from ${name ? `${name} (${address.slice(0, 10)}…)` : address}${screen ? `; Tatum screening: ${screen.verdict}` : ''}.`, { type: 'payer_expected', client: client.id, payer: address, name, screen: screen?.verdict || null })
+  const m = mem.remember(mem.writeNs(client.id), `${client.name} pays from ${name ? `${name} (${address.slice(0, 10)}…)` : address}${screen ? `; Tatum screening: ${screen.verdict}` : ''}.`, { type: 'payer_expected', client: client.id, payer: address, name, screen: screen?.verdict || null })
   res.json({ success: true, address, name, screen, memory: m })
 })
 
@@ -213,7 +213,7 @@ router.get('/clients/:id/search', async (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   try {
-    res.json({ query: q, results: await mem.search(mem.clientNs(client.id), q, 5) })
+    res.json({ query: q, results: await mem.search(client.id, q, 5) })
   } catch (e) {
     res.status(502).json({ error: `Walrus Memory recall: ${e.message}` })
   }
@@ -228,7 +228,7 @@ router.post('/clients/:id/notes', async (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   try {
-    const facts = await mem.ingestNotes(mem.clientNs(client.id), text)
+    const facts = await mem.ingestNotes(mem.writeNs(client.id), text)
     res.json({ success: true, facts, profile: profileOf(client.id) })
   } catch (e) {
     res.status(502).json({ error: `Walrus Memory analyze: ${e.message}` })
@@ -268,7 +268,7 @@ router.post('/invoices', (req, res) => {
   if (description && description.length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
   const id = newId('inv')
   const payAmount = uniquePayAmount(amount, new Set(invoices.map((i) => i.payAmount)))
-  const m = mem.remember(mem.clientNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
+  const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
   res.json({ invoice: { id, payAmount }, memory: m })
 })
 
@@ -366,7 +366,7 @@ router.post('/invoices/:id/receipt', async (req, res) => {
       receiptInflight.set(inv.id, (async () => {
         const name = clientName(clients, inv.clientId)
         const r = await storeReceipt({ invoiceId: inv.id, client: name, description: inv.description, amount: inv.payAmount, dueDate: inv.dueDate, paidOn: inv.settledAt, payee: PAYEE(), network: sui.NETWORK, explorer: sui.EXPLORER, payments: inv.payments.filter((p) => p.digest) })
-        mem.remember(mem.clientNs(inv.clientId), `Stored a PDF receipt for ${inv.id} (${name}) on Walrus as blob ${r.blobId}.`, { type: 'receipt_stored', client: inv.clientId, invoice: inv.id, blob_id: r.blobId, object_id: r.objectId, url: r.url, end_epoch: r.endEpoch })
+        mem.remember(mem.writeNs(inv.clientId), `Stored a PDF receipt for ${inv.id} (${name}) on Walrus as blob ${r.blobId}.`, { type: 'receipt_stored', client: inv.clientId, invoice: inv.id, blob_id: r.blobId, object_id: r.objectId, url: r.url, end_epoch: r.endEpoch })
         return r
       })().finally(() => receiptInflight.delete(inv.id)))
     }
@@ -416,7 +416,7 @@ router.post('/invoices/:id/remind', async (req, res) => {
     payLink: `${req.protocol}://${req.get('host')}/?pay=${inv.id}`,
     facts: (p.cites || []).map((c) => c.sentence),
   })
-  const m = mem.remember(mem.clientNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean), drafted_by: draft.source === 'llm' ? draft.model : 'template' })
+  const m = mem.remember(mem.writeNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean), drafted_by: draft.source === 'llm' ? draft.model : 'template' })
   res.json({ text: draft.text, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
 })
 
@@ -491,7 +491,7 @@ async function settleDigest(invoiceId, requested, channel) {
     // money above what was owed is a credit for this client, remembered with the payment (not silently absorbed)
     const over = tx.received > expected ? sui.fromMicro(tx.received - expected) : null
     const m = mem.remember(
-      mem.clientNs(inv.clientId),
+      mem.writeNs(inv.clientId),
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
@@ -681,7 +681,7 @@ router.post('/mcp', mcpHandler((req) => ({
   profileOf,
   plan,
   owed,
-  search: (clientId, q) => mem.search(mem.clientNs(clientId), q, 5),
+  search: (clientId, q) => mem.search(clientId, q, 5),
   terms: (inv) => paymentTerms(req, inv),
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
   baseUrl: `${req.protocol}://${req.get('host')}`,
@@ -768,7 +768,7 @@ router.get('/cron-check', async (_req, res) => {
 })
 
 router.get('/proof', async (_req, res) => {
-  const [cp, bal, h, nss, rSui, rUsdc] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC')])
+  const [cp, bal, h, nss, rSui, rUsdc, dur] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability()])
   const counts = nss.status === 'fulfilled' ? nss.value : []
   res.json({
     tatumSuiGrpc: {
@@ -797,6 +797,7 @@ router.get('/proof', async (_req, res) => {
       namespaces: Object.fromEntries(counts.map((n) => [n.namespace, n.count])),
       pendingMemoriesCount: mem.pendingCount(),
       loadedAt: mem.loadState.loadedAt,
+      durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       sampleMemories: [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
     },
   })
