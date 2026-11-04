@@ -38,10 +38,22 @@ function build(deps) {
     return text(await deps.search(clientId, query))
   })
 
-  s.registerTool('payment_terms', { title: 'How to pay an invoice', description: 'x402 payment terms (Sui USDC, Payment Kit registry + nonce), the sui:pay URI and the human pay link for an invoice.', inputSchema: { invoiceId: z.string() }, annotations: RO }, async ({ invoiceId }) => {
+  s.registerTool('payment_terms', { title: 'How to pay an invoice', description: 'Payment terms (Sui USDC, Payment Kit registry + nonce), the sui:pay URI, the human pay link, and the agent endpoints: x402 v1/v2, MPP and the live payment stream.', inputSchema: { invoiceId: z.string() }, annotations: RO }, async ({ invoiceId }) => {
     const i = findInvoice(invoiceId)
     if (!i) return { ...text({ error: `unknown invoice ${invoiceId}` }), isError: true }
-    return text({ ...deps.terms(i), payPage: `${deps.baseUrl}/?pay=${i.id}`, x402: `${deps.baseUrl}/api/chaser/x402/${i.id}` })
+    const api = `${deps.baseUrl}/api/chaser`
+    return text({
+      ...deps.terms(i),
+      payPage: `${deps.baseUrl}/?pay=${i.id}`,
+      // every way an agent can settle this invoice, all verified through Tatum and remembered in Walrus
+      protocols: {
+        x402v1: { url: `${api}/x402/${i.id}`, flow: 'pay via Payment Kit, retry with X-PAYMENT: <digest>' },
+        x402v2: { url: `${api}/x402/${i.id}`, flow: 'read PAYMENT-REQUIRED, send PAYMENT-SIGNATURE with the signed unexecuted Payment Kit transaction; server simulates and broadcasts' },
+        mpp: { url: `${api}/mpp/${i.id}`, flow: 'WWW-Authenticate: Payment challenge, pay, retry with Authorization: Payment <credential>' },
+        live: { url: `${api}/pay/${i.id}/live`, flow: 'Server-Sent Events: watching, seen, paid (Tatum gRPC checkpoint stream)' },
+      },
+      x402: `${api}/x402/${i.id}`,
+    })
   })
 
   s.registerTool('learning_summary', { title: 'Is it learning?', description: "Mean prediction error on each client's first invoice vs their latest, across the whole book.", inputSchema: {}, annotations: RO }, async () => text(deps.learning() || { note: 'needs a client with 2+ paid invoices' }))
