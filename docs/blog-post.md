@@ -3,7 +3,7 @@ title: "Invoice Chaser: an invoice tool that learns how each client pays (Walrus
 tags: walrus, sui, tatum, hackathon
 ---
 
-<!-- DRAFT for dev.to. Fill the two TODO links before publishing. -->
+<!-- Published: https://dev.to/hudapugar/invoice-chaser-an-invoice-tool-that-learns-how-each-client-pays-walrus-memory-tatum-on-sui-ji7 -->
 
 Every freelancer has a client like Acme. The invoice is due on the 5th, nothing happens, you send a friendly nudge on the 6th, nothing happens, and somewhere around the 10th the money shows up, usually right after you finally write something formal. Next month it happens again, because your invoicing tool has no idea it already happened four times.
 
