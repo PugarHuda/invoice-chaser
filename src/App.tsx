@@ -250,7 +250,7 @@ export default function App() {
     const stop = setTimeout(() => { es.close(); setLive((l) => ({ ...l, state: 'paused' })); }, LIVE_PAGE_MS);
     const es = new EventSource(`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(id)}/live`);
     es.addEventListener('watching', (e) => { const d = JSON.parse((e as MessageEvent).data); setLive((l) => ({ ...l, state: 'watching', via: d.provider === 'tatum' ? 'Tatum gRPC' : 'the public Sui fullnode (Tatum credits exhausted)' })); });
-    es.addEventListener('checkpoint', (e) => setLive((l) => ({ ...l, state: 'watching', checkpoint: JSON.parse((e as MessageEvent).data).checkpoint })));
+    es.addEventListener('checkpoint', (e) => { const d = JSON.parse((e as MessageEvent).data); setLive((l) => ({ ...l, state: 'watching', checkpoint: d.checkpoint, via: d.provider ? (d.provider === 'tatum' ? 'Tatum gRPC' : 'the public Sui fullnode (Tatum credits exhausted)') : l.via })); });
     es.addEventListener('seen', () => setLive((l) => ({ ...l, state: 'verifying' })));
     es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error, 'error'); });
     es.addEventListener('paid', (e) => {
@@ -260,7 +260,8 @@ export default function App() {
       if (!d.already) showToast(d.message || 'Payment detected live and verified on-chain');
       fetchInvoiceDetail(id);
     });
-    es.onerror = () => setLive((l) => ({ ...l, state: 'reconnecting' }));
+    // a refused stream (e.g. 429) closes for good: say so and offer Resume instead of "reconnecting" forever
+    es.onerror = () => setLive((l) => ({ ...l, state: es.readyState === EventSource.CLOSED ? 'paused' : 'reconnecting' }));
     return () => { clearTimeout(stop); es.close(); };
   }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, !!invoiceDetail, pageVisible, liveEpoch]);
 

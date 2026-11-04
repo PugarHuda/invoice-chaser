@@ -356,7 +356,7 @@ data: ${JSON.stringify(data)}
       if (error) return send('error', { error })
       if (Date.now() - lastSent > 2000) {
         lastSent = Date.now()
-        send('checkpoint', { checkpoint: seq })
+        send('checkpoint', { checkpoint: seq, provider: sui.provider() })
       }
     })
   } catch (e) {
