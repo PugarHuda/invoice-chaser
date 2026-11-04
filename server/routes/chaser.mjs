@@ -116,8 +116,11 @@ router.post('/clients', (req, res) => {
   const name = String(req.body?.name || '').trim().replace(/\s+/g, ' ')
   if (!name) return res.status(400).json({ error: 'name is required' })
   if (name.length > 80) return res.status(400).json({ error: 'name must be 80 characters or fewer' })
+  // memories are permanent on Walrus: contact is optional short text, nothing else
+  const contact = req.body?.contact == null || req.body.contact === '' ? null : req.body.contact
+  if (contact !== null && (typeof contact !== 'string' || contact.length > 120)) return res.status(400).json({ error: 'contact must be text of 120 characters or fewer' })
   const id = newId('c')
-  const m = mem.remember(mem.clientNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact: req.body?.contact || null })
+  const m = mem.remember(mem.clientNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact })
   res.json({ client: { id, name }, memory: m })
 })
 
@@ -261,7 +264,8 @@ router.post('/invoices', (req, res) => {
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dueDate || '') && isoDay(`${dueDate}T00:00:00Z`) === dueDate
   if (!/^\d+(\.\d{1,2})?$/.test(typeof amount === 'number' ? String(Math.round(amount * 100) / 100 === amount ? amount : 'x') : String(amount))) return res.status(400).json({ error: 'amount must be a number with at most 2 decimals' })
   if (!(Number(amount) >= 0.01 && Number(amount) <= 1_000_000) || !validDate) return res.status(400).json({ error: 'amount between 0.01 and 1,000,000 and a real dueDate (YYYY-MM-DD) are required' })
-  if (description && String(description).length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
+  if (description != null && typeof description !== 'string') return res.status(400).json({ error: 'description must be text' })
+  if (description && description.length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
   const id = newId('inv')
   const payAmount = uniquePayAmount(amount, new Set(invoices.map((i) => i.payAmount)))
   const m = mem.remember(mem.clientNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
