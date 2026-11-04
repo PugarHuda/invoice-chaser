@@ -524,8 +524,26 @@ async function syncPayments() {
     const [code, body] = await settleDigest(inv.id, digest, 'payment-kit')
     settled.push({ invoice: inv.id, digest, code, message: body.message || body.error })
   }
+  // Plain USDC transfers (an exchange withdrawal, any wallet) carry no nonce: match the newest
+  // transactions that touched the payee by the invoice's unique micro-amount, never older than the
+  // invoice. Only full unsent amounts are matched (a remaining balance is not unique). settleDigest
+  // re-verifies every candidate through Tatum and refuses reused digests.
+  const unpaid = state().invoices.filter((i) => i.status === 'sent' && !i.seed && !settled.some((x) => x.invoice === i.id && x.code === 200))
+  let reconciled = 0
+  if (unpaid.length) {
+    const { usedDigests } = state()
+    const incoming = await sui.recentIncoming(PAYEE(), 100)
+    for (const inv of unpaid) {
+      const want = sui.toMicro(owed(inv))
+      const hit = incoming.find((t) => t.received === want && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
+      if (!hit) continue
+      const [code, body] = await settleDigest(inv.id, hit.digest, 'reconcile')
+      if (code === 200) reconciled++
+      settled.push({ invoice: inv.id, digest: hit.digest, code, message: body.message || body.error, via: 'reconcile' })
+    }
+  }
   lastSync = Date.now()
-  return { checked: open.length, settled, at: new Date(lastSync).toISOString() }
+  return { checked: open.length, settled, reconciled, at: new Date(lastSync).toISOString() }
 }
 router.post('/sync-payments', async (_req, res) => {
   // ponytail: one sync per instance per 10 s; each open invoice costs one gRPC lookup

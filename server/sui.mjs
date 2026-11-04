@@ -288,3 +288,28 @@ export const fromMicro = (m) => {
   const s = BigInt(m).toString().padStart(COIN_DECIMALS + 1, '0')
   return `${s.slice(0, -COIN_DECIMALS)}.${s.slice(-COIN_DECIMALS)}`
 }
+
+// Reconciliation: the payee's newest transactions via Tatum gRPC LedgerService.ListTransactions with
+// an affected_address filter (the SDK wrapper only exposes sender/moveCall, so this is the raw call).
+// Returns USDC actually received per transaction. Plain transfers of an invoice's unique amount are
+// found here even when no pay page was open and Payment Kit was not used.
+export async function recentIncoming(payee, limit = 100) {
+  await throttle()
+  const call = sui().ledgerService.listTransactions({
+    readMask: { paths: ['digest', 'checkpoint', 'timestamp', 'balance_changes', 'effects.status', 'transaction.sender'] },
+    filter: { terms: [{ literals: [{ negated: false, predicate: { oneofKind: 'affectedAddress', affectedAddress: { address: payee } } }] }] },
+    options: { limit, ordering: 1 /* DESCENDING: newest first */ },
+  })
+  const out = []
+  const me = normAddr(payee)
+  for await (const f of call.responses) {
+    const t = f.transaction
+    if (!t?.digest) continue
+    if (t.effects?.status && t.effects.status.success === false) continue
+    const received = (t.balanceChanges || []).filter((b) => normAddr(b.address) === me && normalizeStructTag(b.coinType) === normalizeStructTag(USDC_COIN_TYPE)).reduce((s, b) => s + BigInt(b.amount), 0n)
+    if (received <= 0n) continue
+    const ts = t.timestamp ? new Date(Number(t.timestamp.seconds) * 1000 + Math.floor((t.timestamp.nanos || 0) / 1e6)).toISOString() : null
+    out.push({ digest: t.digest, checkpoint: String(t.checkpoint ?? ''), timestamp: ts, sender: t.transaction?.sender || null, received })
+  }
+  return out
+}
