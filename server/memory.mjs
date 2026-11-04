@@ -221,8 +221,12 @@ export async function namespaceCounts() {
 const AGGREGATOR = process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space'
 const SPOT = 3
 let audit = null
-export async function durability() {
-  if (audit && Date.now() - audit.t < 60_000) return audit.v
+// concurrent /proof requests share one in-flight audit; a failed audit is not cached
+export function durability() {
+  if (!audit || Date.now() - audit.t > 60_000) audit = { t: Date.now(), v: runAudit().catch((e) => ((audit = null), Promise.reject(e))) }
+  return audit.v
+}
+async function runAudit() {
   const inv = []
   let cursor
   for (let more = true; more; ) {
@@ -257,6 +261,5 @@ export async function durability() {
     ok: missing.length === 0 && spot.every((s) => s.onWalrus),
     checkedAt: new Date().toISOString(),
   }
-  audit = { t: Date.now(), v }
   return v
 }
