@@ -124,7 +124,7 @@ export async function executeSigned(bytesB64, signature) {
 // ---- x402 v2 facilitator (exact scheme on Sui) ---------------------------------------------
 // The agent sends a signed, unexecuted transaction. We check the signature against its sender,
 // simulate it through Tatum to see exactly what it would move, and only then broadcast it.
-export async function inspectSignedPayment(bytesB64, signature, payee) {
+export async function inspectSignedPayment(bytesB64, signature, payee, nonce) {
   const bytes = Buffer.from(bytesB64, 'base64')
   let sender
   try {
@@ -140,10 +140,15 @@ export async function inspectSignedPayment(bytesB64, signature, payee) {
   }
   if (!sender || normAddr(signer) !== normAddr(sender)) return { ok: false, reason: 'signer_is_not_sender' }
   await throttle()
-  const r = json(await once(() => sui().core.simulateTransaction({ transaction: bytes, include: { balanceChanges: true, effects: true } })))
+  const r = json(await once(() => sui().core.simulateTransaction({ transaction: bytes, include: { balanceChanges: true, effects: true, events: true } })))
   const t = r?.Transaction
   if (!t || t.effects?.status?.success === false) return { ok: false, reason: 'simulation_failed', detail: r?.FailedTransaction?.effects?.status?.error || t?.effects?.status?.error || null }
   const received = (t.balanceChanges || []).filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE).reduce((a, c) => a + BigInt(c.amount), 0n)
+  // Only Payment Kit payments with this invoice as the nonce: then the chain itself rejects a second
+  // payment for the invoice, even if two submissions race across instances.
+  const want = Buffer.from(bcs.string().serialize(nonce).toBytes())
+  const bound = (t.events || []).some((e) => e.packageId === PK_PACKAGE && /::payment_kit::PaymentReceipt$/.test(e.eventType || '') && Buffer.from(e.bcs?.data || (e.bcs && typeof e.bcs === 'object' ? Object.values(e.bcs) : [])).includes(want))
+  if (!bound) return { ok: false, reason: 'payment_kit_required', detail: `pay through the Payment Kit registry with nonce ${nonce}` }
   return { ok: true, sender, received }
 }
 

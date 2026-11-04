@@ -130,3 +130,9 @@ test('encoding round-trips and amounts are exact', () => {
   assert.equal(a, '300.005500')
   assert.ok(toMicro(a) - toMicro('300') < 10_000n)
 })
+
+test('overpayments add up to an exact client credit', () => {
+  const p = computeProfile('acme', [...acme, mem('2026-10-30T00:00:00Z', { type: 'invoice_paid', client: 'acme', invoice: 'inv-9', paid: '2026-10-30', delay_days: 0, overpaid: '0.100001' }), mem('2026-10-31T00:00:00Z', { type: 'invoice_paid', client: 'acme', invoice: 'inv-10', paid: '2026-10-31', delay_days: 0, overpaid: '0.2' })])
+  assert.equal(p.creditUsdc, '0.300001')
+  assert.equal(computeProfile('acme', acme).creditUsdc, '0.000000')
+})

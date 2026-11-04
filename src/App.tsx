@@ -63,6 +63,7 @@ interface ClientProfile {
   reliabilityBadge: string;
   preferences: string[];
   revokedRules?: string[];
+  creditUsdc?: string;
   memoryCount: number;
   history?: Array<{ invoice: string; n: number; predicted: number; actual: number; error: number }>;
 }
@@ -945,6 +946,10 @@ export default function App() {
                       );
                     })()}
 
+                    {Number(clientDetail.profile.creditUsdc || 0) > 0 && (
+                      <p className="rounded-md border border-secondary bg-utility-success-50 px-md py-xs text-xs text-utility-success-700">Credit on account: <span className="font-semibold">{clientDetail.profile.creditUsdc} USDC</span> overpaid on earlier invoices (remembered in Walrus with each payment).</p>
+                    )}
+
                     {/* Active rules: each can be revoked (append-only revocation memory on Walrus) */}
                     {(clientDetail.profile.preferences.length > 0 || (clientDetail.profile.revokedRules || []).length > 0) && (
                       <div className="flex flex-col gap-xs pt-xs">
@@ -1437,6 +1442,7 @@ export default function App() {
                       navigator.clipboard?.writeText(invoiceDetail?.invoice.payeeAddress || '');
                       showToast('Address copied to clipboard');
                     }}
+                    aria-label="Copy payee address" title="Copy payee address"
                     className="p-xs text-secondary hover:text-primary rounded focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
                     <Copy className="w-3.5 h-3.5" />

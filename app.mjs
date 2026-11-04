@@ -34,6 +34,7 @@ app.get('/llms.txt', (req, res) => {
 ## For paying agents (x402)
 - \`GET ${base}/api/chaser/x402/{invoiceId}\` returns \`402 Payment Required\` with x402 terms: scheme \`exact\`, network \`sui:mainnet\`, USDC asset, \`maxAmountRequired\` (base units), \`payTo\`, and \`extra.paymentKit\` (Sui Payment Kit registry + nonce).
 - Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
+- x402 v2: the same 402 also carries a base64 \`PAYMENT-REQUIRED\` header; send \`PAYMENT-SIGNATURE\` (base64 \`{ x402Version: 2, accepted, payload: { signature, transaction } }\`) with a signed, unexecuted Payment Kit transaction (nonce = invoice id) and the server simulates and broadcasts it through Tatum, answering with \`PAYMENT-RESPONSE\`.
 - [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
 
 ## For paying agents (MPP)

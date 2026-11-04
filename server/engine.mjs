@@ -158,6 +158,8 @@ export function computeProfile(clientId, memories) {
     // the memories a plan is allowed to cite: recent payments + every rule
     evidence: [...pays.slice(-4).reverse(), ...preferences, ...notes.filter((n) => Object.keys(parsePreference(n.sentence)).length)].map((m) => ({ sentence: m.sentence, blobId: m.blobId || null, status: m.status || 'saved', at: m.timestamp })),
     memoryCount: memories.length,
+    // overpayments are kept as a credit the client can draw on (exact micro-unit sum)
+    creditUsdc: unmicro(memories.filter((m) => m.tag?.overpaid).reduce((a, m) => a + micro(m.tag.overpaid), 0n)),
     revokedRules: [...revokedAt.keys()].filter((r) => !preferences.some((p) => p.tag.note === r) && !notes.some((n) => n.sentence === r)),
   }
 }

@@ -484,14 +484,16 @@ async function settleDigest(invoiceId, requested, channel) {
     const received = sui.fromMicro(tx.received)
     const who = payer ? ` from ${payerName || `${payer.slice(0, 8)}…`}${unexpectedPayer ? ' (NOT the wallet this client said it pays from)' : newPayer ? ' (a wallet this client never paid from before)' : ''}${screen?.verdict === 'flagged' ? ' [FLAGGED by Tatum malicious-address screening]' : ''}` : ''
     settledDigests.add(digest)
+    // money above what was owed is a credit for this client, remembered with the payment (not silently absorbed)
+    const over = tx.received > expected ? sui.fromMicro(tx.received - expected) : null
     const m = mem.remember(
       mem.clientNs(inv.clientId),
       full
-        ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}.`
+        ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived) },
+      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over },
     )
-    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, message: `Verified on ${NET} via Tatum: ${received} USDC received${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
+    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via Tatum: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
     inflight.delete(requested)
     inflight.delete(invoiceId)
@@ -589,9 +591,22 @@ async function x402v2(req, res, inv, header) {
   if (p?.x402Version !== 2 || a.scheme !== 'exact' || a.network !== want.network || a.asset !== want.asset || a.amount !== want.amount || sui.normAddr(a.payTo) !== sui.normAddr(want.payTo)) return fail('payment_requirements_mismatch')
   const { signature, transaction } = p.payload || {}
   if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400)
+  // one v2 settlement per invoice at a time (per instance), held from inspection through settlement
+  if (x402Inflight.has(inv.id)) return fail('payment_in_progress', 409)
+  if (mem.loadState.truncated?.length) return fail('memory_not_fully_loaded', 503)
+  x402Inflight.add(inv.id)
+  try {
+    return await x402v2Settle(req, res, inv, want, signature, transaction, fail)
+  } finally {
+    x402Inflight.delete(inv.id)
+  }
+}
+const x402Inflight = new Set()
+async function x402v2Settle(req, res, inv, want, signature, transaction, fail) {
+  if (state().invoices.find((i) => i.id === inv.id)?.status === 'paid') return fail('invoice_already_paid', 409)
   let check
   try {
-    check = await sui.inspectSignedPayment(transaction, signature, PAYEE())
+    check = await sui.inspectSignedPayment(transaction, signature, PAYEE(), inv.id)
   } catch (e) {
     return fail(`verify_error: ${e.message}`, 502)
   }

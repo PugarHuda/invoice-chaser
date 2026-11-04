@@ -81,6 +81,10 @@ The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` an
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
 ```
 
+### x402 v2: the server is the facilitator
+
+The same endpoint also speaks [x402 v2](https://github.com/x402-foundation/x402/tree/main/specs) (`exact` scheme on Sui). Every 402 carries the v2 requirements base64-encoded in a `PAYMENT-REQUIRED` header (CAIP-2 `sui:mainnet`, amount in base units, USDC, `payTo`, Payment Kit nonce in `extra`). A v2 agent doesn't broadcast anything: it sends `PAYMENT-SIGNATURE` = `{ x402Version: 2, accepted, payload: { signature, transaction } }`. The server acts as the facilitator through Tatum. It checks that the signer is the transaction's sender, simulates the transaction to see exactly what it would move, and requires a Payment Kit `PaymentReceipt` for **this** invoice's nonce, so the chain itself rejects a second payment even if two submissions race. Only then does it broadcast, settle into Walrus Memory, and answer with a `PAYMENT-RESPONSE` header (`success`, `transaction`, `network`, `payer`). One settlement per invoice at a time; refuses while memory isn't fully loaded. `scripts/ap-agent.mjs` speaks v2 when offered (`--v1` for the old flow). **On Mainnet:** [tx](https://suiscan.xyz/mainnet/tx/BnnyNUwvAYVqWT7bM2HAAWVRuPgoMckD6Tk2DzTqftFJ) for `inv-mw1iflmeba52e5`; the agent only signed.
+
 ### MPP (Machine Payments Protocol) on the same invoice
 
 The invoice is also an [MPP](https://mpp.dev) charge, using [`@suimpp/mpp`](https://www.npmjs.com/package/@suimpp/mpp) + `mppx`:
