@@ -56,3 +56,10 @@ test('x402 v2 signature check: wrong signer and malformed signatures are refused
   assert.equal((await s.inspectSignedPayment(b64, 'AAAA', '0x1', 'inv-x')).reason, 'invalid_signature')
   assert.equal((await s.inspectSignedPayment('not-a-tx', other, '0x1', 'inv-x')).reason, 'invalid_transaction')
 })
+
+test('the whole app module graph loads (catches syntax errors in any route or discovery file)', async () => {
+  const { default: app } = await import('../app.mjs')
+  assert.equal(typeof app, 'function')
+  const { llms } = await import('./discovery.mjs')
+  assert.match(llms('https://x.example'), /invoice\.pdf/)
+})

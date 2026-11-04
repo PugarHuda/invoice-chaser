@@ -34,7 +34,7 @@ export const llms = (base) => `# Invoice Chaser
 - [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, learning_summary)
 
 ## Receipts and calendar
-- `GET ${base}/api/chaser/pay/{invoiceId}/invoice.pdf`: the invoice as a PDF (exact amount, Payment Kit sui:pay QR, pay link, MPP and x402 endpoints; stamped PAID with its transaction once settled).
+- \`GET ${base}/api/chaser/pay/{invoiceId}/invoice.pdf\`: the invoice as a PDF (exact amount, Payment Kit sui:pay QR, pay link, MPP and x402 endpoints; stamped PAID with its transaction once settled).
 - Paid invoices can carry a PDF receipt stored on Walrus; \`GET ${base}/api/chaser/invoices/{invoiceId}\` returns \`receipt.url\` (Walrus aggregator).
 - [Reminder calendar](${base}/api/chaser/reminders.ics): every open invoice's reminder plan as iCalendar.
 
