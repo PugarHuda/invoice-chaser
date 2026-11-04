@@ -154,3 +154,17 @@ test('a client past 100 memories is sharded so recall still returns all of it', 
   assert.equal(all[0].sentence, 'e500') // newest first across shards
   for (const k of [base, `${base}/1`, `${base}/x`, mem.clientNs('shardtest2')]) mem.store.delete(k)
 })
+
+test('early payers are learned as early (negative delay), and the plan still never chases before due', () => {
+  const early = [
+    mem('2026-09-01T10:00:00Z', { type: 'client_created', client: 'e', name: 'Early Co' }),
+    ...['2026-09-10', '2026-09-25', '2026-10-10'].map((due, i) => mem(`${isoDay(new Date(due).getTime() - 4 * 86400000)}T12:00:00Z`, { type: 'invoice_paid', client: 'e', invoice: `e${i}`, due, paid: isoDay(new Date(due).getTime() - 4 * 86400000), delay_days: -4, reminders: 0 })),
+  ]
+  const p = computeProfile('e', early)
+  assert.equal(p.ewmaDelayDays, -4)
+  assert.equal(p.reliabilityBadge, 'Pays Early')
+  const pl = plan({ dueDate: '2026-11-05' }, p)
+  assert.equal(pl.predictedPayDate, '2026-11-05') // clamped to due, never before
+  assert.ok(pl.steps[0].date > '2026-11-05')
+  assert.match(pl.memoriesUsed[0], /early, ~4 day/)
+})

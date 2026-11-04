@@ -139,6 +139,7 @@ export function computeProfile(clientId, memories) {
   if (!pays.length) reliabilityBadge = 'New Client'
   else if (underpayRate > 5) reliabilityBadge = `Underpayer (~${Math.round(underpayRate)}%)`
   else if (median > 3) reliabilityBadge = 'Pays Late'
+  else if (median <= -2) reliabilityBadge = 'Pays Early'
 
   return {
     clientId,
@@ -242,7 +243,7 @@ export function plan(inv, profile, { ignoreMemory = false } = {}) {
   }
   const tone = c.forceTone || profile.bestTone
   const used = [
-    `Pays ${delay === 0 ? 'on time' : `~${delay} day(s) after due`} (EWMA over ${profile.totalPaidInvoices} paid invoice(s), confidence ${Math.round(profile.confidence * 100)}%).`,
+    `Pays ${profile.ewmaDelayDays <= -1 ? `early, ~${Math.round(-profile.ewmaDelayDays)} day(s) before due (no reminder before due)` : delay === 0 ? 'on time' : `~${delay} day(s) after due`} (EWMA over ${profile.totalPaidInvoices} paid invoice(s), confidence ${Math.round(profile.confidence * 100)}%).`,
     `Best tone so far: ${profile.bestTone} (${profile.toneStats[profile.bestTone].hits}/${profile.toneStats[profile.bestTone].total} reminders followed by payment within 3 days).`,
   ]
   if (profile.preferences.length) used.push(`Your rules: ${profile.preferences.join('; ')}`)

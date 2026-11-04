@@ -26,14 +26,14 @@ if (have < micro) {
   const swap = await buildSwapSuiForUsdc(me, micro - have + 1000n)
   const { signature } = await kp.signTransaction(Buffer.from(swap.bytes, 'base64'))
   const r = await executeSigned(swap.bytes, signature)
-  console.log(`swapped ${Number(swap.suiIn) / 1e9} SUI -> ${fromMicro(swap.usdcOut)} USDC: ${r.digest}`)
+  console.log(`swapped ${Number(swap.suiIn) / 1e9} SUI -> ${fromMicro(swap.usdcOut)} USDC: ${r.Transaction?.digest || r.FailedTransaction?.digest}`)
   await new Promise((r) => setTimeout(r, 3000))
 }
 
 const bytes = await buildUsdcTransfer(me, payee, micro)
 const { signature } = await kp.signTransaction(Buffer.from(bytes, 'base64'))
 const sent = await executeSigned(bytes, signature)
-console.log(`plain USDC transfer (no nonce, not reported): ${sent.digest}`)
+console.log(`plain USDC transfer (no nonce, not reported): ${sent.Transaction?.digest || sent.FailedTransaction?.digest}`)
 
 for (let i = 0; i < 12; i++) {
   await new Promise((r) => setTimeout(r, 10_000))

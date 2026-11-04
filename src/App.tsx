@@ -876,7 +876,7 @@ export default function App() {
                       </span>
                     </div>
                     <div className="text-xs text-secondary mt-xxs">
-                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : 'on time'} • Reminders: {c.profile.remindersNeeded} • {c.profile.totalPaidInvoices} paid</>}
+                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : c.profile.medianDelayDays < 0 ? `${-c.profile.medianDelayDays} days early` : 'on time'} • Reminders: {c.profile.remindersNeeded} • {c.profile.totalPaidInvoices} paid</>}
                     </div>
                   </button>
                 ))}
@@ -938,19 +938,19 @@ export default function App() {
                     {/* Learning chart: what we predicted before each payment vs what happened */}
                     {clientDetail.profile.history && clientDetail.profile.history.length > 0 && (() => {
                       const h = clientDetail.profile.history!;
-                      const max = Math.max(1, ...h.flatMap((x) => [x.predicted, x.actual]));
+                      const max = Math.max(1, ...h.flatMap((x) => [Math.abs(x.predicted), Math.abs(x.actual)]));
                       return (
                         <div className="p-md bg-secondary rounded-lg border border-secondary space-y-sm">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-semibold text-primary">How the prediction learned</span>
-                            <span className="text-xs text-tertiary">days late: predicted before payment vs actual</span>
+                            <span className="text-xs text-tertiary">days late (or early): predicted before payment vs actual</span>
                           </div>
                           {h.map((x) => (
                             <div key={x.invoice} className="grid grid-cols-[72px_1fr_64px] items-center gap-sm text-xs">
                               <span className="text-secondary font-mono">#{x.n} {x.invoice}</span>
                               <div className="space-y-xxs">
-                                <div className="h-2 rounded-full bg-utility-brand-200" style={{ width: `${(x.predicted / max) * 100}%`, minWidth: 2 }} title={`predicted ${x.predicted}d`} />
-                                <div className="h-2 rounded-full bg-brand-solid" style={{ width: `${(x.actual / max) * 100}%`, minWidth: 2 }} title={`actual ${x.actual}d`} />
+                                <div className="h-2 rounded-full bg-utility-brand-200" style={{ width: `${(Math.abs(x.predicted) / max) * 100}%`, minWidth: 2 }} title={`predicted ${x.predicted < 0 ? `${-x.predicted}d early` : `${x.predicted}d late`}`} />
+                                <div className="h-2 rounded-full bg-brand-solid" style={{ width: `${(Math.abs(x.actual) / max) * 100}%`, minWidth: 2 }} title={`actual ${x.actual < 0 ? `${-x.actual}d early` : `${x.actual}d late`}`} />
                               </div>
                               <span className={x.error === 0 ? 'text-utility-success-700 font-semibold' : 'text-tertiary'}>
                                 {x.error === 0 ? 'exact' : `off by ${x.error}d`}

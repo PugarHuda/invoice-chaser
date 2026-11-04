@@ -472,7 +472,8 @@ async function settleDigest(invoiceId, requested, channel) {
     const full = tx.received >= expected
     const totalReceived = sui.toMicro(inv.payAmount) - expected + tx.received
     const paid = isoDay(tx.timestamp || Date.now())
-    const delay = Math.max(0, Math.round((new Date(paid) - new Date(inv.dueDate)) / DAY))
+    // negative = paid early; kept as-is so the profile can learn early payers (plans still clamp at due)
+    const delay = Math.round((new Date(paid) - new Date(inv.dueDate)) / DAY)
     const ms = memsFor(inv.clientId)
     const last = ms.find((m) => m.tag?.type === 'reminder_sent' && m.tag.invoice === inv.id)
     // Payer recognition: who paid, their SuiNS name, and whether this client has paid from it before.
@@ -493,7 +494,7 @@ async function settleDigest(invoiceId, requested, channel) {
     const m = mem.remember(
       mem.writeNs(inv.clientId),
       full
-        ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay} day(s) after due, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
+        ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay < 0 ? `${-delay} day(s) before due` : `${delay} day(s) after due`}, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
       { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over },
     )

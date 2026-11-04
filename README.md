@@ -116,6 +116,14 @@ An agent that only knows the domain can find every way to pay. Each link below i
 - `Accept: text/markdown` on a page, or on a pay link (`/?pay=inv-101`), returns markdown instead of the SPA shell. The pay link answers with that invoice's MPP, x402 and live endpoints.
 - `robots.txt` with Content Signals, plus `sitemap.xml`. Unknown `/api/*` and `/.well-known/*` paths are real JSON 404s, not soft-404 HTML.
 
+## Payments nobody reported (reconciliation)
+
+Many clients pay from an exchange or a wallet that knows nothing about Payment Kit. They send the exact amount and close the tab. Tatum Notifications does not cover Sui yet (checked against `GET /v4/subscription/chains`), so sync covers this case itself with Tatum's gRPC gateway:
+
+- `LedgerService.ListTransactions` with an `affected_address` filter on the payee, newest first. This is the raw gRPC call, because the SDK wrapper only exposes sender and move-call filters.
+- Each transaction's `balance_changes` show the exact USDC received. An unsent invoice settles when a transaction carries its unique micro-amount, is not older than the invoice, and its digest was never used. Every candidate still goes through the normal Tatum verify-and-settle path.
+- Mainnet proof: invoice `inv-mw25p3mw60f829` was paid by a plain USDC transfer that was never reported, and sync settled it as channel `reconcile` ([tx CzFhbHnE…](https://suiscan.xyz/mainnet/tx/CzFhbHnEY6ug3dauaPqmp6CsNkuwfTMtJEGPqRArqkqU), checkpoint 341573132). The script is [`scripts/plain-transfer-pay.mjs`](scripts/plain-transfer-pay.mjs). The first sync after deploy checked 4 open invoices against the payee's history and matched none of the older transfers.
+
 ## Real-time payments: Tatum gRPC checkpoint stream
 
 An open pay page subscribes to `GET /api/chaser/pay/<invoice>/live` (Server-Sent Events). The server holds one `SubscriptionService.SubscribeCheckpoints` stream on Tatum's Sui gateway per instance, shared by every open page, and matches each checkpoint's `balance_changes` against the watched (payee, exact micro-amount) pairs. On a hit the digest runs through the normal verify/settle path, and the page flips to paid at the checkpoint where the money landed. No polling, no pasted digest. Each stream window lasts 4 minutes, after which the browser's EventSource reconnects. The daily cron still covers payments made while no page was open. **On Mainnet:** the stream saw the sponsored payment above at checkpoint 341405407 and settled it before the wallet flow's own verify call arrived.
