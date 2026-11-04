@@ -16,7 +16,8 @@ export function openapi(base) {
       summary,
       description,
       parameters: [invoiceId, ...(extra.parameters || [])],
-      'x-payment-info': { offers },
+      // multi-offer form (SHOULD) plus the first offer inline, for clients that only read the shorthand
+      'x-payment-info': { ...offers[0], offers },
       responses: {
         200: { description: 'Paid: receipt for the settled invoice', ...json(receipt) },
         402: { description: 'Payment Required: challenge for the exact amount still owed' },

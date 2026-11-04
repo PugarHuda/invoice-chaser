@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import tatumRoutes from './server/routes/tatum.mjs'
 import chaserRoutes from './server/routes/chaser.mjs'
 import { credentialGuard } from './server/credential-guard.mjs'
-import { openapi } from './server/openapi.mjs'
+import { discovery } from './server/discovery.mjs'
 
 const app = express()
 // Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
@@ -24,45 +24,8 @@ app.use('/api', (req, res, next) => {
 })
 // Redact the Tatum API key from every response before it leaves the process.
 app.use(credentialGuard)
-// Crawlers and AI agents: robots.txt and llms.txt (how an agent can pay an invoice over x402).
-app.get('/robots.txt', (_req, res) => res.type('text/plain').send('User-agent: *\nAllow: /\nDisallow: /api/\n'))
-// MPP service discovery: payable operations with x-payment-info offers.
-app.get('/openapi.json', (req, res) => res.set('Access-Control-Allow-Origin', '*').json(openapi(`${req.protocol}://${req.get('host')}`)))
-app.get('/llms.txt', (req, res) => {
-  const base = `${req.protocol}://${req.get('host')}`
-  res.type('text/markdown').send(`# Invoice Chaser
-
-> Invoice tracker for freelancers paid in USDC on Sui. It learns how each client pays (Walrus Memory) and verifies every payment on Sui through Tatum's gRPC gateway.
-
-## For paying agents (x402)
-- \`GET ${base}/api/chaser/x402/{invoiceId}\` returns \`402 Payment Required\` with x402 terms: scheme \`exact\`, network \`sui:mainnet\`, USDC asset, \`maxAmountRequired\` (base units), \`payTo\`, and \`extra.paymentKit\` (Sui Payment Kit registry + nonce).
-- Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
-- x402 v2: the same 402 also carries a base64 \`PAYMENT-REQUIRED\` header; send \`PAYMENT-SIGNATURE\` (base64 \`{ x402Version: 2, accepted, payload: { signature, transaction } }\`) with a signed, unexecuted Payment Kit transaction (nonce = invoice id) and the server simulates and broadcasts it through Tatum, answering with \`PAYMENT-RESPONSE\`.
-- [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
-
-## For paying agents (MPP)
-- \`GET ${base}/api/chaser/mpp/{invoiceId}\` returns \`402\` with \`WWW-Authenticate: Payment method="sui", intent="charge"\` (Machine Payments Protocol, @suimpp/mpp). Pay the exact USDC amount, then retry with \`Authorization: Payment <credential>\` (digest + payer signature) for a 200 and a \`Payment-Receipt\`.
-- [Reference MPP agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/mpp-agent.mjs)
-
-## Discovery
-- [OpenAPI with x-payment-info](${base}/openapi.json): MPP service discovery (draft-payment-discovery-01), every payable operation and its offers
-
-## Live payment stream
-- \`GET ${base}/api/chaser/pay/{invoiceId}/live\`: Server-Sent Events (\`watching\`, \`checkpoint\`, \`seen\`, \`paid\`) fed by Tatum's Sui gRPC \`SubscribeCheckpoints\` stream.
-
-## MCP
-- [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, learning_summary)
-
-## Receipts and calendar
-- Paid invoices can carry a PDF receipt stored on Walrus; \`GET ${base}/api/chaser/invoices/{invoiceId}\` returns \`receipt.url\` (Walrus aggregator).
-- [Reminder calendar](${base}/api/chaser/reminders.ics): every open invoice's reminder plan as iCalendar.
-
-## Docs
-- [README](https://github.com/PugarHuda/invoice-chaser/blob/main/README.md): how it uses Walrus Memory, Tatum and Sui Payment Kit
-- [Live proof](${base}/api/chaser/proof): current Sui checkpoint via Tatum, memory counts from the Walrus relayer
-- [Client pay page](${base}/?pay=inv-101): example payer-facing page (replace the invoice id)
-`)
-})
+// Agent discovery: robots, sitemap, llms.txt, /openapi.json, /.well-known/*, Link headers, markdown negotiation.
+app.use(discovery)
 
 app.use('/api/tatum', tatumRoutes)
 app.use('/api/chaser', chaserRoutes)
@@ -75,11 +38,14 @@ if (fs.existsSync(path.join(dist, 'index.html'))) {
   app.use(express.static(dist, { index: false, maxAge: '1h' }))
   // index.html must never be revalidated into a stale copy: bundle files can share size/mtime across
   // deploys, so an ETag 304 would keep an old index pointing at assets that no longer exist (blank page)
-  app.get(/^(?!\/api\/).*/, (_req, res) => {
+  app.get(/^(?!\/api(\/|$)|\/\.well-known\/).*/, (_req, res) => {
     res.set('Cache-Control', 'no-store')
     res.sendFile(path.join(dist, 'index.html'), { etag: false, lastModified: false })
   })
 }
+
+// Unknown API or well-known paths: a real 404, never the SPA's HTML (agents read that as a soft-404).
+app.use((req, res, next) => (/^\/(api|\.well-known)(\/|$)/.test(req.path) ? res.status(404).json({ error: 'Not found' }) : next()))
 
 // JSON errors for the API (e.g. malformed request bodies), never an HTML stack page.
 app.use((err, req, res, next) => {
