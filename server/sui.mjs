@@ -10,6 +10,7 @@ import { bcs } from '@mysten/sui/bcs'
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 import { createHmac, timingSafeEqual } from 'node:crypto'
+import { verifyTransactionSignature } from '@mysten/sui/verify'
 
 export const NETWORK = process.env.SUI_NETWORK === 'testnet' ? 'testnet' : 'mainnet'
 export const GRPC_HOST = `sui-${NETWORK}-grpc.gateway.tatum.io:443`
@@ -118,6 +119,32 @@ export async function executeSigned(bytesB64, signature) {
   await throttle()
   const r = await once(() => sui().core.executeTransaction({ transaction: Buffer.from(bytesB64, 'base64'), signatures: [signature].flat() }))
   return json(r)
+}
+
+// ---- x402 v2 facilitator (exact scheme on Sui) ---------------------------------------------
+// The agent sends a signed, unexecuted transaction. We check the signature against its sender,
+// simulate it through Tatum to see exactly what it would move, and only then broadcast it.
+export async function inspectSignedPayment(bytesB64, signature, payee) {
+  const bytes = Buffer.from(bytesB64, 'base64')
+  let sender
+  try {
+    sender = Transaction.from(bytes).getData().sender
+  } catch {
+    return { ok: false, reason: 'invalid_transaction' }
+  }
+  let signer
+  try {
+    signer = (await verifyTransactionSignature(bytes, signature)).toSuiAddress()
+  } catch {
+    return { ok: false, reason: 'invalid_signature' }
+  }
+  if (!sender || normAddr(signer) !== normAddr(sender)) return { ok: false, reason: 'signer_is_not_sender' }
+  await throttle()
+  const r = json(await once(() => sui().core.simulateTransaction({ transaction: bytes, include: { balanceChanges: true, effects: true } })))
+  const t = r?.Transaction
+  if (!t || t.effects?.status?.success === false) return { ok: false, reason: 'simulation_failed', detail: r?.FailedTransaction?.effects?.status?.error || t?.effects?.status?.error || null }
+  const received = (t.balanceChanges || []).filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE).reduce((a, c) => a + BigInt(c.amount), 0n)
+  return { ok: true, sender, received }
 }
 
 // ---- Gas sponsorship (native Sui sponsored transactions) ------------------------------------

@@ -16,7 +16,7 @@ app.use(express.json())
 app.use('/api', (req, res, next) => {
   const o = req.get('origin')
   if (o && /^https:\/\/[a-z0-9-]+\.wal\.app$/.test(o)) {
-    res.set({ 'Access-Control-Allow-Origin': o, Vary: 'Origin', 'Access-Control-Allow-Headers': 'content-type, x-passcode, x-payment', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE' })
+    res.set({ 'Access-Control-Allow-Origin': o, Vary: 'Origin', 'Access-Control-Allow-Headers': 'content-type, x-passcode, x-payment, payment-signature, authorization', 'Access-Control-Expose-Headers': 'payment-required, payment-response, x-payment-response, www-authenticate, payment-receipt', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE' })
     if (req.method === 'OPTIONS') return res.sendStatus(204)
   }
   next()

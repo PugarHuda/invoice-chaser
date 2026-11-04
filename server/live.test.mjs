@@ -15,3 +15,12 @@ test('live stream matches only the exact amount to the exact payee in the settle
   assert.deepEqual(matches(cp, [w], C).map(([, d]) => d), ['good'])
   assert.deepEqual(matches(cp, [{ ...w, hit: true }], C), [])
 })
+
+test('ics lines fold at 75 octets without splitting UTF-8', async () => {
+  const { foldIcs } = await import('./engine.mjs')
+  const line = 'DESCRIPTION:' + 'é'.repeat(80)
+  const parts = foldIcs(line).split('\r\n')
+  assert.ok(parts.every((p) => Buffer.byteLength(p) <= 75))
+  assert.equal(parts.map((p, i) => (i ? p.slice(1) : p)).join(''), line)
+  assert.equal(foldIcs('SHORT:x'), 'SHORT:x')
+})

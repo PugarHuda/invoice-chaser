@@ -10,7 +10,7 @@ import { draftReminder } from '../drafter.mjs'
 import { storeReceipt, receiptsEnabled } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -170,7 +170,8 @@ router.post('/clients/:id/payer', async (req, res) => {
 // Accounting export (CSV) of every invoice with its on-chain receipt.
 router.get('/export.csv', (_req, res) => {
   const { clients, invoices } = state()
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  // a leading = + - @ (or tab/CR) would run as a formula in Excel/Sheets: neutralise it (OWASP CSV injection)
+  const esc = (v) => `"${String(v ?? '').replace(/^[=+\-@\t\r]/, (c) => `'${c}`).replace(/"/g, '""')}"`
   const rows = [['invoice', 'client', 'description', 'amount_usdc', 'pay_amount', 'due', 'status', 'remaining', 'paid_on', 'tx', 'network'].join(',')]
   for (const raw of invoices) {
     const i = withStatus(raw)
@@ -198,7 +199,7 @@ router.get('/reminders.ics', (req, res) => {
     }
   }
   lines.push('END:VCALENDAR')
-  res.set('Content-Disposition', 'attachment; filename="invoice-chaser-reminders.ics"').type('text/calendar').send(lines.join('\r\n') + '\r\n')
+  res.set('Content-Disposition', 'attachment; filename="invoice-chaser-reminders.ics"').type('text/calendar').send(lines.map(foldIcs).join('\r\n') + '\r\n')
 })
 const isoDayPlus = (d, n) => new Date(Date.parse(`${d}T00:00:00Z`) + n * DAY).toISOString().slice(0, 10)
 
@@ -559,13 +560,71 @@ const paymentTerms = (req, inv) => ({
 
 // x402: an invoice is a payable HTTP resource. Without X-PAYMENT you get 402 + terms; with a Sui
 // transaction digest in X-PAYMENT the server verifies it through Tatum and returns a receipt.
+// x402 v2 (spec: x402-foundation/x402, exact scheme on Sui): requirements travel base64-encoded in
+// PAYMENT-REQUIRED; the agent answers with PAYMENT-SIGNATURE = { x402Version: 2, accepted, payload:
+// { signature, transaction } }. We act as the facilitator through Tatum: verify, simulate, broadcast.
+const b64json = (o) => Buffer.from(JSON.stringify(o)).toString('base64')
+const requirementsV2 = (inv) => ({
+  scheme: 'exact', network: `sui:${sui.NETWORK}`, amount: sui.toMicro(owed(inv)).toString(), asset: sui.USDC_COIN_TYPE, payTo: PAYEE(), maxTimeoutSeconds: 600,
+  extra: { paymentKit: { registry: sui.REGISTRY_NAME, registryId: sui.registryId(), nonce: inv.id } },
+})
+const paymentRequiredV2 = (req, inv, error = 'Payment required') => ({
+  x402Version: 2, error,
+  resource: { url: `${req.protocol}://${req.get('host')}${req.originalUrl}`, description: `Invoice ${inv.id} (${inv.description || 'services'})`, mimeType: 'application/json', serviceName: 'Invoice Chaser' },
+  accepts: [requirementsV2(inv)],
+})
+async function x402v2(req, res, inv, header) {
+  const fail = (reason, status = 402) => {
+    res.set('PAYMENT-REQUIRED', b64json(paymentRequiredV2(req, inv, reason)))
+    return res.status(status).json({ x402Version: 2, error: reason })
+  }
+  let p
+  try {
+    p = JSON.parse(Buffer.from(header, 'base64').toString('utf8'))
+  } catch {
+    return fail('invalid_payload', 400)
+  }
+  const want = requirementsV2(inv)
+  const a = p?.accepted || {}
+  if (p?.x402Version !== 2 || a.scheme !== 'exact' || a.network !== want.network || a.asset !== want.asset || a.amount !== want.amount || sui.normAddr(a.payTo) !== sui.normAddr(want.payTo)) return fail('payment_requirements_mismatch')
+  const { signature, transaction } = p.payload || {}
+  if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400)
+  let check
+  try {
+    check = await sui.inspectSignedPayment(transaction, signature, PAYEE())
+  } catch (e) {
+    return fail(`verify_error: ${e.message}`, 502)
+  }
+  if (!check.ok) return fail(check.reason + (check.detail ? `: ${check.detail}` : ''))
+  if (check.received !== BigInt(want.amount)) return fail(`amount_mismatch: simulated ${sui.fromMicro(check.received)} USDC to payTo, invoice needs ${owed(inv)}`)
+  let digest
+  try {
+    const out = await sui.executeSigned(transaction, signature)
+    digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest
+  } catch (e) {
+    return fail(`settlement_failed: ${e.message}`, 502)
+  }
+  let code, body
+  for (let i = 0; i < 6; i++) {
+    ;[code, body] = await settleDigest(inv.id, digest, 'x402-v2')
+    if (!body.retry) break
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  res.set('PAYMENT-RESPONSE', b64json({ success: code === 200, transaction: digest, network: want.network, payer: check.sender, amount: want.amount, ...(code === 200 ? {} : { errorReason: body.error }) }))
+  res.status(code).json({ ...body, protocol: 'x402-v2' })
+}
+
 router.get('/x402/:id', async (req, res) => {
   const inv = state().invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const v2 = req.get('payment-signature')
+  if (v2 && inv.status !== 'paid') return x402v2(req, res, inv, v2)
   const payment = req.get('x-payment')
   if (!payment) {
     if (inv.status === 'paid') return res.json({ status: 'paid', invoice: inv.id, digest: inv.digest })
     res.set('Cache-Control', 'no-store')
+    // v1 terms in the body, v2 in the PAYMENT-REQUIRED header: either kind of client can pay
+    res.set('PAYMENT-REQUIRED', b64json(paymentRequiredV2(req, inv)))
     return res.status(402).json({ x402Version: 1, error: 'Payment required', accepts: [paymentTerms(req, inv)] })
   }
   if (!sui.DIGEST_RE.test(payment)) return res.status(400).json({ error: 'X-PAYMENT must be a Sui transaction digest' })

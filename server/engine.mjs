@@ -269,3 +269,18 @@ export function uniquePayAmount(base, taken = new Set(), rnd = Math.random) {
     if (!taken.has(amt)) return amt
   }
 }
+
+// RFC 5545 §3.1: content lines longer than 75 octets are folded (CRLF + one space), never inside a UTF-8 character.
+export function foldIcs(line) {
+  const out = []
+  let cur = ''
+  for (const ch of line) {
+    if (Buffer.byteLength(cur + ch) > (out.length ? 74 : 75)) {
+      out.push(cur)
+      cur = ''
+    }
+    cur += ch
+  }
+  out.push(cur)
+  return out.join('\r\n ')
+}
