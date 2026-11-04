@@ -90,7 +90,7 @@ GET /api/chaser/mpp/<invoice>   -> 402  WWW-Authenticate: Payment method="sui", 
 GET /api/chaser/mpp/<invoice>   -> 200  (Authorization: Payment <credential: digest + payer signature>) + Payment-Receipt
 ```
 
-The challenge is HMAC-bound to the invoice (`MPP_SECRET_KEY`). `@suimpp/mpp` checks the transfer and the payer's grief-protection signature (signer must equal the on-chain sender); its replay store is backed by the digests already settled in Walrus Memory. Then the digest goes through the same Tatum verify/settle path as every other payment and is remembered with `channel: "mpp"`. Reference agent: [`scripts/mpp-agent.mjs`](scripts/mpp-agent.mjs) reads the challenge, enforces a budget and lets `mppx` pay.
+The challenge is HMAC-bound to the invoice (`MPP_SECRET_KEY`). `@suimpp/mpp` checks the transfer and the payer's grief-protection signature (signer must equal the on-chain sender); its replay store is backed by the digests already settled in Walrus Memory. Then the digest goes through the same Tatum verify/settle path as every other payment and is remembered with `channel: "mpp"`. Reference agent: [`scripts/mpp-agent.mjs`](scripts/mpp-agent.mjs) reads the challenge, enforces a budget and lets `mppx` pay. **On Mainnet:** the agent paid `inv-mw1g529i869ccd` over MPP and got a `Payment-Receipt` ([tx](https://suiscan.xyz/mainnet/tx/CrgvCr2FoJXxuc3p3tuNorCSoPquSUeuuhHqu5tL8iG4)). The payer side builds through the public fullnode because `mppx` makes several RPC calls back to back, more than Tatum's free-tier 3 rps allows; the server still verifies through Tatum.
 
 ```bash
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/mpp-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/mpp/<invoice>

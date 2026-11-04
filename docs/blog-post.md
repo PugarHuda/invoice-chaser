@@ -78,6 +78,10 @@ The same code runs against Sui Testnet with one env var (Tatum's testnet gateway
 
 On Sui Mainnet, an agent asked for invoice `inv-mvzyioev`, got `402 Payment Required`, noticed it held no USDC, swapped just enough SUI through the Cetus aggregator, paid through the Payment Kit registry and got its receipt ([payment](https://suiscan.xyz/mainnet/tx/4BTevagvT34X166FBGsqj9tQSxisY1PDGwXXtrxLSC3z)). A second invoice was paid through the registry and nobody told the app; the production server found it by invoice nonce and settled it ([payment](https://suiscan.xyz/mainnet/tx/G5r8eC1hwTkrj4Dg7FFWTcP1P5LTJaRn8FvGUx7WbAJP)). Delta Studio, a client with no history that morning, now has two remembered on-time payments, and its profile changed accordingly.
 
+## And over MPP
+
+The same invoice is also a Machine Payments Protocol charge (`/api/chaser/mpp/<invoice>`, built on `@suimpp/mpp`). An agent got the `WWW-Authenticate: Payment` challenge, paid 0.015645 USDC and received a `Payment-Receipt` ([payment](https://suiscan.xyz/mainnet/tx/CrgvCr2FoJXxuc3p3tuNorCSoPquSUeuuhHqu5tL8iG4)); the server verified it again through Tatum before remembering it.
+
 ## Agents can read the memory too (MCP)
 
 The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude tools like `client_profile`, `plan_reminder` and `search_client_memory` over the same Walrus memories.

@@ -2,13 +2,14 @@
 //   AP_AGENT_KEY=suiprivkey1...  AP_MAX_USDC=1  node --env-file=.env.local scripts/mpp-agent.mjs <mpp-invoice-url>
 // e.g. https://invoice-chaser-sigma.vercel.app/api/chaser/mpp/inv-xyz
 // Reads the 402 challenge, refuses anything over AP_MAX_USDC, then lets mppx pay (USDC transfer on Sui,
-// built and executed through Tatum's gRPC gateway) and retry with the signed Payment credential.
+// executed from the payer's side) and retry with the signed Payment credential.
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 import { Mppx } from 'mppx/client'
 import { Challenge } from 'mppx'
 import { sui as suiMethod, USDC, USDC_TESTNET } from '@suimpp/mpp/client'
-import { sui, NETWORK, EXPLORER, toMicro, usdcBalance, fromMicro } from '../server/sui.mjs'
+import { SuiGrpcClient } from '@mysten/sui/grpc'
+import { NETWORK, EXPLORER, toMicro, usdcBalance, fromMicro } from '../server/sui.mjs'
 
 const url = process.argv[2]
 if (!url || !process.env.AP_AGENT_KEY) {
@@ -33,8 +34,23 @@ const have = await usdcBalance(me)
 if (have < toMicro(amount)) throw new Error(`agent ${me} holds ${fromMicro(have)} USDC, needs ${amount}`)
 console.log(`402 MPP challenge: ${challenge.description} -> ${amount} USDC (${currency.split('::').pop()}) to ${recipient}, from ${me}`)
 
-const mppx = Mppx.create({ methods: [suiMethod({ client: sui(), signer, currency: NETWORK === 'mainnet' ? USDC : USDC_TESTNET })], polyfill: false })
-const res = await mppx.fetch(url)
+// The payer builds/executes through the public fullnode: mppx fires several RPCs back to back, over
+// Tatum's free-tier 3 rps. The invoice server still verifies the payment through Tatum.
+const payerClient = new SuiGrpcClient({ network: NETWORK, baseUrl: `https://fullnode.${NETWORK}.sui.io:443` })
+const mppx = Mppx.create({ methods: [suiMethod({ client: payerClient, signer, currency: NETWORK === 'mainnet' ? USDC : USDC_TESTNET })], polyfill: false })
+// Tatum's free tier allows 3 rps; mppx's build+execute can trip a 429. Retry only while our USDC
+// balance is untouched, so a retry can never pay twice.
+let res
+for (let attempt = 0; ; attempt++) {
+  try {
+    res = await mppx.fetch(url)
+    break
+  } catch (e) {
+    if (!/429|RESOURCE_EXHAUSTED/.test(e.message) || attempt >= 3 || (await usdcBalance(me)) !== have) throw e
+    console.log(`rate limited by the gateway, retrying (${attempt + 1}/3)…`)
+    await new Promise((r) => setTimeout(r, 3000 * 2 ** attempt))
+  }
+}
 const body = await res.json()
 if (!res.ok) {
   console.error(`${res.status}:`, body)
