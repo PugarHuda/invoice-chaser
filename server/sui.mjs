@@ -293,7 +293,9 @@ export const fromMicro = (m) => {
 // an affected_address filter (the SDK wrapper only exposes sender/moveCall, so this is the raw call).
 // Returns USDC actually received per transaction. Plain transfers of an invoice's unique amount are
 // found here even when no pay page was open and Payment Kit was not used.
-export async function recentIncoming(payee, limit = 100) {
+// Scans newest-first and stops at the first transaction older than `since`, so a burst of dust
+// transfers to the payee cannot push a real payment out of a fixed-size window (cap: `limit`).
+export async function recentIncoming(payee, { since = null, limit = 1000 } = {}) {
   await throttle()
   const call = sui().ledgerService.listTransactions({
     readMask: { paths: ['digest', 'checkpoint', 'timestamp', 'balance_changes', 'effects.status', 'transaction.sender'] },
@@ -302,14 +304,19 @@ export async function recentIncoming(payee, limit = 100) {
   })
   const out = []
   const me = normAddr(payee)
+  let scanned = 0
   for await (const f of call.responses) {
     const t = f.transaction
     if (!t?.digest) continue
+    scanned++
+    const tsMs = t.timestamp ? Number(t.timestamp.seconds) * 1000 : null
+    if (since && tsMs && tsMs < Date.parse(since) - 60_000) break // older than every open invoice
     if (t.effects?.status && t.effects.status.success === false) continue
     const received = (t.balanceChanges || []).filter((b) => normAddr(b.address) === me && normalizeStructTag(b.coinType) === normalizeStructTag(USDC_COIN_TYPE)).reduce((s, b) => s + BigInt(b.amount), 0n)
     if (received <= 0n) continue
     const ts = t.timestamp ? new Date(Number(t.timestamp.seconds) * 1000 + Math.floor((t.timestamp.nanos || 0) / 1e6)).toISOString() : null
     out.push({ digest: t.digest, checkpoint: String(t.checkpoint ?? ''), timestamp: ts, sender: t.transaction?.sender || null, received })
   }
+  out.scanned = scanned
   return out
 }

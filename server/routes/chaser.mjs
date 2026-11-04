@@ -531,9 +531,12 @@ async function syncPayments() {
   // re-verifies every candidate through Tatum and refuses reused digests.
   const unpaid = state().invoices.filter((i) => i.status === 'sent' && !i.seed && !settled.some((x) => x.invoice === i.id && x.code === 200))
   let reconciled = 0
+  let scanned = 0
   if (unpaid.length) {
     const { usedDigests } = state()
-    const incoming = await sui.recentIncoming(PAYEE(), 100)
+    const since = unpaid.map((i) => i.createdAt).filter(Boolean).sort()[0] || null
+    const incoming = await sui.recentIncoming(PAYEE(), { since })
+    scanned = incoming.scanned
     for (const inv of unpaid) {
       const want = sui.toMicro(owed(inv))
       const hit = incoming.find((t) => t.received === want && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
@@ -544,7 +547,7 @@ async function syncPayments() {
     }
   }
   lastSync = Date.now()
-  return { checked: open.length, settled, reconciled, at: new Date(lastSync).toISOString() }
+  return { checked: open.length, settled, reconciled, scannedTransactions: scanned, at: new Date(lastSync).toISOString() }
 }
 router.post('/sync-payments', async (_req, res) => {
   // ponytail: one sync per instance per 10 s; each open invoice costs one gRPC lookup

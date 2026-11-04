@@ -120,7 +120,7 @@ An agent that only knows the domain can find every way to pay. Each link below i
 
 Many clients pay from an exchange or a wallet that knows nothing about Payment Kit. They send the exact amount and close the tab. Tatum Notifications does not cover Sui yet (checked against `GET /v4/subscription/chains`), so sync covers this case itself with Tatum's gRPC gateway:
 
-- `LedgerService.ListTransactions` with an `affected_address` filter on the payee, newest first. This is the raw gRPC call, because the SDK wrapper only exposes sender and move-call filters.
+- `LedgerService.ListTransactions` with an `affected_address` filter on the payee, newest first. This is the raw gRPC call, because the SDK wrapper only exposes sender and move-call filters. The scan stops at the oldest open invoice rather than after a fixed count, so a burst of dust transfers cannot push a real payment out of the window (cap 1,000 transactions).
 - Each transaction's `balance_changes` show the exact USDC received. An unsent invoice settles when a transaction carries its unique micro-amount, is not older than the invoice, and its digest was never used. Every candidate still goes through the normal Tatum verify-and-settle path.
 - Mainnet proof: invoice `inv-mw25p3mw60f829` was paid by a plain USDC transfer that was never reported, and sync settled it as channel `reconcile` ([tx CzFhbHnE…](https://suiscan.xyz/mainnet/tx/CzFhbHnEY6ug3dauaPqmp6CsNkuwfTMtJEGPqRArqkqU), checkpoint 341573132). The script is [`scripts/plain-transfer-pay.mjs`](scripts/plain-transfer-pay.mjs). The first sync after deploy checked 4 open invoices against the payee's history and matched none of the older transfers.
 
