@@ -150,7 +150,7 @@ const sponsorMac = (b64) => createHmac('sha256', `sponsor:${process.env.GAS_SPON
 export async function cosignSponsored(b64, mac) {
   const kp = sponsor()
   const want = Buffer.from(sponsorMac(b64))
-  if (!kp || typeof mac !== 'string' || mac.length !== want.length || !timingSafeEqual(Buffer.from(mac), want)) return null
+  if (!kp || typeof mac !== 'string' || !/^[0-9a-f]{64}$/.test(mac) || !timingSafeEqual(Buffer.from(mac), want)) return null
   return (await kp.signTransaction(Buffer.from(b64, 'base64'))).signature
 }
 

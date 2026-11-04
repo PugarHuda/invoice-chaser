@@ -652,7 +652,7 @@ router.post('/pay-sponsored', async (req, res) => {
     return res.status(400).json({ error: 'Unreadable transaction bytes' })
   }
   if (sui.normAddr(data.gasData.owner) !== sui.normAddr(kp.getPublicKey().toSuiAddress())) return res.status(400).json({ error: 'Not a transaction this server sponsors' })
-  const sponsorSignature = await sui.cosignSponsored(bytes, mac)
+  const sponsorSignature = await sui.cosignSponsored(bytes, mac).catch(() => null)
   if (!sponsorSignature) return res.status(400).json({ error: 'These bytes were not built by this server' })
   try {
     const out = await sui.executeSigned(bytes, [signature, sponsorSignature])
