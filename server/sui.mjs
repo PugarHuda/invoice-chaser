@@ -7,6 +7,8 @@ import { Transaction, coinWithBalance } from '@mysten/sui/transactions'
 import { normalizeStructTag } from '@mysten/sui/utils'
 import { paymentKit, createPaymentTransactionUri } from '@mysten/payment-kit'
 import { bcs } from '@mysten/sui/bcs'
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
+import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 
 export const NETWORK = process.env.SUI_NETWORK === 'testnet' ? 'testnet' : 'mainnet'
 export const GRPC_HOST = `sui-${NETWORK}-grpc.gateway.tatum.io:443`
@@ -97,7 +99,7 @@ export async function usdcReceived(digest, payee) {
   return { ok, received, paymentKit, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
 }
 
-const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')
+export const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')
 
 // Build (unsigned) a USDC transfer for the payer's wallet to sign. Coin selection, gas price and
 // gas budget are all resolved through Tatum's gateway, so the browser never needs an RPC key.
@@ -110,11 +112,36 @@ export async function buildUsdcTransfer(sender, payee, micro) {
   return Buffer.from(bytes).toString('base64')
 }
 
-// Execute an already-signed transaction through Tatum (used by the x402 demo agent).
+// Execute an already-signed transaction through Tatum (x402 agent; sponsored payments pass both signatures).
 export async function executeSigned(bytesB64, signature) {
   await throttle()
-  const r = await once(() => sui().core.executeTransaction({ transaction: Buffer.from(bytesB64, 'base64'), signatures: [signature] }))
+  const r = await once(() => sui().core.executeTransaction({ transaction: Buffer.from(bytesB64, 'base64'), signatures: [signature].flat() }))
   return json(r)
+}
+
+// ---- Gas sponsorship (native Sui sponsored transactions) ------------------------------------
+// The payer needs only USDC: the server's gas wallet is the transaction's gas owner and co-signs.
+// GAS_SPONSOR_KEY (suiprivkey…); falls back to the receipts storage wallet.
+const SPONSOR_MAX_MIST = BigInt(process.env.SPONSOR_MAX_MIST || 20_000_000) // 0.02 SUI per payment
+let sponsorKp
+export function sponsor() {
+  const k = process.env.GAS_SPONSOR_KEY || process.env.WALRUS_STORAGE_KEY
+  if (!k) return null
+  sponsorKp ??= Ed25519Keypair.fromSecretKey(decodeSuiPrivateKey(k).secretKey)
+  return sponsorKp
+}
+export async function buildSponsoredInvoicePayment(sender, payee, micro, nonce) {
+  const kp = sponsor()
+  if (!kp) return null
+  const tx = sui().paymentKit.tx.processRegistryPayment({ nonce, coinType: USDC_COIN_TYPE, amount: BigInt(micro), receiver: payee, sender, registryName: REGISTRY_NAME })
+  tx.setSender(sender)
+  tx.setGasOwner(kp.getPublicKey().toSuiAddress())
+  await throttle()
+  const bytes = await once(() => tx.build({ client: sui() }))
+  const budget = BigInt(Transaction.from(bytes).getData().gasData.budget)
+  if (budget > SPONSOR_MAX_MIST) throw new Error(`gas budget ${budget} MIST is over the sponsor cap`)
+  const { signature } = await kp.signTransaction(bytes)
+  return { bytes: Buffer.from(bytes).toString('base64'), sponsorSignature: signature, sponsor: kp.getPublicKey().toSuiAddress(), gasBudgetMist: budget.toString() }
 }
 
 // ---- Sui Payment Kit (Mysten standard) ------------------------------------------------------

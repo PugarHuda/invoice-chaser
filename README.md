@@ -81,6 +81,33 @@ The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` an
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
 ```
 
+### MPP (Machine Payments Protocol) on the same invoice
+
+The invoice is also an [MPP](https://mpp.dev) charge, using [`@suimpp/mpp`](https://www.npmjs.com/package/@suimpp/mpp) + `mppx`:
+
+```
+GET /api/chaser/mpp/<invoice>   -> 402  WWW-Authenticate: Payment method="sui", intent="charge", request=<amount, USDC, payee>, opaque=<invoice>
+GET /api/chaser/mpp/<invoice>   -> 200  (Authorization: Payment <credential: digest + payer signature>) + Payment-Receipt
+```
+
+The challenge is HMAC-bound to the invoice (`MPP_SECRET_KEY`). `@suimpp/mpp` checks the transfer and the payer's grief-protection signature (signer must equal the on-chain sender); its replay store is backed by the digests already settled in Walrus Memory. Then the digest goes through the same Tatum verify/settle path as every other payment and is remembered with `channel: "mpp"`. Reference agent: [`scripts/mpp-agent.mjs`](scripts/mpp-agent.mjs) reads the challenge, enforces a budget and lets `mppx` pay.
+
+```bash
+AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/mpp-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/mpp/<invoice>
+```
+
+## Real-time payments: Tatum gRPC checkpoint stream
+
+An open pay page subscribes to `GET /api/chaser/pay/<invoice>/live` (Server-Sent Events). The server holds one `SubscriptionService.SubscribeCheckpoints` stream on Tatum's Sui gateway per instance, shared by every open page, and matches each checkpoint's `balance_changes` against the watched (payee, exact micro-amount) pairs. On a hit the digest runs through the normal verify/settle path, and the page flips to paid at the checkpoint where the money landed. No polling, no pasted digest. Each stream window lasts 4 minutes, after which the browser's EventSource reconnects. The daily cron still covers payments made while no page was open.
+
+## Gas-free payments for clients (sponsored transactions)
+
+With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet as a fallback), `/pay-tx` builds the Payment Kit transaction with the payer as sender and the server's wallet as **gas owner**, then co-signs it. The payer's wallet only signs (`sui:signTransaction`), and `/pay-sponsored` submits both signatures through Tatum and settles the payment. A client needs USDC and nothing else. Both signatures cover exactly the bytes the server built, so the endpoint can't be used to sponsor anything else. Each payment's gas budget is capped (`SPONSOR_MAX_MIST`, default 0.02 SUI). If sponsorship isn't available, the wallet pays gas as before.
+
+## Revoking what it learned
+
+Walrus is append-only, so "forget this rule" is itself a memory: `rule_revoked` names the rule's text, and the engine ignores any rule written before its revocation (saving it again revives it). The client page lists live rules with a Revoke button and shows revoked ones struck through. The original memory stays on Walrus as history.
+
 ## Live on Sui Mainnet
 
 | What happened | Proof |

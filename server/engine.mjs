@@ -99,8 +99,13 @@ export function computeProfile(clientId, memories) {
   }
   const pays = [...byInvoice.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp))
   const reminders = memories.filter((m) => m.tag?.type === 'reminder_sent')
-  const preferences = memories.filter((m) => m.tag?.type === 'preference')
-  const notes = memories.filter((m) => m.tag?.type === 'note')
+  // Walrus is append-only: a rule is revoked by a later `rule_revoked` memory naming its text.
+  // Saving the same rule again after a revocation makes it live again (newest event wins).
+  const revokedAt = new Map()
+  for (const m of memories) if (m.tag?.type === 'rule_revoked' && !(revokedAt.get(m.tag.rule) > m.timestamp)) revokedAt.set(m.tag.rule, m.timestamp)
+  const live = (text, ts) => !(revokedAt.get(text) >= ts)
+  const preferences = memories.filter((m) => m.tag?.type === 'preference' && live(m.tag.note, m.timestamp))
+  const notes = memories.filter((m) => m.tag?.type === 'note' && live(m.sentence, m.timestamp))
 
   let ewma = 0
   const delays = []
@@ -153,6 +158,7 @@ export function computeProfile(clientId, memories) {
     // the memories a plan is allowed to cite: recent payments + every rule
     evidence: [...pays.slice(-4).reverse(), ...preferences, ...notes.filter((n) => Object.keys(parsePreference(n.sentence)).length)].map((m) => ({ sentence: m.sentence, blobId: m.blobId || null, status: m.status || 'saved', at: m.timestamp })),
     memoryCount: memories.length,
+    revokedRules: [...revokedAt.keys()].filter((r) => !preferences.some((p) => p.tag.note === r) && !notes.some((n) => n.sentence === r)),
   }
 }
 

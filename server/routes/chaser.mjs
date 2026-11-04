@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { Transaction } from '@mysten/sui/transactions'
 import { randomBytes } from 'node:crypto'
 import * as mem from '../memory.mjs'
 import * as sui from '../sui.mjs'
@@ -7,6 +8,8 @@ import { screenAddress } from '../security.mjs'
 import { mcpHandler } from '../mcp.mjs'
 import { draftReminder } from '../drafter.mjs'
 import { storeReceipt, receiptsEnabled } from '../receipts.mjs'
+import * as live from '../live.mjs'
+import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary } from '../engine.mjs'
 
 const router = Router()
@@ -19,16 +22,16 @@ router.use(async (_req, _res, next) => {
   next()
 })
 
-const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/sync-payments', '/mcp'])
+const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/sync-payments', '/mcp'])
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
 const buckets = new Map()
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && /^\/clients\/[^/]+\/search$/.test(req.path)) || req.path === '/mcp'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/live$/.test(req.path))) || req.path === '/mcp'
 router.use((req, res, next) => {
-  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/')
+  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
   const expensive = isExpensiveRead(req)
   if (req.method === 'GET' && !isPayment && !expensive) return next()
   const kind = isPayment ? 'payment' : expensive ? 'expensive' : 'write'
@@ -131,6 +134,17 @@ router.post('/clients/:id/preference', (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   const m = mem.remember(mem.clientNs(client.id), `Rule for ${client.name}: "${note}"`, { type: 'preference', client: client.id, note })
+  res.json({ success: true, memory: m, profile: profileOf(client.id) })
+})
+
+// Walrus blobs can't be deleted, so "forget this rule" is itself a memory: the engine ignores
+// any rule whose text was revoked after it was written.
+router.post('/clients/:id/revoke', (req, res) => {
+  const rule = String(req.body?.rule || '').trim()
+  const client = state().clients.find((c) => c.id === req.params.id)
+  if (!client) return res.status(404).json({ error: 'Client not found' })
+  if (!profileOf(client.id).preferences.includes(rule)) return res.status(400).json({ error: 'not an active rule for this client' })
+  const m = mem.remember(mem.clientNs(client.id), `Rule revoked for ${client.name}: "${rule}" no longer applies.`, { type: 'rule_revoked', client: client.id, rule })
   res.json({ success: true, memory: m, profile: profileOf(client.id) })
 })
 
@@ -268,6 +282,58 @@ router.get('/pay/:id', (req, res) => {
       receipt: receiptOf(i),
     },
   })
+})
+
+// Live pay page: Server-Sent Events fed by Tatum's gRPC checkpoint stream. The moment a checkpoint
+// moves this invoice's exact amount to the payee, the digest goes through the same verify/settle
+// path as everything else, so a stream hit can never settle what a manual check would reject.
+const LIVE_MS = 240_000 // ponytail: under Vercel's function limit; the page reconnects when it ends
+router.get('/pay/:id/live', (req, res) => {
+  const inv = state().invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
+  res.flushHeaders()
+  const send = (event, data) => res.write(`event: ${event}
+data: ${JSON.stringify(data)}
+
+`)
+  if (inv.status === 'paid') {
+    send('paid', { invoice: inv.id, digest: inv.digest, already: true })
+    return res.end()
+  }
+  let closed = false
+  let lastSent = 0
+  let stop = () => {}
+  const finish = () => {
+    if (closed) return
+    closed = true
+    stop()
+    clearTimeout(timer)
+    res.end()
+  }
+  const timer = setTimeout(() => (send('timeout', { after: LIVE_MS / 1000 }), finish()), LIVE_MS)
+  try {
+    stop = live.watch(PAYEE(), sui.toMicro(owed(inv)), async (digest, seq) => {
+      send('seen', { digest, checkpoint: seq })
+      const [code, body] = await settleDigest(inv.id, digest, 'live-stream')
+      if (closed) return
+      if (code === 200) {
+        send('paid', { invoice: inv.id, digest, checkpoint: seq, message: body.message, explorer: body.explorer })
+        finish()
+      } else send('rejected', { digest, error: body.error })
+    }, (seq, error) => {
+      if (error) return send('error', { error })
+      if (Date.now() - lastSent > 2000) {
+        lastSent = Date.now()
+        send('checkpoint', { checkpoint: seq })
+      }
+    })
+  } catch (e) {
+    send('error', { error: String(e.message || e) })
+    return finish()
+  }
+  send('watching', { invoice: inv.id, amount: owed(inv), payee: PAYEE(), via: 'Tatum gRPC SubscriptionService.SubscribeCheckpoints' })
+  req.on('close', finish)
 })
 
 // Receipt PDFs live on Walrus; the blob id is remembered in the client's Walrus Memory namespace.
@@ -503,6 +569,23 @@ router.get('/x402/:id', async (req, res) => {
   res.status(code).json(body)
 })
 
+// MPP (Machine Payments Protocol): the same invoice as an MPP charge. No credential -> 402 with a
+// WWW-Authenticate: Payment challenge bound to this invoice; with one, @suimpp/mpp checks the transfer
+// and the payer's signature, then the digest is verified again through Tatum and settled into Walrus.
+router.get('/mpp/:id', (req, res, next) => {
+  if (!mppEnabled()) return res.status(503).json({ error: 'MPP is not configured on this server' })
+  const inv = state().invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (inv.status === 'paid') return res.json({ status: 'paid', invoice: inv.id, digest: inv.digest })
+  res.set('Cache-Control', 'no-store')
+  mpp(() => state().usedDigests).charge({ amount: owed(inv), description: `Invoice ${inv.id}`, meta: { invoice: inv.id } })(req, res, next)
+}, async (req, res) => {
+  const digest = credentialDigest(req)
+  if (!digest || !sui.DIGEST_RE.test(digest)) return res.status(400).json({ error: 'MPP credential carries no Sui digest' })
+  const [code, body] = await settleDigest(req.params.id, digest, 'mpp')
+  res.status(code).json({ ...body, protocol: 'mpp' })
+})
+
 // MCP (Streamable HTTP, stateless): read-only tools over the learned memory for Claude/Cursor/agents.
 // One JSON-RPC message per request so each tool call is charged to the rate-limit bucket; small bodies only.
 router.post('/mcp', (req, res, next) => {
@@ -531,6 +614,12 @@ router.post('/pay-tx', async (req, res) => {
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
   if (sender.toLowerCase() === PAYEE().toLowerCase()) return res.status(400).json({ error: 'Pay from a different wallet than the payee' })
   try {
+    // Gas-free for the payer when the server's gas wallet can sponsor; otherwise the wallet pays gas.
+    if (req.body.sponsored !== false && sui.sponsor()) {
+      const sp = await sui.buildSponsoredInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id).catch((e) => ({ error: e.message }))
+      if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, sponsorSignature: sp.sponsorSignature, gasBudgetMist: sp.gasBudgetMist } })
+      if (/EDuplicatePayment|duplicate/i.test(sp?.error || '')) throw new Error(sp.error)
+    }
     const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id)
     // simulate through Tatum for the real fee, priced in USD with Tatum's rate API (best effort)
     const [fee, rate] = await Promise.all([sui.estimateFee(bytes).catch(() => null), usdRate('SUI').catch(() => null)])
@@ -544,6 +633,36 @@ router.post('/pay-tx', async (req, res) => {
 // Balance watcher: a balance increase that equals an open invoice's unique amount flags that invoice.
 let lastBalance = null
 const likely = new Map()
+// Sponsored payment: the payer signed the bytes the server built (and already co-signed as gas owner).
+// Both signatures cover exactly those bytes, so this endpoint can only ever submit that payment.
+router.post('/pay-sponsored', async (req, res) => {
+  const { invoiceId, bytes, signature, sponsorSignature } = req.body || {}
+  if (![invoiceId, bytes, signature, sponsorSignature].every((x) => typeof x === 'string' && x.length < 20_000)) return res.status(400).json({ error: 'invoiceId, bytes, signature and sponsorSignature are required' })
+  const kp = sui.sponsor()
+  if (!kp) return res.status(503).json({ error: 'Gas sponsorship is not configured' })
+  let data
+  try {
+    data = Transaction.from(Buffer.from(bytes, 'base64')).getData()
+  } catch {
+    return res.status(400).json({ error: 'Unreadable transaction bytes' })
+  }
+  if (sui.normAddr(data.gasData.owner) !== sui.normAddr(kp.getPublicKey().toSuiAddress())) return res.status(400).json({ error: 'Not a transaction this server sponsors' })
+  try {
+    const out = await sui.executeSigned(bytes, [signature, sponsorSignature])
+    const digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest
+    if (!digest) return res.status(502).json({ error: 'Execution returned no digest', out })
+    let code, body
+    for (let i = 0; i < 6; i++) {
+      ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-sponsored')
+      if (!body.retry) break
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+    res.status(code).json({ ...body, digest, sponsored: true })
+  } catch (e) {
+    res.status(400).json({ error: `Sponsored execution failed: ${e.message}` })
+  }
+})
+
 router.get('/cron-check', async (_req, res) => {
   try {
     const bal = await sui.usdcBalance(PAYEE())

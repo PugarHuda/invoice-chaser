@@ -62,6 +62,7 @@ interface ClientProfile {
   totalPaidInvoices: number;
   reliabilityBadge: string;
   preferences: string[];
+  revokedRules?: string[];
   memoryCount: number;
   history?: Array<{ invoice: string; n: number; predicted: number; actual: number; error: number }>;
 }
@@ -212,6 +213,28 @@ export default function App() {
     if (!uri) return setQr('');
     QRCode.toDataURL(uri, { margin: 1, width: 240 }).then(setQr).catch(() => setQr(''));
   }, [invoiceDetail?.invoice.paymentUri]);
+
+  // Live: Tatum gRPC checkpoint stream (server-side) pushes "paid" the moment the payment lands.
+  // EventSource reconnects by itself when the server ends a stream window.
+  const [live, setLive] = useState<{ state: string; checkpoint?: string }>({ state: 'off' });
+  useEffect(() => {
+    const id = selectedInvoiceId;
+    if (activeTab !== 'pay' || !id || !invoiceDetail || invoiceDetail.invoice.status === 'paid') return setLive({ state: 'off' });
+    const es = new EventSource(`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(id)}/live`);
+    es.addEventListener('watching', () => setLive((l) => ({ ...l, state: 'watching' })));
+    es.addEventListener('checkpoint', (e) => setLive({ state: 'watching', checkpoint: JSON.parse((e as MessageEvent).data).checkpoint }));
+    es.addEventListener('seen', () => setLive((l) => ({ ...l, state: 'verifying' })));
+    es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error); });
+    es.addEventListener('paid', (e) => {
+      const d = JSON.parse((e as MessageEvent).data);
+      es.close();
+      setLive({ state: 'paid', checkpoint: d.checkpoint });
+      if (!d.already) showToast(d.message || 'Payment detected live and verified on-chain');
+      fetchInvoiceDetail(id);
+    });
+    es.onerror = () => setLive((l) => ({ ...l, state: 'reconnecting' }));
+    return () => es.close();
+  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, !!invoiceDetail]);
 
   // Payment Kit auto-sync: payments made through the on-chain registry settle without a pasted digest.
   const syncPayments = async () => {
@@ -380,6 +403,23 @@ export default function App() {
     }
   };
 
+  const handleRevokeRule = async (rule: string) => {
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/revoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rule }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      showToast('Rule revoked: a revocation memory was written to Walrus');
+      fetchClientDetail(selectedClientId);
+      fetchSummary();
+      if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
+    } catch (err: any) {
+      showToast(`Failed to revoke: ${err?.message || err}`);
+    }
+  };
+
   const handleRebuildFromMemory = async () => {
     try {
       showToast('Total Recall: restoring and recalling every namespace from Walrus…');
@@ -455,9 +495,27 @@ export default function App() {
       const account = accounts.find((a: any) => a.chains.includes(chain)) || accounts[0];
       if (!account) throw new Error('No account approved');
       setWalletBusy('Building transfer via Tatum…');
-      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address }) });
+      const canSignOnly = 'sui:signTransaction' in wallet.features;
+      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address, sponsored: canSignOnly }) });
       const built = await r.json();
       if (!r.ok) throw new Error(built.error);
+      // Sponsored: the server's gas wallet pays the network fee; the payer only signs the USDC payment.
+      if (built.sponsored) {
+        setWalletBusy('Approve in your wallet · network fee sponsored, you pay only USDC');
+        const signed = await (wallet.features['sui:signTransaction'] as any).signTransaction({
+          transaction: { toJSON: async () => Transaction.from(built.bytes).toJSON() },
+          account,
+          chain,
+        });
+        setWalletBusy(`Submitting through Tatum and verifying on ${netLabel}…`);
+        const v = await fetch('/api/chaser/pay-sponsored', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, bytes: signed.bytes, signature: signed.signature, sponsorSignature: built.sponsored.sponsorSignature }) });
+        const data = await v.json();
+        showToast(data?.message || data?.error || 'Payment sent');
+        fetchInvoiceDetail(selectedInvoiceId);
+        fetchSummary();
+        fetchAllInvoices();
+        return;
+      }
       const fee = built.fee;
       setWalletBusy(
         fee
@@ -886,6 +944,25 @@ export default function App() {
                         </div>
                       );
                     })()}
+
+                    {/* Active rules: each can be revoked (append-only revocation memory on Walrus) */}
+                    {(clientDetail.profile.preferences.length > 0 || (clientDetail.profile.revokedRules || []).length > 0) && (
+                      <div className="flex flex-col gap-xs pt-xs">
+                        <p className="text-sm font-medium text-secondary">Rules the plan obeys</p>
+                        <ul className="flex flex-col gap-xs">
+                          {clientDetail.profile.preferences.map((r) => (
+                            <li key={r} className="flex items-start justify-between gap-sm rounded-md border border-secondary bg-secondary px-md py-xs text-xs text-secondary">
+                              <span>{r}</span>
+                              <button onClick={() => handleRevokeRule(r)} aria-label={`Revoke rule: ${r}`} className="shrink-0 font-semibold text-fg-error-primary hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring rounded-sm">Revoke</button>
+                            </li>
+                          ))}
+                          {(clientDetail.profile.revokedRules || []).map((r) => (
+                            <li key={`x-${r}`} className="rounded-md border border-secondary px-md py-xs text-xs text-tertiary line-through" title="Revoked: still on Walrus, no longer applied">{r}</li>
+                          ))}
+                        </ul>
+                        <p className="text-xs text-tertiary">Walrus is append-only, so revoking writes a new memory; the original stays on Walrus as history.</p>
+                      </div>
+                    )}
 
                     {/* Tell me something about this client (Input & Field Recipe) */}
                     <div className="flex flex-col gap-sm pt-xs">
@@ -1342,6 +1419,12 @@ export default function App() {
                     <a href={invoiceDetail?.invoice.paymentUri} className="text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
                   </div>
                 )}
+                {live.state !== 'off' && (
+                  <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
+                    <span className={`w-2 h-2 rounded-full ${live.state === 'paid' ? 'bg-utility-success-600' : live.state === 'reconnecting' ? 'bg-utility-warning-600' : 'bg-brand-solid animate-pulse'}`} />
+                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying through Tatum…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : `Watching Sui Mainnet live via Tatum gRPC${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
+                  </p>
+                )}
               </div>
 
               {/* Recipient Address */}
@@ -1371,7 +1454,7 @@ export default function App() {
                   <ShieldCheck className="w-4 h-4" />
                   <span>{walletBusy ?? (invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Connect Sui wallet & pay ${invoiceDetail?.invoice.payAmount ?? ''} USDC`)}</span>
                 </button>
-                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The Payment Kit transaction is built through Tatum and verified on {netLabel}.</p>
+                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The Payment Kit transaction is built through Tatum and verified on {netLabel}. The app sponsors the network fee, so USDC alone is enough (if the sponsor wallet runs dry, your wallet pays the gas).</p>
               </div>
 
               {/* Pay from any Sui wallet */}

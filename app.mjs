@@ -36,6 +36,13 @@ app.get('/llms.txt', (req, res) => {
 - Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
 - [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
 
+## For paying agents (MPP)
+- \`GET ${base}/api/chaser/mpp/{invoiceId}\` returns \`402\` with \`WWW-Authenticate: Payment method="sui", intent="charge"\` (Machine Payments Protocol, @suimpp/mpp). Pay the exact USDC amount, then retry with \`Authorization: Payment <credential>\` (digest + payer signature) for a 200 and a \`Payment-Receipt\`.
+- [Reference MPP agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/mpp-agent.mjs)
+
+## Live payment stream
+- \`GET ${base}/api/chaser/pay/{invoiceId}/live\`: Server-Sent Events (\`watching\`, \`checkpoint\`, \`seen\`, \`paid\`) fed by Tatum's Sui gRPC \`SubscribeCheckpoints\` stream.
+
 ## MCP
 - [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, learning_summary)
 

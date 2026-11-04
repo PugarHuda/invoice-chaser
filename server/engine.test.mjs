@@ -52,6 +52,19 @@ test('preferences are hard constraints', () => {
   assert.equal(plan({ dueDate: '2026-11-03' }, p).steps[0].date, '2026-11-10')
 })
 
+test('a revoked rule stops shaping the plan; saving it again revives it', () => {
+  const rule = mem('2026-10-20T00:00:00Z', { type: 'preference', client: 'acme', note: 'never before the 10th' })
+  const revoke = mem('2026-10-21T00:00:00Z', { type: 'rule_revoked', client: 'acme', rule: 'never before the 10th' })
+  const p = computeProfile('acme', [...acme, rule, revoke])
+  assert.deepEqual(p.preferences, [])
+  assert.deepEqual(p.revokedRules, ['never before the 10th'])
+  assert.notEqual(plan({ dueDate: '2026-11-03' }, p).steps[0].date, '2026-11-10')
+  const again = mem('2026-10-22T00:00:00Z', { type: 'preference', client: 'acme', note: 'never before the 10th' })
+  const p2 = computeProfile('acme', [...acme, rule, revoke, again])
+  assert.equal(plan({ dueDate: '2026-11-03' }, p2).steps[0].date, '2026-11-10')
+  assert.deepEqual(p2.revokedRules, [])
+})
+
 test('notes: "only Thursdays, never before the 15th" means pay day + no early chasing', () => {
   const c = parsePreference('Vendor payments are only run on Thursdays and never before the 15th of the month')
   assert.deepEqual(c, { notBeforeDayOfMonth: 15, payWeekdays: [4] })
