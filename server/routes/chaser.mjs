@@ -22,7 +22,7 @@ router.use(async (_req, _res, next) => {
   next()
 })
 
-const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/sync-payments', '/mcp'])
+const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/pay-gasless', '/sync-payments', '/mcp'])
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
@@ -739,17 +739,36 @@ router.post('/pay-tx', async (req, res) => {
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
   if (sender.toLowerCase() === PAYEE().toLowerCase()) return res.status(400).json({ error: 'Pay from a different wallet than the payee' })
+  // optional partial payment from the wallet: any amount up to what is still owed
+  let micro = sui.toMicro(owed(inv))
+  if (req.body.amount != null) {
+    if (!/^\d+(\.\d{1,6})?$/.test(String(req.body.amount))) return res.status(400).json({ error: 'amount must be a USDC amount with at most 6 decimals' })
+    const want = sui.toMicro(String(req.body.amount))
+    if (want <= 0n || want > micro) return res.status(400).json({ error: `amount must be more than 0 and at most ${owed(inv)} USDC` })
+    micro = want
+  }
+  const amount = sui.fromMicro(micro)
   try {
-    // Gas-free for the payer when the server's gas wallet can sponsor; otherwise the wallet pays gas.
+    // 1) Native gasless (Sui Address Balances): zero gas for everyone, when the payer's address
+    //    balance qualifies. It is a plain transfer (Payment Kit is not allowed gasless), settled by digest.
+    if (req.body.gasless !== false) {
+      const plan = await sui.gaslessPlan(sender, micro).catch((e) => ({ eligible: false, reason: e.message }))
+      if (plan.eligible) {
+        const g = await sui.buildGaslessUsdcTransfer(sender, PAYEE(), micro)
+        return res.json({ bytes: g.bytes, amount, payee: PAYEE(), network: sui.NETWORK, gasless: { mac: g.mac, addressBalance: plan.addressBalance } })
+      }
+      res.set('x-gasless-skipped', String(plan.reason || '').slice(0, 200))
+    }
+    // 2) Gas-free for the payer when the server's gas wallet can sponsor; otherwise the wallet pays gas.
     if (req.body.sponsored !== false && sui.sponsor()) {
-      const sp = await sui.buildSponsoredInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id).catch((e) => ({ error: e.message }))
-      if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, mac: sp.mac, gasBudgetMist: sp.gasBudgetMist } })
+      const sp = await sui.buildSponsoredInvoicePayment(sender, PAYEE(), micro, inv.id).catch((e) => ({ error: e.message }))
+      if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount, payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, mac: sp.mac, gasBudgetMist: sp.gasBudgetMist } })
       if (/EDuplicatePayment|duplicate/i.test(sp?.error || '')) throw new Error(sp.error)
     }
-    const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id)
+    const bytes = await sui.buildInvoicePayment(sender, PAYEE(), micro, inv.id)
     // simulate through Tatum for the real fee, priced in USD with Tatum's rate API (best effort)
     const [fee, rate] = await Promise.all([sui.estimateFee(bytes).catch(() => null), usdRate('SUI').catch(() => null)])
-    res.json({ bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
+    res.json({ bytes, amount, payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
   } catch (e) {
     const msg = e.message || ''
     res.status(400).json({ error: /EDuplicatePayment|duplicate/i.test(msg) ? 'This invoice was already paid on-chain' : /insufficient|balance|coin/i.test(msg) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}… on ${NET}` : `Could not build transaction: ${msg}` })
@@ -793,6 +812,33 @@ router.post('/pay-sponsored', async (req, res) => {
     res.status(code).json({ ...body, digest, sponsored: true })
   } catch (e) {
     res.status(400).json({ error: `Sponsored execution failed: ${e.message}` })
+  }
+})
+
+// Native gasless payment: the payer signed bytes this server built (MAC-checked); nobody pays gas.
+router.post('/pay-gasless', async (req, res) => {
+  const { invoiceId, bytes, signature, mac } = req.body || {}
+  if (![invoiceId, bytes, signature, mac].every((x) => typeof x === 'string' && x.length < 20_000)) return res.status(400).json({ error: 'invoiceId, bytes, signature and mac are required' })
+  if (!sui.gaslessMacOk(bytes, mac)) return res.status(400).json({ error: 'These bytes were not built by this server' })
+  const inv = state().invoices.find((i) => i.id === invoiceId)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  try {
+    const out = await sui.executeSigned(bytes, signature)
+    const digest = out?.Transaction?.digest || out?.FailedTransaction?.digest
+    if (!digest || out?.FailedTransaction) return res.status(400).json({ error: `Gasless transfer failed on-chain: ${out?.FailedTransaction?.effects?.status?.error?.message || 'no digest'}`, digest: digest || null })
+    let code, body
+    for (let i = 0; i < 6; i++) {
+      ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-gasless')
+      if (code === 409 && state().invoices.find((x) => x.id === invoiceId)?.payments?.some((p) => p.digest === digest)) {
+        ;[code, body] = [200, { success: true, verifiedOnChain: true, message: 'Paid: settled the moment it reached a checkpoint (live Tatum stream).', explorer: `${sui.EXPLORER}/tx/${digest}` }]
+        break
+      }
+      if (!body.retry && code !== 409) break
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+    res.status(code).json({ ...body, digest, gasless: true })
+  } catch (e) {
+    res.status(400).json({ error: `Gasless execution failed: ${e.message}` })
   }
 })
 

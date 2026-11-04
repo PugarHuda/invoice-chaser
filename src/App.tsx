@@ -521,9 +521,26 @@ export default function App() {
       if (!account) throw new Error('No account approved');
       setWalletBusy('Building transfer via Tatum…');
       const canSignOnly = 'sui:signTransaction' in wallet.features;
-      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address, sponsored: canSignOnly }) });
+      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address, sponsored: canSignOnly, gasless: canSignOnly }) });
       const built = await r.json();
       if (!r.ok) throw new Error(built.error);
+      // Native gasless (Sui Address Balances): the protocol charges no gas at all for this USDC transfer.
+      if (built.gasless) {
+        setWalletBusy('Approve in your wallet · gasless USDC transfer, no network fee at all');
+        const signed = await (wallet.features['sui:signTransaction'] as any).signTransaction({
+          transaction: { toJSON: async () => Transaction.from(built.bytes).toJSON() },
+          account,
+          chain,
+        });
+        setWalletBusy(`Submitting through Tatum and verifying on ${netLabel}…`);
+        const v = await fetch('/api/chaser/pay-gasless', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, bytes: built.bytes, signature: signed.signature, mac: built.gasless.mac }) });
+        const data = await v.json();
+        showToast(data?.message || data?.error || 'Payment sent', v.ok ? 'ok' : 'error');
+        fetchInvoiceDetail(selectedInvoiceId);
+        fetchSummary();
+        fetchAllInvoices();
+        return;
+      }
       // Sponsored: the server's gas wallet pays the network fee; the payer only signs the USDC payment.
       if (built.sponsored) {
         setWalletBusy('Approve in your wallet · network fee sponsored, you pay only USDC');

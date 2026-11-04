@@ -9,7 +9,7 @@ import { paymentKit, createPaymentTransactionUri } from '@mysten/payment-kit'
 import { bcs } from '@mysten/sui/bcs'
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
-import { createHmac, timingSafeEqual } from 'node:crypto'
+import { createHmac, timingSafeEqual, randomInt } from 'node:crypto'
 import { verifyTransactionSignature } from '@mysten/sui/verify'
 import { parseSerializedSignature } from '@mysten/sui/cryptography'
 
@@ -320,3 +320,55 @@ export async function recentIncoming(payee, { since = null, limit = 1000 } = {})
   out.scanned = scanned
   return out
 }
+
+// ---- Native gasless USDC transfers (Sui Address Balances, mainnet since May 2026) ------------
+// The protocol runs eligible stablecoin transfers at gas price 0 and budget 0: no SUI, no sponsor.
+// Rules come from the live protocol config (gasless_allowed_token_types holds each coin's minimum),
+// and from what the validators enforce, checked on mainnet through Tatum:
+//  - funds come from the sender's address balance (coin objects are not eligible),
+//  - only framework calls (balance::redeem_funds + balance::send_funds), so not Payment Kit,
+//  - amount >= the minimum, and the address balance is either emptied or keeps >= the minimum,
+//  - a ValidDuring expiration (there are no owned inputs to pin the transaction).
+let gaslessCfg = null
+export async function gaslessMin() {
+  if (!gaslessCfg || Date.now() - gaslessCfg.t > 3_600_000) {
+    await throttle()
+    const pc = (await once(() => sui().core.getProtocolConfig())).protocolConfig
+    const on = String(pc.featureFlags?.enable_gasless ?? pc.attributes?.enable_gasless) === 'true'
+    let min = null
+    try {
+      const list = JSON.parse(pc.attributes?.gasless_allowed_token_types || '[]')
+      const hit = list.find(([t]) => normalizeStructTag(t) === normalizeStructTag(USDC_COIN_TYPE))
+      if (on && hit) min = BigInt(hit[1])
+    } catch {}
+    gaslessCfg = { t: Date.now(), min }
+  }
+  return gaslessCfg.min
+}
+export async function gaslessPlan(sender, micro) {
+  const min = await gaslessMin()
+  if (min == null) return { eligible: false, reason: 'gasless transfers are not enabled for USDC on this network' }
+  await throttle()
+  const ab = BigInt((await once(() => sui().core.getBalance({ owner: sender, coinType: USDC_COIN_TYPE }))).balance.addressBalance || 0)
+  const left = ab - BigInt(micro)
+  const eligible = BigInt(micro) >= min && left >= 0n && (left === 0n || left >= min)
+  return { eligible, min: min.toString(), addressBalance: ab.toString(), reason: eligible ? null : BigInt(micro) < min ? `amount is below the ${fromMicro(min)} USDC gasless minimum` : left < 0n ? 'not enough USDC in the address balance' : `would leave ${fromMicro(left)} USDC (must be 0 or at least ${fromMicro(min)})` }
+}
+const serverMac = (purpose, b64) => createHmac('sha256', `${purpose}:${process.env.MPP_SECRET_KEY || process.env.CRON_SECRET || process.env.GAS_SPONSOR_KEY || process.env.WALRUS_STORAGE_KEY || ''}`).update(b64).digest('hex')
+export async function buildGaslessUsdcTransfer(sender, payee, micro) {
+  await throttle()
+  const [{ systemState }, { chainIdentifier }] = await Promise.all([once(() => sui().core.getCurrentSystemState()), once(() => sui().core.getChainIdentifier())])
+  const tx = new Transaction()
+  tx.setSender(sender)
+  const [funds] = tx.moveCall({ target: '0x2::balance::redeem_funds', typeArguments: [USDC_COIN_TYPE], arguments: [tx.withdrawal({ amount: BigInt(micro), type: USDC_COIN_TYPE })] })
+  tx.moveCall({ target: '0x2::balance::send_funds', typeArguments: [USDC_COIN_TYPE], arguments: [funds, tx.pure.address(payee)] })
+  tx.setGasPrice(0)
+  tx.setGasBudget(0)
+  tx.setGasPayment([])
+  tx.setExpiration({ ValidDuring: { minEpoch: String(systemState.epoch), maxEpoch: String(BigInt(systemState.epoch) + 1n), minTimestamp: null, maxTimestamp: null, chain: chainIdentifier, nonce: randomInt(2 ** 32) } })
+  await throttle()
+  const b64 = Buffer.from(await once(() => tx.build({ client: sui() }))).toString('base64')
+  return { bytes: b64, mac: serverMac('gasless', b64) }
+}
+// only bytes this server built are relayed (so the endpoint is not a free relay for any transaction)
+export const gaslessMacOk = (b64, mac) => typeof mac === 'string' && /^[0-9a-f]{64}$/.test(mac) && timingSafeEqual(Buffer.from(mac), Buffer.from(serverMac('gasless', b64)))
