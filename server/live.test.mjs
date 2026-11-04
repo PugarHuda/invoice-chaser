@@ -63,3 +63,33 @@ test('the whole app module graph loads (catches syntax errors in any route or di
   const { llms } = await import('./discovery.mjs')
   assert.match(llms('https://x.example'), /invoice\.pdf/)
 })
+
+test('invoice and receipt PDFs render client names the standard font cannot encode', async () => {
+  const { invoicePdf, receiptPdf } = await import('./receipts.mjs')
+  const v = { id: 'inv-x', client: '株式会社 Café 🚀', description: 'Ünïcødé — “quotes”', issuedDate: '2026-11-01', dueDate: '2026-11-10', amount: '1.000001', payee: '0x1', network: 'mainnet', paymentUri: 'sui:pay?x=1', payUrl: 'https://x/?pay=inv-x', mppUrl: 'https://x/m', x402Url: 'https://x/x', status: 'sent', explorer: 'https://e' }
+  const pdf = await invoicePdf(v)
+  assert.equal(Buffer.from(pdf).subarray(0, 5).toString(), '%PDF-')
+  assert.ok((await invoicePdf({ ...v, status: 'paid', digest: 'D' })).length > 500)
+  assert.ok((await receiptPdf({ invoiceId: 'inv-x', client: v.client, description: v.description, amount: '1', dueDate: 'd', paidOn: 'p', payments: [{ digest: 'D', received: '1', payer: '0x2' }], payee: '0x1', network: 'mainnet', explorer: 'https://e' })).length > 500)
+})
+
+test('a rejected async handler becomes a JSON 500, not a hung request', async () => {
+  const express = (await import('express')).default
+  const { Router } = await import('./async-router.mjs')
+  const app = express()
+  const r = Router()
+  r.get('/boom', async () => { throw new Error('kaboom') })
+  r.get('/ok', async (_req, res) => res.json({ ok: true }))
+  app.use('/api', r)
+  app.use((err, _req, res, _next) => res.status(500).json({ error: err.message }))
+  const srv = app.listen(0)
+  const base = `http://127.0.0.1:${srv.address().port}/api`
+  try {
+    const boom = await fetch(`${base}/boom`, { signal: AbortSignal.timeout(3000) })
+    assert.equal(boom.status, 500)
+    assert.deepEqual(await boom.json(), { error: 'kaboom' })
+    assert.equal((await fetch(`${base}/ok`)).status, 200)
+  } finally {
+    srv.close()
+  }
+})

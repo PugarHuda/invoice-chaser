@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router } from '../async-router.mjs'
 import { tatumApiBase } from '../tatum-client.mjs'
 
 const router = Router()

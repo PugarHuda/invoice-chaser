@@ -19,6 +19,10 @@ const walrusClient = () =>
 const signer = () => (process.env.WALRUS_STORAGE_KEY ? Ed25519Keypair.fromSecretKey(decodeSuiPrivateKey(process.env.WALRUS_STORAGE_KEY).secretKey) : null)
 export const receiptsEnabled = () => Boolean(process.env.WALRUS_STORAGE_KEY)
 
+// Standard PDF fonts are WinAnsi-only: a client named in CJK or with an emoji would make pdf-lib
+// throw. Replace every character the font cannot encode instead of failing the whole document.
+const safe = (font, text) => [...String(text ?? '-')].map((ch) => { try { font.encodeText(ch); return ch } catch { return '?' } }).join('')
+
 /** r: { invoiceId, client, description, amount, dueDate, paidOn, payments: [{digest, received, payer}], payee, network, explorer } */
 export async function receiptPdf(r) {
   const doc = await PDFDocument.create()
@@ -29,7 +33,7 @@ export async function receiptPdf(r) {
   const bold = await doc.embedFont(StandardFonts.HelveticaBold)
   let y = 780
   const line = (text, { f = font, size = 11, gap = 18, color = rgb(0.1, 0.1, 0.1) } = {}) => {
-    page.drawText(String(text), { x: 50, y, size, font: f, color, maxWidth: 495 })
+    page.drawText(safe(f, text), { x: 50, y, size, font: f, color, maxWidth: 495 })
     y -= gap
   }
   line('PAYMENT RECEIPT', { f: bold, size: 20, gap: 30 })
@@ -74,7 +78,7 @@ export async function invoicePdf(v) {
   const ink = rgb(0.1, 0.1, 0.1), grey = rgb(0.4, 0.4, 0.4), brand = rgb(0.31, 0.22, 0.99)
   let y = 780
   const line = (text, { f = font, size = 11, gap = 18, color = ink, x = 50 } = {}) => {
-    page.drawText(String(text ?? '-'), { x, y, size, font: f, color, maxWidth: 545 - x })
+    page.drawText(safe(f, text), { x, y, size, font: f, color, maxWidth: 545 - x })
     y -= gap
   }
   line('INVOICE', { f: bold, size: 22, gap: 30, color: brand })

@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router } from '../async-router.mjs'
 import { Transaction } from '@mysten/sui/transactions'
 import { randomBytes } from 'node:crypto'
 import * as mem from '../memory.mjs'
@@ -296,12 +296,17 @@ router.get('/pay/:id/invoice.pdf', async (req, res) => {
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const i = withStatus(inv)
   const base = `${req.protocol}://${req.get('host')}`
-  const pdf = await invoicePdf({
+  let pdf
+  try {
+    pdf = await invoicePdf({
     id: i.id, client: clientName(clients, i.clientId), description: i.description, issuedDate: i.issuedDate, dueDate: i.dueDate, amount: owed(i),
     payee: PAYEE(), network: sui.NETWORK, status: i.status, digest: i.digest, explorer: sui.EXPLORER,
     paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
     payUrl: `${base}/?pay=${i.id}`, mppUrl: `${base}/api/chaser/mpp/${i.id}`, x402Url: `${base}/api/chaser/x402/${i.id}`,
-  })
+    })
+  } catch (e) {
+    return res.status(500).json({ error: `Could not render the invoice PDF: ${e.message}` })
+  }
   res.type('application/pdf').set({ 'Content-Disposition': `inline; filename="invoice-${i.id}.pdf"`, 'Cache-Control': 'no-store' }).send(Buffer.from(pdf))
 })
 
