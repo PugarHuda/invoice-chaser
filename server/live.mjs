@@ -43,6 +43,8 @@ function start() {
         }
       }
     } catch (e) {
+      // Tatum credits exhausted: the reconnect below goes to the public fullnode, watchers see no error
+      if (sui.noteProviderError(e)) return
       if (!ctl.signal.aborted) for (const w of watchers) w.onCheckpoint?.(null, String(e?.message || e))
     } finally {
       // stream ended on its own (gateway timeout): reconnect if anyone is still watching

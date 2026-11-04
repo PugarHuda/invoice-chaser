@@ -363,7 +363,7 @@ data: ${JSON.stringify(data)}
     send('error', { error: String(e.message || e) })
     return finish()
   }
-  send('watching', { invoice: inv.id, amount: owed(inv), payee: PAYEE(), via: 'Tatum gRPC SubscriptionService.SubscribeCheckpoints' })
+  send('watching', { invoice: inv.id, amount: owed(inv), payee: PAYEE(), provider: sui.provider(), via: sui.provider() === 'tatum' ? 'Tatum gRPC SubscriptionService.SubscribeCheckpoints' : 'public Sui fullnode SubscribeCheckpoints (Tatum credits exhausted)' })
   req.on('close', finish)
 })
 
@@ -528,9 +528,9 @@ async function settleDigest(invoiceId, requested, channel) {
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay < 0 ? `${-delay} day(s) before due` : `${delay} day(s) after due`}, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over },
+      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
     )
-    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via Tatum: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
+    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : 'the public Sui fullnode (Tatum credits exhausted)'}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
     inflight.delete(requested)
     inflight.delete(invoiceId)
@@ -548,6 +548,7 @@ router.post('/verify-payment', async (req, res) => {
 // Payers never have to report a digest; anything paid through the registry settles itself.
 let lastSync = 0
 let syncing = null
+let lastReconcile = 0
 async function syncPayments() {
   const open = state().invoices.filter((i) => i.status === 'sent' || (i.status === 'partial' && !i.seed))
   const settled = []
@@ -564,7 +565,9 @@ async function syncPayments() {
   const unpaid = state().invoices.filter((i) => i.status === 'sent' && !i.seed && !settled.some((x) => x.invoice === i.id && x.code === 200))
   let reconciled = 0
   let scanned = 0
-  if (unpaid.length) {
+  // the ListTransactions scan is the costly part: at most once per 5 minutes per instance
+  if (unpaid.length && Date.now() - lastReconcile > 5 * 60_000) {
+    lastReconcile = Date.now()
     const { usedDigests } = state()
     const since = unpaid.map((i) => i.createdAt).filter(Boolean).sort()[0] || null
     const incoming = await sui.recentIncoming(PAYEE(), { since })
@@ -582,8 +585,9 @@ async function syncPayments() {
   return { checked: open.length, settled, reconciled, scannedTransactions: scanned, at: new Date(lastSync).toISOString() }
 }
 router.post('/sync-payments', async (_req, res) => {
-  // ponytail: one sync per instance per 10 s; each open invoice costs one gRPC lookup
-  if (Date.now() - lastSync < 10_000 && !syncing) return res.json({ checked: 0, settled: [], cached: true })
+  // ponytail: one sync per instance per 60 s whoever asks; each open invoice costs one gRPC lookup
+  // (at 10 s, a few open pay pages alone burned through the Tatum plan's credits)
+  if (Date.now() - lastSync < 60_000 && !syncing) return res.json({ checked: 0, settled: [], cached: true })
   try {
     syncing ??= syncPayments().finally(() => (syncing = null))
     res.json(await syncing)
@@ -877,7 +881,9 @@ router.get('/proof', async (_req, res) => {
       endpoint: sui.GRPC_HOST,
       protocol: 'gRPC over TLS (sui.rpc.v2)',
       apiKeyConfigured: Boolean(process.env.TATUM_API_KEY),
-      gatewayStatus: cp.status === 'fulfilled' ? 'connected' : 'error',
+      // 'connected' only when Tatum itself answered; a public-fullnode fallback is reported as such
+      gatewayStatus: cp.status !== 'fulfilled' ? 'error' : sui.provider() === 'tatum' ? 'connected' : 'quota_fallback',
+      provider: sui.providerStatus(),
       latestCheckpoint: cp.status === 'fulfilled' ? cp.value.sequence : null,
       latencyMs: cp.status === 'fulfilled' ? cp.value.latencyMs : null,
       payeeAddress: PAYEE(),

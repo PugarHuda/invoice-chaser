@@ -28,9 +28,27 @@ export const COIN_DECIMALS = TEST_IN_SUI ? 9 : 6
 export const EXPLORER = `https://suiscan.xyz/${NETWORK}`
 export const USDC_DECIMALS = 6
 
+// Provider: Tatum's gRPC gateway. If the Tatum plan's credits run out (HTTP 402 "plan limit
+// exceeded"), calls fall back to the public Sui fullnode (gRPC-web) for 10 minutes and then try Tatum
+// again: the organizers' rule for exhausted credits. /proof and the UI report which one is serving.
+const PUBLIC_GRPC = `https://fullnode.${NETWORK}.sui.io:443`
+const QUOTA_RETRY_MS = 10 * 60_000
+const QUOTA = /status code 402|plan limit|Payment Required/i
+let quotaHitAt = null
+let publicClient
+export const provider = () => (!process.env.TATUM_API_KEY || (quotaHitAt && Date.now() - quotaHitAt < QUOTA_RETRY_MS) ? 'public-fullnode' : 'tatum')
+export const providerStatus = () => ({ provider: provider(), tatumQuotaExceededAt: quotaHitAt ? new Date(quotaHitAt).toISOString() : null, retryTatumAt: quotaHitAt ? new Date(quotaHitAt + QUOTA_RETRY_MS).toISOString() : null, fallback: PUBLIC_GRPC })
+// returns true when the error was Tatum's quota and the caller should retry (now on the fallback)
+export function noteProviderError(e) {
+  const text = `${e?.code} ${e?.message} ${e?.cause?.code} ${e?.cause?.message}`
+  if (!QUOTA.test(text) || provider() !== 'tatum') return false
+  quotaHitAt = Date.now()
+  console.warn(`Tatum plan limit reached; serving Sui reads from ${PUBLIC_GRPC} until ${new Date(quotaHitAt + QUOTA_RETRY_MS).toISOString()}`)
+  return true
+}
 let client
 export function sui() {
-  if (!process.env.TATUM_API_KEY) throw new Error('TATUM_API_KEY is not set')
+  if (provider() === 'public-fullnode') return (publicClient ??= new SuiGrpcClient({ network: NETWORK, baseUrl: PUBLIC_GRPC }).$extend(paymentKit()))
   client ??= new SuiGrpcClient({
     network: NETWORK,
     transport: new GrpcTransport({
@@ -45,6 +63,7 @@ export function sui() {
 // ponytail: free plan is 3 rps per key; one global queue at ~2.5 rps keeps us under it.
 let last = 0
 async function throttle() {
+  if (provider() !== 'tatum') return
   const wait = Math.max(0, last + 400 - Date.now())
   last = Date.now() + wait
   if (wait) await new Promise((r) => setTimeout(r, wait))
@@ -58,6 +77,7 @@ export async function once(fn) {
     try {
       return await fn()
     } catch (e) {
+      if (noteProviderError(e)) continue // Tatum credits exhausted: retry right away on the fallback
       const text = `${e?.code} ${e?.message} ${e?.cause?.code} ${e?.cause?.message}`
       if (!TRANSIENT.test(text) || attempt >= 3) throw e
       if (/ECONNRESET|GOAWAY|hang up/i.test(text)) client = undefined
@@ -295,7 +315,15 @@ export const fromMicro = (m) => {
 // found here even when no pay page was open and Payment Kit was not used.
 // Scans newest-first and stops at the first transaction older than `since`, so a burst of dust
 // transfers to the payee cannot push a real payment out of a fixed-size window (cap: `limit`).
-export async function recentIncoming(payee, { since = null, limit = 1000 } = {}) {
+export async function recentIncoming(payee, opts = {}) {
+  try {
+    return await scanIncoming(payee, opts)
+  } catch (e) {
+    if (noteProviderError(e)) return scanIncoming(payee, opts)
+    throw e
+  }
+}
+async function scanIncoming(payee, { since = null, limit = 1000 } = {}) {
   await throttle()
   const call = sui().ledgerService.listTransactions({
     readMask: { paths: ['digest', 'checkpoint', 'timestamp', 'balance_changes', 'effects.status', 'transaction.sender'] },

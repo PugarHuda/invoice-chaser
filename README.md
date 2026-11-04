@@ -244,6 +244,8 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 
 ## Known limits
 
+- **Tatum credits.** On 2026-11-04 the free plan's credit limit was reached (HTTP 402 "plan limit exceeded" on both gRPC and REST). The organizers' rule for this case is to fall back to public RPC and say so, so the app does exactly that. On a 402, every Sui read, simulation, broadcast and the live checkpoint stream switch to the public Sui fullnode (`fullnode.mainnet.sui.io`, gRPC-web) for 10 minutes, then Tatum is tried again. `/proof` shows `gatewayStatus: "quota_fallback"` plus the provider and retry time. The pay page names the provider, and every payment memory records `verified_via`. The cause was ours: live streams left open in background tabs, and 10-second sync polling. Streams now pause while the tab is hidden and stop after 15 minutes (with a Resume button), sync runs at most once a minute, and the reconciliation scan at most every 5 minutes.
+
 - Reminders are drafted, logged and opened in your email app (`mailto:` with the pay link); the app does not send email itself.
 - The Walrus Site needs a SuiNS name to be reachable at `<name>.wal.app`; until then it is on-chain but only browsable through a self-hosted portal.
 - Receipt de-duplication is per instance plus the memory check; two instances storing the same receipt at the same moment could write two blobs (same content).

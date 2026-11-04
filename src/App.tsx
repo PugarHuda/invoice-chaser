@@ -129,6 +129,7 @@ interface ProofData {
     protocol: string;
     apiKeyConfigured: boolean;
     gatewayStatus: string;
+    provider?: { provider: string; tatumQuotaExceededAt: string | null; retryTatumAt: string | null; fallback: string };
     latestCheckpoint: string;
     payeeAddress: string;
     payeeBalance: string;
@@ -231,13 +232,25 @@ export default function App() {
 
   // Live: Tatum gRPC checkpoint stream (server-side) pushes "paid" the moment the payment lands.
   // EventSource reconnects by itself when the server ends a stream window.
-  const [live, setLive] = useState<{ state: string; checkpoint?: string }>({ state: 'off' });
+  // Every open stream costs gateway credits per checkpoint (~3.6/s), so it stops while the tab is hidden
+  // and after LIVE_PAGE_MS; the payer can resume it, and the 60 s sync still catches a payment.
+  const LIVE_PAGE_MS = 15 * 60_000;
+  const [live, setLive] = useState<{ state: string; checkpoint?: string; via?: string }>({ state: 'off' });
+  const [liveEpoch, setLiveEpoch] = useState(0); // bump to resume
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== 'hidden');
+  useEffect(() => {
+    const on = () => setPageVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', on);
+    return () => document.removeEventListener('visibilitychange', on);
+  }, []);
   useEffect(() => {
     const id = selectedInvoiceId;
     if (activeTab !== 'pay' || !id || !invoiceDetail || invoiceDetail.invoice.status === 'paid') return setLive({ state: 'off' });
+    if (!pageVisible) return setLive((l) => ({ ...l, state: 'paused-hidden' }));
+    const stop = setTimeout(() => { es.close(); setLive((l) => ({ ...l, state: 'paused' })); }, LIVE_PAGE_MS);
     const es = new EventSource(`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(id)}/live`);
-    es.addEventListener('watching', () => setLive((l) => ({ ...l, state: 'watching' })));
-    es.addEventListener('checkpoint', (e) => setLive({ state: 'watching', checkpoint: JSON.parse((e as MessageEvent).data).checkpoint }));
+    es.addEventListener('watching', (e) => { const d = JSON.parse((e as MessageEvent).data); setLive((l) => ({ ...l, state: 'watching', via: d.provider === 'tatum' ? 'Tatum gRPC' : 'the public Sui fullnode (Tatum credits exhausted)' })); });
+    es.addEventListener('checkpoint', (e) => setLive((l) => ({ ...l, state: 'watching', checkpoint: JSON.parse((e as MessageEvent).data).checkpoint })));
     es.addEventListener('seen', () => setLive((l) => ({ ...l, state: 'verifying' })));
     es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error, 'error'); });
     es.addEventListener('paid', (e) => {
@@ -248,8 +261,8 @@ export default function App() {
       fetchInvoiceDetail(id);
     });
     es.onerror = () => setLive((l) => ({ ...l, state: 'reconnecting' }));
-    return () => es.close();
-  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, !!invoiceDetail]);
+    return () => { clearTimeout(stop); es.close(); };
+  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, !!invoiceDetail, pageVisible, liveEpoch]);
 
   // Payment Kit auto-sync: payments made through the on-chain registry settle without a pasted digest.
   const syncPayments = async () => {
@@ -265,10 +278,11 @@ export default function App() {
     } catch (_e) {}
   };
   useEffect(() => {
-    if (activeTab !== 'pay' || invoiceDetail?.invoice.status === 'paid') return;
-    const t = setInterval(syncPayments, 10000);
+    // the live stream already settles payments the moment they land; poll only as a fallback
+    if (activeTab !== 'pay' || invoiceDetail?.invoice.status === 'paid' || !pageVisible || live.state === 'watching') return;
+    const t = setInterval(syncPayments, 60000);
     return () => clearInterval(t);
-  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status]);
+  }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, pageVisible, live.state === 'watching']);
 
   const handleIngestNotes = async () => {
     if (noteText.trim().length < 10) return showToast('Paste at least a sentence', 'error');
@@ -1480,8 +1494,9 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 )}
                 {live.state !== 'off' && (
                   <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
-                    <span className={`w-2 h-2 rounded-full ${live.state === 'paid' ? 'bg-utility-success-600' : live.state === 'reconnecting' ? 'bg-utility-warning-600' : 'bg-brand-solid animate-pulse'}`} />
-                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying through Tatum…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : `Watching Sui Mainnet live via Tatum gRPC${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
+                    <span className={`w-2 h-2 rounded-full ${live.state === 'paid' ? 'bg-utility-success-600' : live.state === 'reconnecting' ? 'bg-utility-warning-600' : live.state.startsWith('paused') ? 'bg-tertiary' : 'bg-brand-solid animate-pulse'}`} />
+                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : live.state === 'paused' || live.state === 'paused-hidden' ? 'Live stream paused to save gateway credits' : `Watching ${netLabel} live via ${live.via || 'Tatum gRPC'}${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
+                    {live.state === 'paused' && <button onClick={() => setLiveEpoch((n) => n + 1)} className="ml-xs font-semibold text-utility-brand-700 hover:underline">Resume</button>}
                   </p>
                 )}
               </div>
@@ -1582,7 +1597,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     <ShieldCheck className="w-5 h-5 text-fg-success-primary" />
                     <span className="font-semibold text-sm text-primary">Tatum Sui gRPC Gateway</span>
                   </div>
-                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : 'error'} ok="Connected (TLS)" error="Unreachable" />
+                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : proofData.tatumSuiGrpc.gatewayStatus === 'quota_fallback' ? 'warn' : 'error'} ok="Connected (TLS)" warn="Credits exhausted · public fullnode fallback" error="Unreachable" />
                 </div>
 
                 <div className="space-y-xs text-xs">
@@ -1701,8 +1716,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
 }
 
 // Status pill driven by the live /proof response: never green unless the check actually passed.
-function StatusBadge({ state, ok, error }: { state: 'loading' | 'ok' | 'error'; ok: string; error: string }) {
-  const tone = state === 'ok' ? 'success' : state === 'error' ? 'error' : 'gray';
-  const cls = { success: 'border-utility-success-200 bg-utility-success-50 text-utility-success-700', error: 'border-utility-error-200 bg-utility-error-50 text-utility-error-700', gray: 'border-secondary bg-secondary text-secondary' }[tone];
-  return <span role="status" className={`inline-flex items-center gap-xs rounded-full border px-md py-xxs text-xs font-medium ${cls}`}>{state === 'loading' ? 'Checking…' : state === 'ok' ? ok : error}</span>;
+function StatusBadge({ state, ok, warn, error }: { state: 'loading' | 'ok' | 'warn' | 'error'; ok: string; warn?: string; error: string }) {
+  const cls = { ok: 'border-utility-success-200 bg-utility-success-50 text-utility-success-700', warn: 'border-utility-warning-200 bg-utility-warning-50 text-utility-warning-700', error: 'border-utility-error-200 bg-utility-error-50 text-utility-error-700', loading: 'border-secondary bg-secondary text-secondary' }[state];
+  return <span role="status" className={`inline-flex items-center gap-xs rounded-full border px-md py-xxs text-xs font-medium ${cls}`}>{state === 'loading' ? 'Checking…' : state === 'ok' ? ok : state === 'warn' ? warn : error}</span>;
 }
