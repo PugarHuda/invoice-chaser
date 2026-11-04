@@ -288,9 +288,14 @@ router.get('/pay/:id', (req, res) => {
 // moves this invoice's exact amount to the payee, the digest goes through the same verify/settle
 // path as everything else, so a stream hit can never settle what a manual check would reject.
 const LIVE_MS = 240_000 // ponytail: under Vercel's function limit; the page reconnects when it ends
+const liveByIp = new Map() // ponytail: per-instance; 2 open streams per IP so one client can't take every slot
 router.get('/pay/:id/live', (req, res) => {
   const inv = state().invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const ip = (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
+  if ((liveByIp.get(ip) || 0) >= 2) return res.status(429).json({ error: 'Too many live streams from this address' })
+  liveByIp.set(ip, (liveByIp.get(ip) || 0) + 1)
+  res.once('close', () => (liveByIp.get(ip) > 1 ? liveByIp.set(ip, liveByIp.get(ip) - 1) : liveByIp.delete(ip)))
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
   res.flushHeaders()
   const send = (event, data) => res.write(`event: ${event}
@@ -617,7 +622,7 @@ router.post('/pay-tx', async (req, res) => {
     // Gas-free for the payer when the server's gas wallet can sponsor; otherwise the wallet pays gas.
     if (req.body.sponsored !== false && sui.sponsor()) {
       const sp = await sui.buildSponsoredInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id).catch((e) => ({ error: e.message }))
-      if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, sponsorSignature: sp.sponsorSignature, gasBudgetMist: sp.gasBudgetMist } })
+      if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount: owed(inv), payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, mac: sp.mac, gasBudgetMist: sp.gasBudgetMist } })
       if (/EDuplicatePayment|duplicate/i.test(sp?.error || '')) throw new Error(sp.error)
     }
     const bytes = await sui.buildInvoicePayment(sender, PAYEE(), sui.toMicro(owed(inv)), inv.id)
@@ -636,8 +641,8 @@ const likely = new Map()
 // Sponsored payment: the payer signed the bytes the server built (and already co-signed as gas owner).
 // Both signatures cover exactly those bytes, so this endpoint can only ever submit that payment.
 router.post('/pay-sponsored', async (req, res) => {
-  const { invoiceId, bytes, signature, sponsorSignature } = req.body || {}
-  if (![invoiceId, bytes, signature, sponsorSignature].every((x) => typeof x === 'string' && x.length < 20_000)) return res.status(400).json({ error: 'invoiceId, bytes, signature and sponsorSignature are required' })
+  const { invoiceId, bytes, signature, mac } = req.body || {}
+  if (![invoiceId, bytes, signature, mac].every((x) => typeof x === 'string' && x.length < 20_000)) return res.status(400).json({ error: 'invoiceId, bytes, signature and mac are required' })
   const kp = sui.sponsor()
   if (!kp) return res.status(503).json({ error: 'Gas sponsorship is not configured' })
   let data
@@ -647,6 +652,8 @@ router.post('/pay-sponsored', async (req, res) => {
     return res.status(400).json({ error: 'Unreadable transaction bytes' })
   }
   if (sui.normAddr(data.gasData.owner) !== sui.normAddr(kp.getPublicKey().toSuiAddress())) return res.status(400).json({ error: 'Not a transaction this server sponsors' })
+  const sponsorSignature = await sui.cosignSponsored(bytes, mac)
+  if (!sponsorSignature) return res.status(400).json({ error: 'These bytes were not built by this server' })
   try {
     const out = await sui.executeSigned(bytes, [signature, sponsorSignature])
     const digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest

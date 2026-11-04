@@ -508,7 +508,7 @@ export default function App() {
           chain,
         });
         setWalletBusy(`Submitting through Tatum and verifying on ${netLabel}…`);
-        const v = await fetch('/api/chaser/pay-sponsored', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, bytes: signed.bytes, signature: signed.signature, sponsorSignature: built.sponsored.sponsorSignature }) });
+        const v = await fetch('/api/chaser/pay-sponsored', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, bytes: built.bytes, signature: signed.signature, mac: built.sponsored.mac }) });
         const data = await v.json();
         showToast(data?.message || data?.error || 'Payment sent');
         fetchInvoiceDetail(selectedInvoiceId);

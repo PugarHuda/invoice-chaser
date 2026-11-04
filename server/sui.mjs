@@ -9,6 +9,7 @@ import { paymentKit, createPaymentTransactionUri } from '@mysten/payment-kit'
 import { bcs } from '@mysten/sui/bcs'
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 
 export const NETWORK = process.env.SUI_NETWORK === 'testnet' ? 'testnet' : 'mainnet'
 export const GRPC_HOST = `sui-${NETWORK}-grpc.gateway.tatum.io:443`
@@ -140,8 +141,17 @@ export async function buildSponsoredInvoicePayment(sender, payee, micro, nonce) 
   const bytes = await once(() => tx.build({ client: sui() }))
   const budget = BigInt(Transaction.from(bytes).getData().gasData.budget)
   if (budget > SPONSOR_MAX_MIST) throw new Error(`gas budget ${budget} MIST is over the sponsor cap`)
-  const { signature } = await kp.signTransaction(bytes)
-  return { bytes: Buffer.from(bytes).toString('base64'), sponsorSignature: signature, sponsor: kp.getPublicKey().toSuiAddress(), gasBudgetMist: budget.toString() }
+  const b64 = Buffer.from(bytes).toString('base64')
+  // The sponsor signature never leaves the server: the payer gets the bytes plus a MAC, and
+  // cosignSponsored() signs only bytes this server built (and submits them itself).
+  return { bytes: b64, mac: sponsorMac(b64), sponsor: kp.getPublicKey().toSuiAddress(), gasBudgetMist: budget.toString() }
+}
+const sponsorMac = (b64) => createHmac('sha256', `sponsor:${process.env.GAS_SPONSOR_KEY || process.env.WALRUS_STORAGE_KEY}`).update(b64).digest('hex')
+export async function cosignSponsored(b64, mac) {
+  const kp = sponsor()
+  const want = Buffer.from(sponsorMac(b64))
+  if (!kp || typeof mac !== 'string' || mac.length !== want.length || !timingSafeEqual(Buffer.from(mac), want)) return null
+  return (await kp.signTransaction(Buffer.from(b64, 'base64'))).signature
 }
 
 // ---- Sui Payment Kit (Mysten standard) ------------------------------------------------------

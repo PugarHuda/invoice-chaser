@@ -102,7 +102,7 @@ An open pay page subscribes to `GET /api/chaser/pay/<invoice>/live` (Server-Sent
 
 ## Gas-free payments for clients (sponsored transactions)
 
-With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet as a fallback), `/pay-tx` builds the Payment Kit transaction with the payer as sender and the server's wallet as **gas owner**, then co-signs it. The payer's wallet only signs (`sui:signTransaction`), and `/pay-sponsored` submits both signatures through Tatum and settles the payment. A client needs USDC and nothing else. Both signatures cover exactly the bytes the server built, so the endpoint can't be used to sponsor anything else. Each payment's gas budget is capped (`SPONSOR_MAX_MIST`, default 0.02 SUI). If sponsorship isn't available, the wallet pays gas as before.
+With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet as a fallback), `/pay-tx` builds the Payment Kit transaction with the payer as sender and the server's wallet as **gas owner**, then MACs the bytes. The payer's wallet only signs (`sui:signTransaction`); `/pay-sponsored` checks the MAC, adds the sponsor signature server-side (it never leaves the server), submits both through Tatum and settles the payment. A client needs USDC and nothing else. Both signatures cover exactly the bytes the server built, so the endpoint can't be used to sponsor anything else. Each payment's gas budget is capped (`SPONSOR_MAX_MIST`, default 0.02 SUI). If sponsorship isn't available, the wallet pays gas as before.
 
 ## Revoking what it learned
 
