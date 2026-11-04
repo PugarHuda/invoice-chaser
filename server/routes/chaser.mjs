@@ -7,7 +7,7 @@ import { usdRate } from '../rates.mjs'
 import { screenAddress } from '../security.mjs'
 import { mcpHandler } from '../mcp.mjs'
 import { draftReminder } from '../drafter.mjs'
-import { storeReceipt, receiptsEnabled } from '../receipts.mjs'
+import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
 import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs } from '../engine.mjs'
@@ -29,7 +29,7 @@ const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '
 const buckets = new Map()
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/live$/.test(req.path))) || req.path === '/mcp'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp'
 router.use((req, res, next) => {
   const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
   const expensive = isExpensiveRead(req)
@@ -287,6 +287,22 @@ router.get('/pay/:id', (req, res) => {
       receipt: receiptOf(i),
     },
   })
+})
+
+// The invoice as a PDF (QR + pay link + agent endpoints), built on request; nothing is stored.
+router.get('/pay/:id/invoice.pdf', async (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const i = withStatus(inv)
+  const base = `${req.protocol}://${req.get('host')}`
+  const pdf = await invoicePdf({
+    id: i.id, client: clientName(clients, i.clientId), description: i.description, issuedDate: i.issuedDate, dueDate: i.dueDate, amount: owed(i),
+    payee: PAYEE(), network: sui.NETWORK, status: i.status, digest: i.digest, explorer: sui.EXPLORER,
+    paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
+    payUrl: `${base}/?pay=${i.id}`, mppUrl: `${base}/api/chaser/mpp/${i.id}`, x402Url: `${base}/api/chaser/x402/${i.id}`,
+  })
+  res.type('application/pdf').set({ 'Content-Disposition': `inline; filename="invoice-${i.id}.pdf"`, 'Cache-Control': 'no-store' }).send(Buffer.from(pdf))
 })
 
 // Live pay page: Server-Sent Events fed by Tatum's gRPC checkpoint stream. The moment a checkpoint

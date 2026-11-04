@@ -1366,7 +1366,8 @@ export default function App() {
                           <div className="text-xs text-secondary bg-secondary rounded-lg border border-secondary p-md space-y-xs">
                             <p className="whitespace-pre-line">{reminderText}</p>
                             {reminderSource && <p className="text-tertiary italic">{reminderSource}</p>}
-                            <a href={`mailto:?subject=${encodeURIComponent(`Invoice ${invoiceDetail.invoice.id}`)}&body=${encodeURIComponent(`${reminderText}\n\nPay here: ${window.location.origin}/?pay=${invoiceDetail.invoice.id}`)}`} className="inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline">
+                            <a href={`mailto:${encodeURIComponent(((c) => (c && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c) ? c : ''))(clientsList.find((c) => c.id === invoiceDetail.invoice.clientId)?.contact))}?subject=${encodeURIComponent(`Invoice ${invoiceDetail.invoice.id}`)}&body=${encodeURIComponent(`${reminderText}\n\nPay here: ${window.location.origin}/?pay=${invoiceDetail.invoice.id}
+Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id}/invoice.pdf`)}`} className="inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline">
                               Open in your email app <ExternalLink className="w-3 h-3" />
                             </a>
                           </div>
@@ -1446,6 +1447,11 @@ export default function App() {
                     <img src={qr} alt="Scan to pay with a Sui wallet" className="w-44 h-44" />
                     <a href={invoiceDetail?.invoice.paymentUri} className="text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
                   </div>
+                )}
+                {invoiceDetail && (
+                  <a href={`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(invoiceDetail.invoice.id)}/invoice.pdf`} target="_blank" rel="noreferrer" className="mt-sm inline-flex items-center gap-xxs text-xs font-semibold text-utility-brand-700 hover:underline">
+                    Download invoice (PDF) <ExternalLink className="w-3 h-3" />
+                  </a>
                 )}
                 {live.state !== 'off' && (
                   <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
