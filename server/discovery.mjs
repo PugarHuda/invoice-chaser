@@ -112,7 +112,8 @@ discovery.get('/.well-known/agent-skills/pay-invoice/SKILL.md', (req, res) => re
 discovery.get(/^(?!\/api(\/|$)|\/\.well-known\/|\/assets\/).*/, (req, res, next) => {
   res.set('Link', ['</.well-known/api-catalog>; rel="api-catalog"', '</openapi.json>; rel="service-desc"; type="application/json"', '</llms.txt>; rel="describedby"; type="text/markdown"', `<${REPO}#readme>; rel="service-doc"`].join(', '))
   res.vary('Accept')
-  if (!/text\/markdown/.test(req.get('accept') || '')) return next()
+  // only app pages (no file extension): /auth.md or /x.json must not get a made-up markdown body
+  if (!/text\/markdown/.test(req.get('accept') || '') || /\.[a-z0-9]+$/i.test(req.path)) return next()
   const b = origin(req)
   const id = typeof req.query.pay === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(req.query.pay) ? req.query.pay : null
   const md = id

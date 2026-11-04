@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
+import { registerWebMcp } from './webmcp'
 
 // Owner passcode (APP_PASSCODE on the server): sent on writes, asked for once on a 401.
 const rawFetch = window.fetch.bind(window)
@@ -21,6 +22,9 @@ window.fetch = async (input, init = {}) => {
   }
   return res
 }
+
+// WebMCP: in-browser agents get the page's read tools (no-op where unsupported)
+registerWebMcp(new URLSearchParams(window.location.search).get('pay'))
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

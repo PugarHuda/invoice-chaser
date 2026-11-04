@@ -38,14 +38,15 @@ if (fs.existsSync(path.join(dist, 'index.html'))) {
   app.use(express.static(dist, { index: false, maxAge: '1h' }))
   // index.html must never be revalidated into a stale copy: bundle files can share size/mtime across
   // deploys, so an ETag 304 would keep an old index pointing at assets that no longer exist (blank page)
-  app.get(/^(?!\/api(\/|$)|\/\.well-known\/).*/, (_req, res) => {
+  // a missing file (/auth.md, /x.png) is a 404 too; only extensionless app routes get the shell
+  app.get(/^(?!\/api(\/|$)|\/\.well-known\/)(?!.*\.[A-Za-z0-9]+$).*/, (_req, res) => {
     res.set('Cache-Control', 'no-store')
     res.sendFile(path.join(dist, 'index.html'), { etag: false, lastModified: false })
   })
 }
 
 // Unknown API or well-known paths: a real 404, never the SPA's HTML (agents read that as a soft-404).
-app.use((req, res, next) => (/^\/(api|\.well-known)(\/|$)/.test(req.path) ? res.status(404).json({ error: 'Not found' }) : next()))
+app.use((req, res, next) => (/^\/(api|\.well-known)(\/|$)|\.[A-Za-z0-9]+$/.test(req.path) ? res.status(404).json({ error: 'Not found' }) : next()))
 
 // JSON errors for the API (e.g. malformed request bodies), never an HTML stack page.
 app.use((err, req, res, next) => {
