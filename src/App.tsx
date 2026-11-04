@@ -1514,7 +1514,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   <ShieldCheck className="w-4 h-4" />
                   <span>{walletBusy ?? (invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Connect Sui wallet & pay ${invoiceDetail?.invoice.payAmount ?? ''} USDC`)}</span>
                 </button>
-                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The Payment Kit transaction is built through Tatum and verified on {netLabel}. The app sponsors the network fee, so USDC alone is enough (if the sponsor wallet runs dry, your wallet pays the gas).</p>
+                <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The transaction is built through Tatum and verified on {netLabel}. USDC alone is enough: if your USDC sits in your Sui address balance the transfer is natively gasless (no fee for anyone); otherwise the app sponsors the network fee for a Payment Kit payment, and if the sponsor runs dry your wallet pays the gas.</p>
               </div>
 
               {/* Pay from any Sui wallet */}

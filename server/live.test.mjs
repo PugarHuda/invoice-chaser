@@ -93,3 +93,22 @@ test('a rejected async handler becomes a JSON 500, not a hung request', async ()
     srv.close()
   }
 })
+
+test('gasless relay MAC is bound to its invoice and fails closed without a server secret', async () => {
+  const { createHmac } = await import('node:crypto')
+  const s = await import('./sui.mjs')
+  const keys = ['MPP_SECRET_KEY', 'CRON_SECRET', 'GAS_SPONSOR_KEY', 'WALRUS_STORAGE_KEY']
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]))
+  try {
+    for (const k of keys) delete process.env[k]
+    assert.equal(s.gaslessRelayEnabled(), false)
+    assert.equal(s.gaslessMacOk('AAAA', 'a'.repeat(64), 'inv-1'), false) // no secret: never valid
+    process.env.MPP_SECRET_KEY = 'k'
+    const mac = createHmac('sha256', 'gasless:inv-1:k').update('AAAA').digest('hex')
+    assert.equal(s.gaslessMacOk('AAAA', mac, 'inv-1'), true)
+    assert.equal(s.gaslessMacOk('AAAA', mac, 'inv-2'), false) // same bytes, other invoice
+    assert.equal(s.gaslessMacOk('AAAB', mac, 'inv-1'), false)
+  } finally {
+    for (const k of keys) saved[k] == null ? delete process.env[k] : (process.env[k] = saved[k])
+  }
+})

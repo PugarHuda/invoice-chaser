@@ -27,6 +27,9 @@ export const llms = (base) => `# Invoice Chaser
 ## Discovery
 - [OpenAPI with x-payment-info](${base}/openapi.json): MPP service discovery (draft-payment-discovery-01), every payable operation and its offers
 
+## Gasless (no SUI needed)
+- \`POST ${base}/api/chaser/pay-tx\` with \`{ invoiceId, sender, amount? }\` returns a native gasless USDC transfer (\`gasless.mac\`) when the sender's address balance qualifies (Sui Address Balances; gas price and budget 0). Sign it and \`POST ${base}/api/chaser/pay-gasless\` with \`{ invoiceId, bytes, signature, mac }\`.
+
 ## Live payment stream
 - \`GET ${base}/api/chaser/pay/{invoiceId}/live\`: Server-Sent Events (\`watching\`, \`checkpoint\`, \`seen\`, \`paid\`) fed by Tatum's Sui gRPC \`SubscribeCheckpoints\` stream.
 

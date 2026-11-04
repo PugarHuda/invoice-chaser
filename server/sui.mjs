@@ -354,8 +354,15 @@ export async function gaslessPlan(sender, micro) {
   const eligible = BigInt(micro) >= min && left >= 0n && (left === 0n || left >= min)
   return { eligible, min: min.toString(), addressBalance: ab.toString(), reason: eligible ? null : BigInt(micro) < min ? `amount is below the ${fromMicro(min)} USDC gasless minimum` : left < 0n ? 'not enough USDC in the address balance' : `would leave ${fromMicro(left)} USDC (must be 0 or at least ${fromMicro(min)})` }
 }
-const serverMac = (purpose, b64) => createHmac('sha256', `${purpose}:${process.env.MPP_SECRET_KEY || process.env.CRON_SECRET || process.env.GAS_SPONSOR_KEY || process.env.WALRUS_STORAGE_KEY || ''}`).update(b64).digest('hex')
-export async function buildGaslessUsdcTransfer(sender, payee, micro) {
+// fail closed: with no server secret there is no MAC, so gasless relaying is off (never an empty key)
+const macSecret = () => process.env.MPP_SECRET_KEY || process.env.CRON_SECRET || process.env.GAS_SPONSOR_KEY || process.env.WALRUS_STORAGE_KEY || null
+export const gaslessRelayEnabled = () => Boolean(macSecret())
+const serverMac = (purpose, b64) => {
+  const k = macSecret()
+  if (!k) throw new Error('no server secret configured for signing relay bytes')
+  return createHmac('sha256', `${purpose}:${k}`).update(b64).digest('hex')
+}
+export async function buildGaslessUsdcTransfer(sender, payee, micro, invoiceId) {
   await throttle()
   const [{ systemState }, { chainIdentifier }] = await Promise.all([once(() => sui().core.getCurrentSystemState()), once(() => sui().core.getChainIdentifier())])
   const tx = new Transaction()
@@ -367,8 +374,10 @@ export async function buildGaslessUsdcTransfer(sender, payee, micro) {
   tx.setGasPayment([])
   tx.setExpiration({ ValidDuring: { minEpoch: String(systemState.epoch), maxEpoch: String(BigInt(systemState.epoch) + 1n), minTimestamp: null, maxTimestamp: null, chain: chainIdentifier, nonce: randomInt(2 ** 32) } })
   await throttle()
-  const b64 = Buffer.from(await once(() => tx.build({ client: sui() }))).toString('base64')
-  return { bytes: b64, mac: serverMac('gasless', b64) }
+  const raw = await once(() => tx.build({ client: sui() }))
+  const b64 = Buffer.from(raw).toString('base64')
+  // the digest is fixed by the bytes, so the route can reserve it for this invoice before signing
+  return { bytes: b64, digest: await Transaction.from(raw).getDigest(), mac: serverMac(`gasless:${invoiceId}`, b64) }
 }
-// only bytes this server built are relayed (so the endpoint is not a free relay for any transaction)
-export const gaslessMacOk = (b64, mac) => typeof mac === 'string' && /^[0-9a-f]{64}$/.test(mac) && timingSafeEqual(Buffer.from(mac), Buffer.from(serverMac('gasless', b64)))
+// only bytes this server built for THIS invoice are relayed (not a free relay, not re-targetable)
+export const gaslessMacOk = (b64, mac, invoiceId) => gaslessRelayEnabled() && typeof mac === 'string' && /^[0-9a-f]{64}$/.test(mac) && timingSafeEqual(Buffer.from(mac), Buffer.from(serverMac(`gasless:${invoiceId}`, b64)))

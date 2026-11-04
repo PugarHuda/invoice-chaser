@@ -449,7 +449,18 @@ const inflight = new Set()
 const settledDigests = new Set()
 const NET = sui.NETWORK === 'mainnet' ? 'Sui Mainnet' : 'Sui Testnet'
 
+// Gasless transfers carry no on-chain nonce, so the digest (known from the bytes before signing) is
+// reserved for its invoice at build time: no endpoint may settle it against a different invoice.
+// ponytail: per instance, 30 min TTL; a reservation shared across instances would need a store
+const reservedDigests = new Map()
+const RESERVE_MS = 30 * 60_000
+function reserveDigest(digest, invoiceId) {
+  for (const [d, r] of reservedDigests) if (Date.now() - r.at > RESERVE_MS) reservedDigests.delete(d)
+  reservedDigests.set(digest, { invoiceId, at: Date.now() })
+}
 async function settleDigest(invoiceId, requested, channel) {
+  const held = reservedDigests.get(requested)
+  if (held && held.invoiceId !== invoiceId && Date.now() - held.at < RESERVE_MS) return [409, { error: 'This payment was built for a different invoice' }]
   const { invoices } = state()
   const inv0 = invoices.find((i) => i.id === invoiceId)
   if (!inv0) return [404, { error: 'Invoice not found' }]
@@ -751,16 +762,18 @@ router.post('/pay-tx', async (req, res) => {
   try {
     // 1) Native gasless (Sui Address Balances): zero gas for everyone, when the payer's address
     //    balance qualifies. It is a plain transfer (Payment Kit is not allowed gasless), settled by digest.
-    if (req.body.gasless !== false) {
+    if (req.body.gasless !== false && sui.gaslessRelayEnabled()) {
       const plan = await sui.gaslessPlan(sender, micro).catch((e) => ({ eligible: false, reason: e.message }))
       if (plan.eligible) {
-        const g = await sui.buildGaslessUsdcTransfer(sender, PAYEE(), micro)
+        const g = await sui.buildGaslessUsdcTransfer(sender, PAYEE(), micro, inv.id)
+        reserveDigest(g.digest, inv.id)
         return res.json({ bytes: g.bytes, amount, payee: PAYEE(), network: sui.NETWORK, gasless: { mac: g.mac, addressBalance: plan.addressBalance } })
       }
       res.set('x-gasless-skipped', String(plan.reason || '').slice(0, 200))
     }
     // 2) Gas-free for the payer when the server's gas wallet can sponsor; otherwise the wallet pays gas.
-    if (req.body.sponsored !== false && sui.sponsor()) {
+    //    Sponsored gas is spent only on a payment that settles the invoice in full (no dust partials).
+    if (req.body.sponsored !== false && sui.sponsor() && micro === sui.toMicro(owed(inv))) {
       const sp = await sui.buildSponsoredInvoicePayment(sender, PAYEE(), micro, inv.id).catch((e) => ({ error: e.message }))
       if (sp && !sp.error) return res.json({ bytes: sp.bytes, amount, payee: PAYEE(), network: sui.NETWORK, sponsored: { sponsor: sp.sponsor, mac: sp.mac, gasBudgetMist: sp.gasBudgetMist } })
       if (/EDuplicatePayment|duplicate/i.test(sp?.error || '')) throw new Error(sp.error)
@@ -819,7 +832,7 @@ router.post('/pay-sponsored', async (req, res) => {
 router.post('/pay-gasless', async (req, res) => {
   const { invoiceId, bytes, signature, mac } = req.body || {}
   if (![invoiceId, bytes, signature, mac].every((x) => typeof x === 'string' && x.length < 20_000)) return res.status(400).json({ error: 'invoiceId, bytes, signature and mac are required' })
-  if (!sui.gaslessMacOk(bytes, mac)) return res.status(400).json({ error: 'These bytes were not built by this server' })
+  if (!sui.gaslessMacOk(bytes, mac, invoiceId)) return res.status(400).json({ error: 'These bytes were not built by this server for this invoice' })
   const inv = state().invoices.find((i) => i.id === invoiceId)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   try {
