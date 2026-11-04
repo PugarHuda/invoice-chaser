@@ -170,6 +170,7 @@ export default function App() {
   const [ignoreMemory, setIgnoreMemory] = useState<boolean>(false);
   const [clientNote, setClientNote] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastTone, setToastTone] = useState<'ok' | 'error'>('ok');
 
   // Live Data States
   const [summary, setSummary] = useState<SummaryData | null>(null);
@@ -195,7 +196,7 @@ export default function App() {
   const handleSetPayer = async () => {
     const r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: payerInput }) });
     const d = await r.json();
-    if (!r.ok) return showToast(d.error || 'Could not set payer');
+    if (!r.ok) return showToast(d.error || 'Could not set payer', 'error');
     showToast(`Payer set: ${d.name ? `${d.name} → ` : ''}${d.address.slice(0, 10)}… · Tatum screening: ${d.screen?.verdict ?? 'unavailable'}`);
     setPayerInput('');
     fetchClientDetail(selectedClientId);
@@ -210,7 +211,7 @@ export default function App() {
     try {
       const r = await fetch(`/api/chaser/clients/${selectedClientId}/search?q=${encodeURIComponent(memQuery.trim())}`);
       const d = await r.json();
-      if (!r.ok) return showToast(d.error || 'Search failed');
+      if (!r.ok) return showToast(d.error || 'Search failed', 'error');
       setMemHits(d.results);
     } finally {
       setMemBusy(false);
@@ -238,7 +239,7 @@ export default function App() {
     es.addEventListener('watching', () => setLive((l) => ({ ...l, state: 'watching' })));
     es.addEventListener('checkpoint', (e) => setLive({ state: 'watching', checkpoint: JSON.parse((e as MessageEvent).data).checkpoint }));
     es.addEventListener('seen', () => setLive((l) => ({ ...l, state: 'verifying' })));
-    es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error); });
+    es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error, 'error'); });
     es.addEventListener('paid', (e) => {
       const d = JSON.parse((e as MessageEvent).data);
       es.close();
@@ -270,12 +271,12 @@ export default function App() {
   }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status]);
 
   const handleIngestNotes = async () => {
-    if (noteText.trim().length < 10) return showToast('Paste at least a sentence');
+    if (noteText.trim().length < 10) return showToast('Paste at least a sentence', 'error');
     setNoteBusy(true);
     try {
       const res = await fetch(`/api/chaser/clients/${selectedClientId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: noteText }) });
       const data = await res.json();
-      if (!res.ok) return showToast(data.error || 'Could not analyze notes');
+      if (!res.ok) return showToast(data.error || 'Could not analyze notes', 'error');
       showToast(`Walrus extracted ${data.facts.length} fact(s) from your notes`);
       setNoteText('');
       fetchClientDetail(selectedClientId);
@@ -285,7 +286,8 @@ export default function App() {
     }
   };
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, tone: 'ok' | 'error' = 'ok') => {
+    setToastTone(tone);
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
@@ -372,7 +374,7 @@ export default function App() {
       showToast(`Receipt stored on Walrus: ${data.blobId.slice(0, 10)}…`);
       await fetchInvoiceDetail(id);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : 'Receipt failed');
+      showToast(e instanceof Error ? e.message : 'Receipt failed', 'error');
     } finally {
       setStoringReceipt(false);
     }
@@ -419,7 +421,7 @@ export default function App() {
         if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
       }
     } catch (_err) {
-      showToast('Failed to record memory');
+      showToast('Failed to record memory', 'error');
     }
   };
 
@@ -436,7 +438,7 @@ export default function App() {
       fetchSummary();
       if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
     } catch (err: any) {
-      showToast(`Failed to revoke: ${err?.message || err}`);
+      showToast(`Failed to revoke: ${err?.message || err}`, 'error');
     }
   };
 
@@ -455,13 +457,13 @@ export default function App() {
         fetchSummary();
       }
     } catch (_err) {
-      showToast('Rebuild failed');
+      showToast('Rebuild failed', 'error');
     }
   };
 
   const handleVerifyDigest = async () => {
     if (!digestInput.trim()) {
-      showToast('Please enter a transaction digest');
+      showToast('Please enter a transaction digest', 'error');
       return;
     }
     setIsVerifying(true);
@@ -482,10 +484,10 @@ export default function App() {
         fetchSummary();
         fetchAllInvoices();
       } else {
-        showToast(data.error || 'Verification failed');
+        showToast(data.error || 'Verification failed', 'error');
       }
     } catch (_err) {
-      showToast('Network error during verification');
+      showToast('Network error during verification', 'error');
     } finally {
       setIsVerifying(false);
     }
@@ -495,7 +497,7 @@ export default function App() {
     if (!newClientName.trim()) return;
     const res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
     const data = await res.json();
-    if (!res.ok) return showToast(data.error || 'Could not add client');
+    if (!res.ok) return showToast(data.error || 'Could not add client', 'error');
     showToast(`${data.client.name} added (writing to Walrus Memory)`);
     setNewClientName('');
     await fetchClients();
@@ -506,7 +508,7 @@ export default function App() {
   // the wallet signs and executes it; then the digest is verified on Mainnet like any other payment.
   const handleWalletPay = async () => {
     const wallets = getWallets().get().filter((w) => 'sui:signAndExecuteTransaction' in w.features && 'standard:connect' in w.features);
-    if (!wallets.length) return showToast('No Sui wallet found in this browser. Install Slush, or pay manually below.');
+    if (!wallets.length) return showToast('No Sui wallet found in this browser. Install Slush, or pay manually below.', 'error');
     const wallet = wallets.find((w) => /slush|sui/i.test(w.name)) || wallets[0];
     try {
       setWalletBusy(`Connecting ${wallet.name}…`);
@@ -530,7 +532,7 @@ export default function App() {
         setWalletBusy(`Submitting through Tatum and verifying on ${netLabel}…`);
         const v = await fetch('/api/chaser/pay-sponsored', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, bytes: built.bytes, signature: signed.signature, mac: built.sponsored.mac }) });
         const data = await v.json();
-        showToast(data?.message || data?.error || 'Payment sent');
+        showToast(data?.message || data?.error || 'Payment sent', v.ok ? 'ok' : 'error');
         fetchInvoiceDetail(selectedInvoiceId);
         fetchSummary();
         fetchAllInvoices();
@@ -558,12 +560,12 @@ export default function App() {
         if (v.ok || v.status === 409) break;
         await new Promise((ok) => setTimeout(ok, 2500)); // the gateway may need a moment to see the tx
       }
-      showToast(data?.message || data?.error || 'Payment sent');
+      showToast(data?.message || data?.error || 'Payment sent', data?.error ? 'error' : 'ok');
       fetchInvoiceDetail(selectedInvoiceId);
       fetchSummary();
       fetchAllInvoices();
     } catch (e: any) {
-      showToast(e?.message || 'Wallet payment failed');
+      showToast(e?.message || 'Wallet payment failed', 'error');
     } finally {
       setWalletBusy(null);
     }
@@ -577,13 +579,13 @@ export default function App() {
         body: JSON.stringify(newInvoice),
       });
       const data = await res.json();
-      if (!res.ok) return showToast(data.error || 'Could not create invoice');
+      if (!res.ok) return showToast(data.error || 'Could not create invoice', 'error');
       showToast(`Invoice ${data.invoice.id} created: pay exactly ${data.invoice.payAmount} USDC`);
       await fetchAllInvoices();
       setSelectedInvoiceId(data.invoice.id);
       fetchSummary();
     } catch (_e) {
-      showToast('Could not create invoice');
+      showToast('Could not create invoice', 'error');
     }
   };
 
@@ -595,7 +597,7 @@ export default function App() {
         body: JSON.stringify({ tone }),
       });
       const data = await res.json();
-      if (!res.ok) return showToast(data.error || 'Could not log reminder');
+      if (!res.ok) return showToast(data.error || 'Could not log reminder', 'error');
       setReminderText(data.text);
       setReminderSource(data.draftedBy === 'llm' ? `Drafted by ${data.model} via Vercel AI Gateway from this client's memories` : `Template (AI drafting unavailable${data.fallbackReason ? `: ${String(data.fallbackReason).replace(/\[[0-9;]*m/g, '').split('.')[0]}` : ''})`);
       navigator.clipboard?.writeText(data.text);
@@ -603,7 +605,7 @@ export default function App() {
       fetchInvoiceDetail(selectedInvoiceId);
       fetchSummary();
     } catch (_e) {
-      showToast('Could not log reminder');
+      showToast('Could not log reminder', 'error');
     }
   };
 
@@ -625,11 +627,12 @@ export default function App() {
           </div>
 
           {/* Navigation Bar adhering to tabs.md */}
-          {!PAY_ONLY && <nav className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
+          {!PAY_ONLY && <nav aria-label="Main" className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
             {(['today', 'clients', 'invoices', 'pay', 'proof'] as TabKey[]).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
+                aria-current={activeTab === tab ? 'page' : undefined}
                 className={`border-b-2 px-md py-sm text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                   activeTab === tab
                     ? 'border-brand text-brand-primary'
@@ -838,7 +841,7 @@ export default function App() {
             {/* Clients List */}
             <div className="lg:col-span-1 space-y-md">
               <div className="flex items-center justify-between">
-                <h2 className="text-heading-xs font-semibold text-primary">Clients</h2>
+                <h1 className="text-heading-xs font-semibold text-primary">Clients</h1>
                 <span className="text-xs text-secondary">{clientsList.length} active clients</span>
               </div>
               <div className="flex gap-sm">
@@ -891,7 +894,7 @@ export default function App() {
                   <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-lg">
                     <div className="flex items-center justify-between border-b border-secondary pb-md">
                       <div>
-                        <h3 className="text-heading-sm font-semibold text-primary">{clientDetail.client.name}</h3>
+                        <h2 className="text-heading-sm font-semibold text-primary">{clientDetail.client.name}</h2>
                         <p className="text-xs text-secondary">
                           Walrus Namespace: <code className="text-brand-primary font-mono">{clientDetail.namespace}</code>
                         </p>
@@ -1048,10 +1051,10 @@ export default function App() {
                   {/* Timeline of Memories */}
                   <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
                     <div className="flex items-center justify-between mb-lg">
-                      <h3 className="text-heading-xs font-semibold text-primary flex items-center gap-xs">
+                      <h2 className="text-heading-xs font-semibold text-primary flex items-center gap-xs">
                         <Brain className="w-4 h-4 text-fg-brand-primary" />
                         <span>Walrus Memory Timeline</span>
-                      </h3>
+                      </h2>
                       <span className="text-xs text-secondary">{clientDetail.memories.length} memories recorded</span>
                     </div>
 
@@ -1134,9 +1137,10 @@ export default function App() {
 
               {/* Select component recipe */}
               <div className="flex flex-wrap items-center gap-sm min-w-0 max-w-full">
-                <span className="text-xs text-secondary">Select Invoice:</span>
+                <label htmlFor="invoice-select" className="text-xs text-secondary">Select Invoice:</label>
                 <div className="relative">
                   <select
+                    id="invoice-select"
                     value={selectedInvoiceId}
                     onChange={(e) => setSelectedInvoiceId(e.target.value)}
                     className="appearance-none max-w-[calc(100vw-3rem)] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
@@ -1155,22 +1159,22 @@ export default function App() {
             {/* New invoice */}
             <section className="rounded-xl border border-secondary bg-primary p-lg shadow-xs flex flex-wrap items-end gap-md">
               <div className="flex flex-col gap-xxs">
-                <label className="text-xs text-tertiary">Client</label>
-                <select value={newInvoice.clientId} onChange={(e) => setNewInvoice({ ...newInvoice, clientId: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring">
+                <label htmlFor="ni-client" className="text-xs text-tertiary">Client</label>
+                <select id="ni-client" value={newInvoice.clientId} onChange={(e) => setNewInvoice({ ...newInvoice, clientId: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring">
                   {clientsList.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
                 </select>
               </div>
               <div className="flex flex-col gap-xxs">
-                <label className="text-xs text-tertiary">Amount (USDC)</label>
-                <input type="number" min="0.01" step="0.01" value={newInvoice.amount} onChange={(e) => setNewInvoice({ ...newInvoice, amount: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring w-28" />
+                <label htmlFor="ni-amount" className="text-xs text-tertiary">Amount (USDC)</label>
+                <input id="ni-amount" type="number" min="0.01" step="0.01" value={newInvoice.amount} onChange={(e) => setNewInvoice({ ...newInvoice, amount: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring w-28" />
               </div>
               <div className="flex flex-col gap-xxs">
-                <label className="text-xs text-tertiary">Due date</label>
-                <input type="date" value={newInvoice.dueDate} onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <label htmlFor="ni-due" className="text-xs text-tertiary">Due date</label>
+                <input id="ni-due" type="date" value={newInvoice.dueDate} onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
               </div>
               <div className="flex flex-col gap-xxs flex-1 min-w-[160px]">
-                <label className="text-xs text-tertiary">Description</label>
-                <input type="text" value={newInvoice.description} onChange={(e) => setNewInvoice({ ...newInvoice, description: e.target.value })} placeholder="What is this invoice for?" className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <label htmlFor="ni-desc" className="text-xs text-tertiary">Description</label>
+                <input id="ni-desc" type="text" value={newInvoice.description} onChange={(e) => setNewInvoice({ ...newInvoice, description: e.target.value })} placeholder="What is this invoice for?" className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
               </div>
               <button onClick={handleCreateInvoice} className="inline-flex items-center gap-sm rounded-lg bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
                 <DollarSign className="w-4 h-4" /> New invoice
@@ -1266,9 +1270,9 @@ export default function App() {
                   <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs space-y-lg">
                     <div className="flex items-center justify-between border-b border-secondary pb-md">
                       <div>
-                        <h3 className="text-heading-xs font-semibold text-primary">
+                        <h2 className="text-heading-xs font-semibold text-primary">
                           {ignoreMemory ? 'Default Plan (Without Memory)' : 'Adaptive Reminder Plan'}
-                        </h3>
+                        </h2>
                         <p className="text-xs text-secondary">
                           {ignoreMemory ? 'Standard fixed interval fallback' : 'Calculated deterministically from Walrus client memories'}
                         </p>
@@ -1280,6 +1284,7 @@ export default function App() {
                         <button
                           role="switch"
                           aria-checked={ignoreMemory}
+                          aria-label="Ignore memory"
                           onClick={() => setIgnoreMemory(!ignoreMemory)}
                           className={`flex h-5 w-9 items-center rounded-full p-xxs transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                             ignoreMemory ? 'bg-brand-solid' : 'bg-tertiary'
@@ -1334,7 +1339,7 @@ export default function App() {
                     ) : (
                       /* Default Plan */
                       <div className="space-y-md">
-                        <div className="flex gap-lg rounded-xl bg-utility-warning-50 p-md text-xs text-utility-warning-600 font-medium">
+                        <div className="flex gap-lg rounded-xl bg-utility-warning-50 p-md text-xs text-utility-warning-700 font-medium">
                           Default non-adaptive plan for baseline comparison:
                         </div>
                         <div className="space-y-sm">
@@ -1660,12 +1665,17 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
       </main>
 
       {/* Toast Recipe: floating confirmation stacked in screen corner */}
-      {toastMessage && (
-        <div className="fixed bottom-xl right-xl z-50 flex items-start gap-sm rounded-lg border border-secondary bg-primary p-lg shadow-lg">
-          <Check className="mt-xxs size-4 shrink-0 text-fg-success-primary" aria-hidden="true" />
-          <p className="text-sm text-secondary">{toastMessage}</p>
-        </div>
-      )}
+      {/* always mounted, so screen readers announce each message; errors are assertive and never green */}
+      <section aria-label="Notifications" role={toastTone === 'error' ? 'alert' : 'status'} aria-live={toastTone === 'error' ? 'assertive' : 'polite'} className="fixed bottom-xl right-xl z-50">
+        {toastMessage && (
+          <div className={`flex items-start gap-sm rounded-lg border bg-primary p-lg shadow-lg ${toastTone === 'error' ? 'border-utility-error-200' : 'border-secondary'}`}>
+            {toastTone === 'error'
+              ? <AlertCircle className="mt-xxs size-4 shrink-0 text-utility-error-600" aria-hidden="true" />
+              : <Check className="mt-xxs size-4 shrink-0 text-fg-success-primary" aria-hidden="true" />}
+            <p className={`text-sm ${toastTone === 'error' ? 'text-utility-error-700' : 'text-secondary'}`}>{toastMessage}</p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
