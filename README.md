@@ -100,6 +100,18 @@ The challenge is HMAC-bound to the invoice (`MPP_SECRET_KEY`). `@suimpp/mpp` che
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/mpp-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/mpp/<invoice>
 ```
 
+## Agents can find it on their own (discovery)
+
+An agent that only knows the domain can find every way to pay. Each link below is generated from live config, and each one is checked by the [isitagentready.com](https://isitagentready.com) scanner (it went from 2 to 11 passing checks, including MPP discovery):
+
+- [`/openapi.json`](https://invoice-chaser-sigma.vercel.app/openapi.json) is the MPP service discovery document ([draft-payment-discovery-01](https://github.com/tempoxyz/mpp-specs)). Both payable operations (`/mpp/{id}`, `/x402/{id}`) carry `x-payment-info` offers. The amount is `null` (dynamic pricing) because every invoice has its own unique micro-USDC amount.
+- [`/.well-known/api-catalog`](https://invoice-chaser-sigma.vercel.app/.well-known/api-catalog) (RFC 9727 linkset) and RFC 8288 `Link` headers on every page.
+- The [MCP server card](https://invoice-chaser-sigma.vercel.app/.well-known/mcp/server-card.json) (SEP-1649), so clients find the MCP endpoint and its tools.
+- The [Agent Skills index](https://invoice-chaser-sigma.vercel.app/.well-known/agent-skills/index.json) with a real `pay-invoice` SKILL.md (sha256 digest). The skill walks an agent through paying over MPP or x402.
+- **WebMCP**: the page registers its read tools with `document.modelContext`, so an AI agent in the browser can call them directly: invoice terms, open a pay page, list invoices, client profile, memory search.
+- `Accept: text/markdown` on a page, or on a pay link (`/?pay=inv-101`), returns markdown instead of the SPA shell. The pay link answers with that invoice's MPP, x402 and live endpoints.
+- `robots.txt` with Content Signals, plus `sitemap.xml`. Unknown `/api/*` and `/.well-known/*` paths are real JSON 404s, not soft-404 HTML.
+
 ## Real-time payments: Tatum gRPC checkpoint stream
 
 An open pay page subscribes to `GET /api/chaser/pay/<invoice>/live` (Server-Sent Events). The server holds one `SubscriptionService.SubscribeCheckpoints` stream on Tatum's Sui gateway per instance, shared by every open page, and matches each checkpoint's `balance_changes` against the watched (payee, exact micro-amount) pairs. On a hit the digest runs through the normal verify/settle path, and the page flips to paid at the checkpoint where the money landed. No polling, no pasted digest. Each stream window lasts 4 minutes, after which the browser's EventSource reconnects. The daily cron still covers payments made while no page was open. **On Mainnet:** the stream saw the sponsored payment above at checkpoint 341405407 and settled it before the wallet flow's own verify call arrived.

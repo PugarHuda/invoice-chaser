@@ -732,9 +732,9 @@ export default function App() {
                   {summary?.nextActions && summary.nextActions.length > 0 ? (
                     summary.nextActions.map((action, idx) => (
                       <div key={idx} className="p-md rounded-lg bg-secondary border border-secondary hover:border-brand transition-colors">
-                        <div className="flex items-start justify-between">
-                          <div>
-                            <div className="flex items-center gap-xs">
+                        <div className="flex flex-wrap items-start justify-between gap-sm">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-xs">
                               <span className="font-semibold text-sm text-primary">Remind {action.clientName}</span>
                               <span className="inline-flex items-center gap-xs rounded-full border border-utility-warning-200 bg-utility-warning-50 px-sm py-xxs text-xs font-medium text-utility-warning-700 capitalize">
                                 {action.recommendedTone} Tone
@@ -830,7 +830,7 @@ export default function App() {
                 <span className="text-xs text-secondary">{clientsList.length} active clients</span>
               </div>
               <div className="flex gap-sm">
-                <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddClient(); }} placeholder="New client name" className="flex-1 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddClient(); }} placeholder="New client name" className="flex-1 min-w-0 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
                 <button onClick={handleAddClient} className="rounded-lg bg-brand-solid px-md py-xs text-xs font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Add</button>
               </div>
 
@@ -988,7 +988,7 @@ export default function App() {
                           value={clientNote}
                           onChange={(e) => setClientNote(e.target.value)}
                           placeholder='e.g. "Never chase before the 10th of the month" or "Prefers formal reminders"'
-                          className="flex-1 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                          className="flex-1 min-w-0 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
                         />
                         <button
                           onClick={handleSavePreference}
@@ -1007,7 +1007,7 @@ export default function App() {
                         <span>Wallet this client pays from {(clientDetail.client as any).expectedPayer ? <span className="font-mono text-xs text-tertiary">({(clientDetail.client as any).expectedPayer.name || (clientDetail.client as any).expectedPayer.address.slice(0, 12) + '…'})</span> : null}</span>
                       </label>
                       <div className="flex gap-sm">
-                        <input value={payerInput} onChange={(e) => setPayerInput(e.target.value)} placeholder="0x… or name.sui" aria-label="Expected payer wallet" className="flex-1 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                        <input value={payerInput} onChange={(e) => setPayerInput(e.target.value)} placeholder="0x… or name.sui" aria-label="Expected payer wallet" className="flex-1 min-w-0 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
                         <button onClick={handleSetPayer} className="rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Set payer</button>
                       </div>
                       <p className="text-xs text-tertiary">SuiNS names resolve through Tatum; the wallet is screened with Tatum's Malicious Address API. Payments from any other wallet are flagged.</p>
@@ -1052,7 +1052,7 @@ export default function App() {
                           onKeyDown={(e) => { if (e.key === 'Enter') handleMemorySearch(); }}
                           placeholder='Ask this memory, e.g. "when do they usually pay?" or "what tone works?"'
                           aria-label="Search this client's memory"
-                          className="flex-1 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                          className="flex-1 min-w-0 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
                         />
                         <button onClick={handleMemorySearch} disabled={memBusy} className="rounded-lg border border-primary bg-primary px-md py-xs text-xs font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled">
                           {memBusy ? 'Recalling…' : 'Recall'}
@@ -1114,20 +1114,20 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <h1 className="text-heading-lg font-semibold text-primary flex items-center gap-md">Invoice Detail <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></h1>
+                <h1 className="text-heading-lg font-semibold text-primary flex flex-wrap items-center gap-x-md gap-y-xs">Invoice Detail <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></h1>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>
               </div>
 
               {/* Select component recipe */}
-              <div className="flex items-center gap-sm">
+              <div className="flex flex-wrap items-center gap-sm min-w-0 max-w-full">
                 <span className="text-xs text-secondary">Select Invoice:</span>
                 <div className="relative">
                   <select
                     value={selectedInvoiceId}
                     onChange={(e) => setSelectedInvoiceId(e.target.value)}
-                    className="appearance-none max-w-[80vw] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
+                    className="appearance-none max-w-[calc(100vw-3rem)] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
                   >
                     {allInvoices.map((inv) => (
                       <option key={inv.id} value={inv.id}>
@@ -1378,7 +1378,7 @@ export default function App() {
                             {invoiceDetail.adaptivePlan.cites!.map((c, i) => (
                               <div key={i} className="text-xs text-tertiary flex gap-xs">
                                 <span className="shrink-0">{c.at?.slice(0, 10)}</span>
-                                <span className="flex-1">{c.sentence}</span>
+                                <span className="flex-1 min-w-0 break-words">{c.sentence}</span>
                                 {c.blobId ? (
                                   <a href={`https://walruscan.com/mainnet/blob/${c.blobId}`} target="_blank" rel="noreferrer" className="shrink-0 inline-flex items-center gap-xxs text-utility-brand-700 hover:underline">Walrus <ExternalLink className="w-3 h-3" /></a>
                                 ) : (
@@ -1422,7 +1422,7 @@ export default function App() {
               {/* Amount Display */}
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
                 <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${(invoiceDetail.invoice as any).originalAmount} USDC)` : 'Payable Amount (Unique Micro-Suffix)'}</span>
-                <div className="mt-xs text-heading-xl font-semibold text-primary">
+                <div className="mt-xs text-heading-md sm:text-heading-xl font-semibold text-primary break-all tabular-nums">
                   {invoiceDetail?.invoice.payAmount ?? '—'}{' '}
                   <span className="text-sm font-normal text-secondary">USDC</span>
                 </div>
