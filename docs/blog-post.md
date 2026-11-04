@@ -82,6 +82,10 @@ On Sui Mainnet, an agent asked for invoice `inv-mvzyioev`, got `402 Payment Requ
 
 The same invoice is also a Machine Payments Protocol charge (`/api/chaser/mpp/<invoice>`, built on `@suimpp/mpp`). An agent got the `WWW-Authenticate: Payment` challenge, paid 0.015645 USDC and received a `Payment-Receipt` ([payment](https://suiscan.xyz/mainnet/tx/CrgvCr2FoJXxuc3p3tuNorCSoPquSUeuuhHqu5tL8iG4)); the server verified it again through Tatum before remembering it.
 
+## No SUI needed, and no waiting
+
+Clients shouldn't need a second token just to pay gas. The pay page now builds the Payment Kit transaction with the server's wallet as gas owner: the payer signs, the server adds its signature and submits. And an open pay page listens to Tatum's gRPC checkpoint stream, so it flips to paid the moment the money lands. One Mainnet payment shows both: the payer's SUI balance didn't move, and the stream caught it at checkpoint 341405407 ([payment](https://suiscan.xyz/mainnet/tx/8UkL1z4KhCrta1zJfvfTsdZmMPss9jrTnNcceLGUgwCq)).
+
 ## Agents can read the memory too (MCP)
 
 The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude tools like `client_profile`, `plan_reminder` and `search_client_memory` over the same Walrus memories.

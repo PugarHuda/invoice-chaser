@@ -661,7 +661,12 @@ router.post('/pay-sponsored', async (req, res) => {
     let code, body
     for (let i = 0; i < 6; i++) {
       ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-sponsored')
-      if (!body.retry) break
+      // the live stream can see the checkpoint first and settle it: that's our payment, report success
+      if (code === 409 && state().invoices.find((i) => i.id === invoiceId)?.digest === digest) {
+        ;[code, body] = [200, { success: true, verifiedOnChain: true, message: `Paid: settled the moment it reached a checkpoint (live Tatum stream).`, explorer: `${sui.EXPLORER}/tx/${digest}` }]
+        break
+      }
+      if (!body.retry && code !== 409) break
       await new Promise((r) => setTimeout(r, 2000))
     }
     res.status(code).json({ ...body, digest, sponsored: true })
