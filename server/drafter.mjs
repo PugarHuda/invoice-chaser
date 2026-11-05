@@ -29,6 +29,9 @@ export async function draftReminder(input) {
   if (!process.env.VERCEL_OIDC_TOKEN && !process.env.AI_GATEWAY_API_KEY) return fallback('AI Gateway credentials not configured')
   try {
     const { text, usage } = await generateText({
+      // the template fallback is ready: a slow gateway must not hang the reminder
+      abortSignal: AbortSignal.timeout(8000),
+      maxRetries: 1,
       model: MODEL,
       maxOutputTokens: 220,
       temperature: 0.4,

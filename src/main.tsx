@@ -1,6 +1,7 @@
-import { StrictMode } from 'react'
+import { StrictMode, Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
-import App from './App.tsx'
+// the dashboard (Sui SDK, QR, wallet standard) loads only when needed; the landing page stays light
+const App = lazy(() => import('./App.tsx'))
 import Landing from './Landing.tsx'
 import './index.css'
 import { registerWebMcp } from './webmcp'
@@ -33,6 +34,6 @@ const landing = !q.has('pay') && !q.has('app') && !q.has('tab')
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {landing ? <Landing /> : <App />}
+    {landing ? <Landing /> : <Suspense fallback={null}><App /></Suspense>}
   </StrictMode>,
 )

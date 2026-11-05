@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 
-const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
+const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }], ...(obj && typeof obj === 'object' ? { structuredContent: Array.isArray(obj) ? { items: obj } : obj } : {}) })
 const RO = { readOnlyHint: true, openWorldHint: true }
 
 /** deps: { state, profileOf, plan, owed, search, terms, learning, baseUrl } */
@@ -62,8 +62,10 @@ function build(deps) {
 
 export function mcpHandler(makeDeps) {
   return async (req, res) => {
-    const server = build(makeDeps(req))
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
+    const deps = makeDeps(req)
+    const server = build(deps)
+    // MCP 2025-11-25 transports: a browser Origin other than our own gets 403 (DNS rebinding); server-side clients send none
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true, enableDnsRebindingProtection: true, allowedOrigins: [deps.baseUrl] })
     res.on('close', () => {
       transport.close()
       server.close()

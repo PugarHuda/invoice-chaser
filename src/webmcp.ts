@@ -10,9 +10,12 @@ const api = async (path: string) => {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 };
-const text = (data: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(data) }] });
+// WebMCP execute() resolves to any value and the browser serializes it: return the object, not an MCP text envelope
+const text = (data: unknown) => data;
 const id = (desc: string) => ({ type: 'object', properties: { id: { type: 'string', description: desc, pattern: '^[A-Za-z0-9_-]{1,64}$' } }, required: ['id'] });
 const RO = { readOnlyHint: true };
+// memory text originates from clients: flag it so the agent treats it as data, not instructions
+const RO_UNTRUSTED = { readOnlyHint: true, untrustedContentHint: true };
 
 export function registerWebMcp(payOnly: string | null) {
   const mc = (document as unknown as { modelContext?: ModelContext }).modelContext ?? (navigator as unknown as { modelContext?: ModelContext }).modelContext;
@@ -27,9 +30,9 @@ export function registerWebMcp(payOnly: string | null) {
   // the owner dashboard (not a bare pay link) also exposes what the app learned
   if (!payOnly) tools.push(
     { name: 'list_invoices', description: 'All invoices with status, amount owed and due date.', inputSchema: { type: 'object', properties: {} }, annotations: RO, execute: async () => text(await api('/api/chaser/invoices')) },
-    { name: 'client_profile', description: 'What Invoice Chaser learned about a client from Walrus Memory: typical delay, best reminder tone, rules it obeys.', inputSchema: id('Client id, e.g. c1'), annotations: RO,
+    { name: 'client_profile', description: 'What Invoice Chaser learned about a client from Walrus Memory: typical delay, best reminder tone, rules it obeys.', inputSchema: id('Client id, e.g. c1'), annotations: RO_UNTRUSTED,
       execute: async ({ id: c }) => text(await api(`/api/chaser/clients/${encodeURIComponent(c)}`)) },
-    { name: 'search_client_memory', description: "Semantic search (Walrus Memory recall) over one client's memories.", inputSchema: { type: 'object', properties: { id: { type: 'string' }, query: { type: 'string', minLength: 2, maxLength: 200 } }, required: ['id', 'query'] }, annotations: RO,
+    { name: 'search_client_memory', description: "Semantic search (Walrus Memory recall) over one client's memories.", inputSchema: { type: 'object', properties: { id: { type: 'string' }, query: { type: 'string', minLength: 2, maxLength: 200 } }, required: ['id', 'query'] }, annotations: RO_UNTRUSTED,
       execute: async ({ id: c, query }) => text(await api(`/api/chaser/clients/${encodeURIComponent(c)}/search?q=${encodeURIComponent(query)}`)) },
   );
   for (const t of tools) {

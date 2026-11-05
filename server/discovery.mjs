@@ -69,7 +69,7 @@ const sha = (s) => `sha256:${createHash('sha256').update(s).digest('hex')}`
 const tokens = (s) => String(Math.ceil(s.length / 4)) // ponytail: chars/4 estimate, no tokenizer dependency
 const cors = { 'Access-Control-Allow-Origin': '*' }
 
-discovery.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nContent-Signal: search=yes, ai-input=yes, ai-train=no\nAllow: /\nDisallow: /api/\n\nSitemap: ${origin(req)}/sitemap.xml\n`))
+discovery.get('/robots.txt', (req, res) => res.type('text/plain').send(`User-agent: *\nContent-Signal: search=yes, ai-input=yes, ai-train=no\nAllow: /\nAllow: /api/chaser/mcp\nAllow: /api/chaser/pay/\nAllow: /api/chaser/x402/\nAllow: /api/chaser/mpp/\nAllow: /api/chaser/proof\nDisallow: /api/\n\nSitemap: ${origin(req)}/sitemap.xml\n`))
 discovery.get('/sitemap.xml', (req, res) => {
   const b = origin(req)
   res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${['/', '/llms.txt', '/openapi.json'].map((p) => `  <url><loc>${b}${p}</loc></url>`).join('\n')}\n</urlset>\n`)
@@ -78,7 +78,8 @@ discovery.get('/llms.txt', (req, res) => res.type('text/markdown').send(llms(ori
 discovery.get('/openapi.json', (req, res) => res.set(cors).json(openapi(origin(req))))
 discovery.get('/.well-known/api-catalog', (req, res) => {
   const b = origin(req)
-  res.type('application/linkset+json').set(cors).send(JSON.stringify({
+  // RFC 9727 §2/§4.2: a Link header on the catalog itself (GET and HEAD) and the profile on the media type
+  res.type('application/linkset+json; profile="https://www.rfc-editor.org/info/rfc9727"').set({ ...cors, Link: '</.well-known/api-catalog>; rel="api-catalog"' }).send(JSON.stringify({
     linkset: [{
       anchor: `${b}/api/chaser`,
       'service-desc': [{ href: `${b}/openapi.json`, type: 'application/json' }],
@@ -87,22 +88,23 @@ discovery.get('/.well-known/api-catalog', (req, res) => {
     }],
   }))
 })
-discovery.get(['/.well-known/mcp/server-card.json', '/.well-known/mcp.json'], (req, res) => {
-  const endpoint = `${origin(req)}/api/chaser/mcp`
-  res.set(cors).json({
-    $schema: 'https://static.modelcontextprotocol.io/schemas/mcp-server-card/v1.json',
-    version: '1.0',
-    protocolVersion: '2025-06-18',
-    serverInfo: { name: 'invoice-chaser', title: 'Invoice Chaser', version: '1.0.0' },
-    description: 'Read-only tools over what Invoice Chaser learned in Walrus Memory: open invoices, client profiles, reminder plans, semantic memory search, payment terms (MPP, x402), learning summary.',
-    documentationUrl: `${REPO}#readme`,
-    transport: { type: 'streamable-http', endpoint },
-    endpoint,
-    capabilities: { tools: { listChanged: false } },
-    authentication: { required: false },
-    tools: ['list_open_invoices', 'client_profile', 'plan_reminder', 'search_client_memory', 'payment_terms', 'learning_summary'].map((name) => ({ name })),
-  })
+// MCP server card, SEP-2127 shape: reverse-DNS name, remotes[], no tool list, the versions the server negotiates
+const serverCard = (req) => ({
+  $schema: 'https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json',
+  name: `${new URL(origin(req)).hostname.split('.').reverse().join('.')}/invoice-chaser`,
+  version: '1.0.0',
+  title: 'Invoice Chaser',
+  description: 'Read-only tools over what Invoice Chaser learned in Walrus Memory: open invoices, client profiles, reminder plans, semantic memory search, payment terms (MPP, x402), learning summary.',
+  websiteUrl: origin(req),
+  repository: { url: REPO, source: 'github' },
+  remotes: [{ type: 'streamable-http', url: `${origin(req)}/api/chaser/mcp`, supportedProtocolVersions: ['2025-11-25', '2025-06-18', '2025-03-26'] }],
 })
+discovery.get(['/api/chaser/mcp/server-card', '/.well-known/mcp/server-card.json', '/.well-known/mcp.json'], (req, res) => res.type('application/mcp-server-card+json').set(cors).send(JSON.stringify(serverCard(req))))
+// AI Catalog: the discovery document that points agents at the server card
+discovery.get('/.well-known/ai-catalog.json', (req, res) => res.type('application/ai-catalog+json').set(cors).send(JSON.stringify({
+  specVersion: '1.0',
+  entries: [{ identifier: `urn:air:${new URL(origin(req)).hostname}:mcp:invoice-chaser`, type: 'application/mcp-server-card+json', url: `${origin(req)}/api/chaser/mcp/server-card` }],
+})))
 discovery.get('/.well-known/agent-skills/index.json', (req, res) => {
   res.set(cors).json({
     $schema: 'https://schemas.agentskills.io/discovery/0.2.0/schema.json',

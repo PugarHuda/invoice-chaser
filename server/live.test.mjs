@@ -69,7 +69,7 @@ test('every response carries the security headers; an oversized body is a 413 th
   const srv = app.listen(0)
   const base = `http://127.0.0.1:${srv.address().port}`
   try {
-    const r = await fetch(`${base}/api/chaser/nothing`)
+    const r = await fetch(`${base}/.well-known/nothing`)
     assert.equal(r.status, 404)
     assert.match(r.headers.get('content-security-policy'), /frame-ancestors 'none'/)
     assert.equal(r.headers.get('x-content-type-options'), 'nosniff')

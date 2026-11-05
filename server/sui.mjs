@@ -2,6 +2,9 @@
 // SUI_NETWORK=testnet switches gateway, USDC type and Payment Kit package for safe testing.
 import { SuiGrpcClient } from '@mysten/sui/grpc'
 import { GrpcTransport } from '@protobuf-ts/grpc-transport'
+import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport'
+// every unary call gets a deadline: a stalled gateway must not hang a request (and its settle lock) for 300 s
+const RPC_TIMEOUT_MS = 10_000
 import { ChannelCredentials } from '@grpc/grpc-js'
 import { Transaction, coinWithBalance } from '@mysten/sui/transactions'
 import { normalizeStructTag } from '@mysten/sui/utils'
@@ -50,13 +53,14 @@ export function noteProviderError(e) {
 }
 let client
 export function sui() {
-  if (provider() === 'public-fullnode') return (publicClient ??= new SuiGrpcClient({ network: NETWORK, baseUrl: PUBLIC_GRPC }).$extend(paymentKit()))
+  if (provider() === 'public-fullnode') return (publicClient ??= new SuiGrpcClient({ network: NETWORK, transport: new GrpcWebFetchTransport({ baseUrl: PUBLIC_GRPC, timeout: RPC_TIMEOUT_MS }) }).$extend(paymentKit()))
   client ??= new SuiGrpcClient({
     network: NETWORK,
     transport: new GrpcTransport({
       host: GRPC_HOST,
       channelCredentials: ChannelCredentials.createSsl(),
       meta: { 'x-api-key': process.env.TATUM_API_KEY },
+      timeout: RPC_TIMEOUT_MS,
     }),
   }).$extend(paymentKit())
   return client
@@ -272,11 +276,16 @@ export async function txSender(digest) {
   const { response } = await once(() => sui().ledgerService.getTransaction({ digest, readMask: { paths: ['transaction.sender'] } }))
   return response.transaction?.transaction?.sender || null
 }
+const names = new Map() // SuiNS reverse lookups, 1 h: a repeat payer costs no gateway call
 export async function suinsName(address) {
+  const hit = names.get(address)
+  if (hit && Date.now() - hit.at < 3_600_000) return hit.name
   try {
     await throttle()
     const { response } = await once(() => sui().nameService.reverseLookupName({ address }))
-    return response.record?.name || null
+    const name = response.record?.name || null
+    names.set(address, { at: Date.now(), name })
+    return name
   } catch {
     return null
   }

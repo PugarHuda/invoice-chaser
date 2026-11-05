@@ -17,8 +17,9 @@ const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
 const DAY = 86_400_000
 
 // First request after boot rebuilds everything from Walrus Memory.
-router.use(async (_req, _res, next) => {
+router.use(async (_req, res, next) => {
   await mem.ready()
+  if (!mem.loadState.loaded) return res.status(503).set('Retry-After', '5').json({ error: 'Loading memory from Walrus failed; try again in a few seconds', detail: mem.loadState.error || null })
   next()
 })
 
@@ -469,7 +470,8 @@ async function settleDigest(invoiceId, requested, channel) {
   const inv0 = invoices.find((i) => i.id === invoiceId)
   if (!inv0) return [404, { error: 'Invoice not found' }]
   if (inv0.status === 'paid') return [409, { error: 'Invoice is already paid' }]
-  if (mem.loadState.truncated?.some((ns) => mem.clientShards(inv0.clientId).includes(ns))) return [503, { error: 'Memory recall is incomplete; refusing to settle this client until all of its memory is loaded' }]
+  // global on purpose: spent digests are checked across every client, so any missing namespace could hide one
+  if (mem.loadState.truncated?.length) return [503, { error: 'Memory recall is incomplete; refusing to settle until every namespace is fully loaded' }]
   // Reserve digest + invoice synchronously so two concurrent requests cannot both settle.
   if (inflight.has(requested) || inflight.has(invoiceId)) return [409, { error: 'This payment is already being verified' }]
   inflight.add(requested).add(invoiceId)
@@ -497,11 +499,15 @@ async function settleDigest(invoiceId, requested, channel) {
     // A transfer that exactly matches another open invoice's unique amount belongs to that one.
     // A Payment Kit payment names its invoice (nonce): it must be THIS invoice's registry record.
     if (tx.paymentKit) {
-      const bound = await sui.findInvoicePayment(PAYEE(), tx.received, inv.id).catch(() => null)
+      const bound = await sui.findInvoicePayment(PAYEE(), tx.received, inv.id).catch(() => undefined)
+      if (bound === undefined) return [502, { error: 'Payment Kit registry lookup failed; try again in a few seconds', retry: true }]
       if (bound !== digest) return [409, { error: `This Payment Kit payment was made for a different invoice, not ${inv.id}` }]
     } else {
       // Plain transfer: the unique amount is the fingerprint, including what's left on partially paid invoices.
-      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && sui.toMicro(i.payAmount) === tx.received)
+      // A transfer of exactly what THIS invoice still owes is this invoice's, even if it also equals another
+      // partial's remainder (otherwise the two block each other). Anything else must not match another open
+      // invoice's unique amount or a partial invoice's remainder.
+      const other = tx.received !== expected && now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || (i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
       if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
     }
 
@@ -681,7 +687,7 @@ async function x402v2(req, res, inv, header) {
   if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400)
   // one v2 settlement per invoice at a time (per instance), held from inspection through settlement
   if (x402Inflight.has(inv.id)) return fail('payment_in_progress', 409)
-  if (mem.loadState.truncated?.some((ns) => mem.clientShards(inv.clientId).includes(ns))) return fail('memory_not_fully_loaded', 503)
+  if (mem.loadState.truncated?.length) return fail('memory_not_fully_loaded', 503)
   x402Inflight.add(inv.id)
   try {
     return await x402v2Settle(req, res, inv, want, signature, transaction, fail)
@@ -902,6 +908,14 @@ router.get('/cron-check', async (_req, res) => {
   }
 })
 
+let proofCache = null
+router.get('/proof', async (req, res, next) => {
+  res.set('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=60')
+  if (proofCache && Date.now() - proofCache.at < 15_000) return res.json(proofCache.body)
+  const json = res.json.bind(res)
+  res.json = (body) => { if (res.statusCode === 200) proofCache = { at: Date.now(), body }; return json(body) }
+  next()
+})
 router.get('/proof', async (_req, res) => {
   const [cp, bal, h, nss, rSui, rUsdc, dur] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability()])
   const counts = nss.status === 'fulfilled' ? nss.value : []
