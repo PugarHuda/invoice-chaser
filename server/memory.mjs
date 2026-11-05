@@ -61,7 +61,8 @@ export function decode(text, createdAt) {
     }
     // an unsigned tag is only legacy if the relayer stored it before signing began
     const at = createdAt ? new Date(createdAt) : null
-    return at && !Number.isNaN(at.getTime()) && at.toISOString() > TAG_MAC_FROM ? null : { sentence, tag }
+    // fail closed: unsigned is accepted only with a parseable relayer timestamp strictly before signing began
+    return at && !Number.isNaN(at.getTime()) && at.toISOString() < TAG_MAC_FROM ? { sentence, tag } : null
   } catch {
     return null
   }

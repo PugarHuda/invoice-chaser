@@ -189,6 +189,7 @@ test('ledger tags are signed: a forged or altered tag after the cutoff is not tr
   const forged = `Note\n#ic ${JSON.stringify(t)}`
   assert.equal(decode(forged, after), null)
   assert.deepEqual(decode(forged, '2026-11-01T00:00:00Z'), { sentence: 'Note', tag: t })
+  assert.equal(decode(forged), null) // no relayer timestamp: not trusted
   const altered = encode('Acme paid', t).replace('1.000000', '500.000000')
   assert.equal(decode(altered, after), null)
   assert.ok(after > TAG_MAC_FROM)
