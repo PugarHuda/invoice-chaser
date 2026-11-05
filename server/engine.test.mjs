@@ -168,3 +168,15 @@ test('early payers are learned as early (negative delay), and the plan still nev
   assert.ok(pl.steps[0].date > '2026-11-05')
   assert.match(pl.memoriesUsed[0], /early, ~4 day/)
 })
+
+test('an invoice still partially paid does not teach a pay delay (it has not been settled yet)', () => {
+  const ms = [
+    mem('2026-10-01T00:00:00Z', { type: 'invoice_sent', client: 'd', invoice: 'a', base: 10, pay_amount: '10.000100', due: '2026-10-05' }),
+    mem('2026-10-05T00:00:00Z', { type: 'invoice_paid', client: 'd', invoice: 'a', received: '10.000100', digest: 'X', delay_days: 0, paid: '2026-10-05' }),
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'd', invoice: 'b', base: 10, pay_amount: '10.000200', due: '2026-11-12' }),
+    mem('2026-11-04T00:00:00Z', { type: 'invoice_partial', client: 'd', invoice: 'b', received: '3.000000', digest: 'Y', delay_days: -8, paid: '2026-11-04' }),
+  ]
+  const p = computeProfile('d', ms)
+  assert.deepEqual(p.history.map((h) => h.invoice), ['a'])
+  assert.equal(p.underpayRate > 0, true)
+})

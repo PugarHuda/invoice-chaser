@@ -37,6 +37,7 @@ const QUOTA = /status code 402|plan limit|Payment Required/i
 let quotaHitAt = null
 let publicClient
 export const provider = () => (!process.env.TATUM_API_KEY || (quotaHitAt && Date.now() - quotaHitAt < QUOTA_RETRY_MS) ? 'public-fullnode' : 'tatum')
+export const fallbackReason = () => (process.env.TATUM_API_KEY ? 'Tatum credits exhausted' : 'no Tatum API key configured')
 export const providerStatus = () => ({ provider: provider(), tatumQuotaExceededAt: quotaHitAt ? new Date(quotaHitAt).toISOString() : null, retryTatumAt: quotaHitAt ? new Date(quotaHitAt + QUOTA_RETRY_MS).toISOString() : null, fallback: PUBLIC_GRPC })
 // returns true when the error was Tatum's quota and the caller should retry (now on the fallback)
 export function noteProviderError(e) {

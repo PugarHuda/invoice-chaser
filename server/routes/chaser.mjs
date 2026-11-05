@@ -363,7 +363,7 @@ data: ${JSON.stringify(data)}
     send('error', { error: String(e.message || e) })
     return finish()
   }
-  send('watching', { invoice: inv.id, amount: owed(inv), payee: PAYEE(), provider: sui.provider(), via: sui.provider() === 'tatum' ? 'Tatum gRPC SubscriptionService.SubscribeCheckpoints' : 'public Sui fullnode SubscribeCheckpoints (Tatum credits exhausted)' })
+  send('watching', { invoice: inv.id, amount: owed(inv), payee: PAYEE(), provider: sui.provider(), via: sui.provider() === 'tatum' ? 'Tatum gRPC SubscriptionService.SubscribeCheckpoints' : `public Sui fullnode SubscribeCheckpoints (${sui.fallbackReason()})` })
   req.on('close', finish)
 })
 
@@ -533,7 +533,7 @@ async function settleDigest(invoiceId, requested, channel) {
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
       { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
     )
-    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : 'the public Sui fullnode (Tatum credits exhausted)'}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
+    return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : `the public Sui fullnode (${sui.fallbackReason()})`}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
     inflight.delete(requested)
     inflight.delete(invoiceId)

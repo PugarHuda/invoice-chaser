@@ -110,7 +110,23 @@ export function computeProfile(clientId, memories) {
   let ewma = 0
   const delays = []
   const history = [] // prediction-vs-actual per paid invoice, for the learning chart
-  pays.forEach((p, i) => {
+  // Delay is learned only from invoices that are finished: an invoice still partially paid has no
+  // "paid on" yet (its first instalment date is not when the client settled), so it would skew the
+  // prediction. Partials still count for short-payment and tone statistics below.
+  // A top-up is also recorded as invoice_partial, so "finished" = everything received covers the
+  // invoice (each payment counted once by digest), not the type of the last event.
+  const owedMicro = new Map(memories.filter((m) => m.tag?.type === 'invoice_sent').map((m) => [m.tag.invoice, micro(m.tag.pay_amount)]))
+  const gotMicro = new Map()
+  const seenDigest = new Set()
+  for (const m of memories) {
+    const t = m.tag || {}
+    if ((t.type !== 'invoice_paid' && t.type !== 'invoice_partial') || !t.received) continue
+    if (t.digest && seenDigest.has(t.digest)) continue
+    if (t.digest) seenDigest.add(t.digest)
+    gotMicro.set(t.invoice, (gotMicro.get(t.invoice) || 0n) + micro(t.received))
+  }
+  const finished = (p) => p.tag.type === 'invoice_paid' || p.tag.seed || !owedMicro.has(p.tag.invoice) || (gotMicro.get(p.tag.invoice) || 0n) >= owedMicro.get(p.tag.invoice)
+  pays.filter(finished).forEach((p, i) => {
     const d = Number(p.tag.delay_days ?? 0)
     history.push({ invoice: p.tag.invoice, n: i + 1, predicted: i === 0 ? 0 : Math.round(ewma), actual: d, error: Math.abs((i === 0 ? 0 : Math.round(ewma)) - d) })
     ewma = i === 0 ? d : 0.5 * d + 0.5 * ewma
