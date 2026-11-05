@@ -16,12 +16,12 @@ export function clientShards(clientId) {
   const base = clientNs(clientId)
   return [...store.keys()].map((ns) => [ns, shardOf(ns, base)]).filter(([, k]) => k >= 0).sort((a, b) => a[1] - b[1]).map(([ns]) => ns)
 }
-export function writeNs(clientId) {
+export function writeNs(clientId, need = 1) {
   const base = clientNs(clientId)
   const shards = clientShards(clientId)
   const last = shards.at(-1) || base
   const k = shardOf(last, base)
-  return (store.get(last)?.length || 0) >= SHARD_MAX ? `${base}/${k + 1}` : last
+  return (store.get(last)?.length || 0) + need > SHARD_MAX ? `${base}/${k + 1}` : last
 }
 export const clientMemories = (clientId) => clientShards(clientId).flatMap((ns) => store.get(ns)).sort((a, b) => b.timestamp.localeCompare(a.timestamp))
 export const RELAYER = process.env.MEMWAL_SERVER_URL || 'https://relayer.memory.walrus.xyz'
@@ -176,7 +176,8 @@ async function doLoad() {
 
 // analyze(): the relayer extracts facts from free text and stores each as a memory in `ns`.
 export async function ingestNotes(ns, text) {
-  const r = await memwal().analyze(text, ns)
+  // facts are stored as raw text and decode() trusts a trailing "#ic {json}" tag: a pasted note must never forge one
+  const r = await memwal().analyze(text.replace(/#ic/gi, 'ic'), ns)
   if (!store.has(ns)) store.set(ns, [])
   const at = new Date().toISOString()
   const local = r.facts.map((f) => ({ id: f.id, sentence: f.text, tag: { type: 'note', source: 'walrus-analyze', at }, timestamp: at, status: 'pending' }))

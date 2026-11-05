@@ -29,7 +29,7 @@ const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '
 const buckets = new Map()
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/cron-check'
 router.use((req, res, next) => {
   const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
   const expensive = isExpensiveRead(req)
@@ -81,18 +81,19 @@ router.get('/summary', (_req, res) => {
   const nextActions = []
   for (const raw of invoices) {
     const inv = withStatus(raw)
-    if (inv.status !== 'sent' && inv.status !== 'overdue') continue
+    if (inv.status !== 'sent' && inv.status !== 'overdue' && !(inv.status === 'partial' && !inv.seed)) continue
+    const left = inv.status === 'partial' ? Number(owed(inv)) : inv.baseAmount // what is still owed
     const profile = profileOf(inv.clientId)
     const p = plan(inv, profile)
     const predicted = p.predictedPayDate || inv.dueDate
-    if (predicted <= horizon30) expected30 += inv.baseAmount
+    if (predicted <= horizon30) expected30 += left
     if (predicted <= horizon) {
-      expected += inv.baseAmount
-      upcomingInflows.push({ invoiceId: inv.id, clientName: clientName(clients, inv.clientId), payAmount: inv.payAmount, dueDate: inv.dueDate, predictedPayDate: predicted, delayDays: p.predictedDelayDays ?? 0, status: inv.status })
+      expected += left
+      upcomingInflows.push({ invoiceId: inv.id, clientName: clientName(clients, inv.clientId), payAmount: owed(inv), dueDate: inv.dueDate, predictedPayDate: predicted, delayDays: p.predictedDelayDays ?? 0, status: inv.status })
     }
-    if (inv.dueDate < today) overdue += inv.baseAmount
+    if (inv.dueDate < today) overdue += left
     const step = p.steps.find((s) => s.date >= today) || p.steps.at(-1)
-    nextActions.push({ invoiceId: inv.id, clientId: inv.clientId, clientName: clientName(clients, inv.clientId), amount: inv.payAmount, actionDate: step.date, recommendedTone: step.tone, reason: step.reason, underpayRisk: profile.underpayRate || null })
+    nextActions.push({ invoiceId: inv.id, clientId: inv.clientId, clientName: clientName(clients, inv.clientId), amount: owed(inv), actionDate: step.date, recommendedTone: step.tone, reason: step.reason, underpayRisk: profile.underpayRate || null })
   }
   nextActions.sort((a, b) => a.actionDate.localeCompare(b.actionDate))
   res.json({
@@ -228,7 +229,7 @@ router.post('/clients/:id/notes', async (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   try {
-    const facts = await mem.ingestNotes(mem.writeNs(client.id), text)
+    const facts = await mem.ingestNotes(mem.writeNs(client.id, 40), text)
     res.json({ success: true, facts, profile: profileOf(client.id) })
   } catch (e) {
     res.status(502).json({ error: `Walrus Memory analyze: ${e.message}` })
@@ -468,7 +469,7 @@ async function settleDigest(invoiceId, requested, channel) {
   const inv0 = invoices.find((i) => i.id === invoiceId)
   if (!inv0) return [404, { error: 'Invoice not found' }]
   if (inv0.status === 'paid') return [409, { error: 'Invoice is already paid' }]
-  if (mem.loadState.truncated?.length) return [503, { error: 'Memory recall is incomplete; refusing to settle until every namespace is fully loaded' }]
+  if (mem.loadState.truncated?.some((ns) => mem.clientShards(inv0.clientId).includes(ns))) return [503, { error: 'Memory recall is incomplete; refusing to settle this client until all of its memory is loaded' }]
   // Reserve digest + invoice synchronously so two concurrent requests cannot both settle.
   if (inflight.has(requested) || inflight.has(invoiceId)) return [409, { error: 'This payment is already being verified' }]
   inflight.add(requested).add(invoiceId)
@@ -500,11 +501,14 @@ async function settleDigest(invoiceId, requested, channel) {
       if (bound !== digest) return [409, { error: `This Payment Kit payment was made for a different invoice, not ${inv.id}` }]
     } else {
       // Plain transfer: the unique amount is the fingerprint, including what's left on partially paid invoices.
-      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || sui.toMicro(owed(i)) === tx.received))
+      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && sui.toMicro(i.payAmount) === tx.received)
       if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
     }
 
     const full = tx.received >= expected
+    // a dust transfer named against someone else's invoice must not write a permanent "underpaid" memory
+    // ponytail: 1% floor; exact-amount-only would also block real underpayments, which the profile learns from
+    if (!full && tx.received * 100n < expected) return [400, { error: `A partial payment must be at least 1% of what is owed (${sui.fromMicro(expected / 100n)} USDC)` }]
     const totalReceived = sui.toMicro(inv.payAmount) - expected + tx.received
     const paid = isoDay(tx.timestamp || Date.now())
     // negative = paid early; kept as-is so the profile can learn early payers (plans still clamp at due)
@@ -677,7 +681,7 @@ async function x402v2(req, res, inv, header) {
   if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400)
   // one v2 settlement per invoice at a time (per instance), held from inspection through settlement
   if (x402Inflight.has(inv.id)) return fail('payment_in_progress', 409)
-  if (mem.loadState.truncated?.length) return fail('memory_not_fully_loaded', 503)
+  if (mem.loadState.truncated?.some((ns) => mem.clientShards(inv.clientId).includes(ns))) return fail('memory_not_fully_loaded', 503)
   x402Inflight.add(inv.id)
   try {
     return await x402v2Settle(req, res, inv, want, signature, transaction, fail)
@@ -861,6 +865,9 @@ router.post('/pay-gasless', async (req, res) => {
   if (!sui.gaslessMacOk(bytes, mac, invoiceId)) return res.status(400).json({ error: 'These bytes were not built by this server for this invoice' })
   const inv = state().invoices.find((i) => i.id === invoiceId)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  // checked BEFORE executing: a second tab or double click must not send USDC that no invoice will record
+  if (withStatus(inv).status === 'paid') return res.status(409).json({ error: 'Invoice is already paid; nothing was sent' })
+  if (inflight.has(inv.id)) return res.status(409).json({ error: 'A payment for this invoice is already being verified; nothing was sent' })
   try {
     const out = await sui.executeSigned(bytes, signature)
     const digest = out?.Transaction?.digest || out?.FailedTransaction?.digest

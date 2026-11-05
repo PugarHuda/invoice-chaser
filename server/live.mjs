@@ -2,6 +2,8 @@
 // every open pay page. Each checkpoint's balance changes are matched against the watched
 // (payee, exact micro-amount) pairs; a hit hands the digest to the normal verify/settle path.
 import * as sui from './sui.mjs'
+import { normalizeStructTag } from '@mysten/sui/utils'
+const norm = (t) => { try { return normalizeStructTag(t) } catch { return t } }
 
 const watchers = new Set()
 let call = null
@@ -63,7 +65,7 @@ export function matches(cp, ws, coinType) {
   const out = []
   for (const tx of cp?.transactions || [])
     for (const b of tx.balanceChanges || []) {
-      if (b.coinType !== coinType) continue
+      if (norm(b.coinType) !== norm(coinType)) continue
       const addr = sui.normAddr(b.address)
       const amt = BigInt(b.amount)
       for (const w of ws) if (!w.hit && w.payee === addr && w.micro === amt && !out.some(([x]) => x === w)) out.push([w, tx.digest])

@@ -126,7 +126,8 @@ export function computeProfile(clientId, memories) {
     gotMicro.set(t.invoice, (gotMicro.get(t.invoice) || 0n) + micro(t.received))
   }
   const finished = (p) => p.tag.type === 'invoice_paid' || p.tag.seed || !owedMicro.has(p.tag.invoice) || (gotMicro.get(p.tag.invoice) || 0n) >= owedMicro.get(p.tag.invoice)
-  pays.filter(finished).forEach((p, i) => {
+  const settled = pays.filter(finished)
+  settled.forEach((p, i) => {
     const d = Number(p.tag.delay_days ?? 0)
     history.push({ invoice: p.tag.invoice, n: i + 1, predicted: i === 0 ? 0 : Math.round(ewma), actual: d, error: Math.abs((i === 0 ? 0 : Math.round(ewma)) - d) })
     ewma = i === 0 ? d : 0.5 * d + 0.5 * ewma
@@ -165,8 +166,8 @@ export function computeProfile(clientId, memories) {
     bestTone,
     toneStats,
     underpayRate,
-    totalPaidInvoices: pays.length,
-    confidence: Math.min(1, pays.length / 4),
+    totalPaidInvoices: settled.length,
+    confidence: Math.min(1, settled.length / 4),
     reliabilityBadge,
     preferences: [...preferences.map((p) => p.tag.note), ...notes.filter((n) => Object.keys(parsePreference(n.sentence)).length).map((n) => n.sentence)],
     notes: notes.map((n) => n.sentence),
@@ -176,7 +177,7 @@ export function computeProfile(clientId, memories) {
     evidence: [...pays.slice(-4).reverse(), ...preferences, ...notes.filter((n) => Object.keys(parsePreference(n.sentence)).length)].map((m) => ({ sentence: m.sentence, blobId: m.blobId || null, status: m.status || 'saved', at: m.timestamp })),
     memoryCount: memories.length,
     // overpayments are kept as a credit the client can draw on (exact micro-unit sum)
-    creditUsdc: unmicro(memories.filter((m) => m.tag?.overpaid).reduce((a, m) => a + micro(m.tag.overpaid), 0n)),
+    creditUsdc: unmicro([...new Map(memories.filter((m) => m.tag?.overpaid).map((m) => [m.tag.digest || m.id || m.timestamp, m])).values()].reduce((a, m) => a + micro(m.tag.overpaid), 0n)),
     revokedRules: [...revokedAt.keys()].filter((r) => !preferences.some((p) => p.tag.note === r) && !notes.some((n) => n.sentence === r)),
   }
 }
@@ -281,12 +282,13 @@ export function plan(inv, profile, { ignoreMemory = false } = {}) {
 // Adds 1000–9999 micro-USDC (< 0.01 USDC) on top of the base amount.
 export function uniquePayAmount(base, taken = new Set(), rnd = Math.random) {
   const cents = Math.round(Number(base) * 100) // base is priced in cents
-  for (;;) {
+  for (let tries = 0; tries < 200; tries++) {
     const micro = BigInt(cents) * 10_000n + BigInt(Math.floor(rnd() * 9000) + 1000)
     const s = micro.toString().padStart(7, '0')
     const amt = `${s.slice(0, -6)}.${s.slice(-6)}`
     if (!taken.has(amt)) return amt
   }
+  throw Object.assign(new Error('No unique amount left for this price; change the amount by a cent'), { status: 409, expose: true })
 }
 
 // RFC 5545 §3.1: content lines longer than 75 octets are folded (CRLF + one space), never inside a UTF-8 character.

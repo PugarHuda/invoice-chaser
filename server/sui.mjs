@@ -5,6 +5,7 @@ import { GrpcTransport } from '@protobuf-ts/grpc-transport'
 import { ChannelCredentials } from '@grpc/grpc-js'
 import { Transaction, coinWithBalance } from '@mysten/sui/transactions'
 import { normalizeStructTag } from '@mysten/sui/utils'
+export const isSettlementCoin = (t) => { try { return normalizeStructTag(t) === normalizeStructTag(USDC_COIN_TYPE) } catch { return false } }
 import { paymentKit, createPaymentTransactionUri } from '@mysten/payment-kit'
 import { bcs } from '@mysten/sui/bcs'
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
@@ -66,6 +67,8 @@ let last = 0
 async function throttle() {
   if (provider() !== 'tatum') return
   const wait = Math.max(0, last + 400 - Date.now())
+  // a flood of queued calls must not push real payment checks past the function timeout
+  if (wait > 10_000) throw new Error('Sui gateway queue is full; try again shortly')
   last = Date.now() + wait
   if (wait) await new Promise((r) => setTimeout(r, wait))
 }
@@ -115,7 +118,7 @@ export async function usdcReceived(digest, payee) {
   const tx = json(response.transaction)
   const ok = tx?.effects?.status?.success === true
   const received = (tx?.balanceChanges || [])
-    .filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE)
+    .filter((c) => normAddr(c.address) === normAddr(payee) && isSettlementCoin(c.coinType))
     .reduce((sum, c) => sum + BigInt(c.amount), 0n)
   const ts = tx?.timestamp ? new Date(Number(tx.timestamp.seconds) * 1000).toISOString() : null
   // did this transaction go through the Sui Payment Kit (any payment_kit event)?
@@ -175,7 +178,7 @@ export async function inspectSignedPayment(bytesB64, signature, payee, nonce) {
   const r = json(await once(() => sui().core.simulateTransaction({ transaction: bytes, include: { balanceChanges: true, effects: true, events: true } })))
   const t = r?.Transaction
   if (!t || t.effects?.status?.success === false) return { ok: false, reason: 'simulation_failed', detail: r?.FailedTransaction?.effects?.status?.error || t?.effects?.status?.error || null }
-  const received = (t.balanceChanges || []).filter((c) => normAddr(c.address) === normAddr(payee) && c.coinType === USDC_COIN_TYPE).reduce((a, c) => a + BigInt(c.amount), 0n)
+  const received = (t.balanceChanges || []).filter((c) => normAddr(c.address) === normAddr(payee) && isSettlementCoin(c.coinType)).reduce((a, c) => a + BigInt(c.amount), 0n)
   // Only Payment Kit payments with this invoice as the nonce: then the chain itself rejects a second
   // payment for the invoice, even if two submissions race across instances.
   const want = Buffer.from(bcs.string().serialize(nonce).toBytes())
