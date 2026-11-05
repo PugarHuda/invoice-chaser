@@ -53,7 +53,7 @@ export default function Landing() {
             <span className="text-sm font-semibold text-primary">Invoice Chaser</span>
           </div>
           <nav aria-label="Main" className="flex items-center gap-lg">
-            <a href="/?tab=proof" className="hidden text-sm font-semibold text-secondary hover:text-primary focus-visible:ring-2 focus-visible:ring-focus-ring sm:inline">Proof</a>
+            <a href="/?tab=proof" className="text-sm font-semibold text-secondary hover:text-primary focus-visible:ring-2 focus-visible:ring-focus-ring">Proof</a>
             <a href="/llms.txt" className="hidden text-sm font-semibold text-secondary hover:text-primary focus-visible:ring-2 focus-visible:ring-focus-ring sm:inline">For agents</a>
             <a href="/?app" className="rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Dashboard</a>
           </nav>

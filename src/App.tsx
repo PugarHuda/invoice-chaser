@@ -5,6 +5,9 @@ import QRCode from 'qrcode';
 
 // ?pay=<invoice> is the public, client-facing pay page (no owner tabs).
 const PAY_ONLY = new URLSearchParams(window.location.search).get('pay');
+// Default selection: the largest invoice still fully open, then any unpaid one, then the first.
+const pickDefaultInvoice = (list: any[]) =>
+  [...list].filter((i) => i.status === 'sent' || i.status === 'overdue').sort((a, b) => Number(b.baseAmount) - Number(a.baseAmount))[0] || list.find((i) => i.status !== 'paid') || list[0];
 import {
   Clock,
   AlertCircle,
@@ -176,6 +179,13 @@ export default function App() {
 
   // Live Data States
   const [summary, setSummary] = useState<SummaryData | null>(null);
+  // an API that failed is said so; the screen never shows zeros it did not get from the server
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [proofError, setProofError] = useState(false);
+  const failed = async (res: Response | null, what: string) => {
+    const d = res ? await res.json().catch(() => ({})) : {};
+    setApiError(`Could not load ${what}${res ? ` (HTTP ${res.status})` : ' (network error)'}${(d as any).error ? `: ${(d as any).error}` : ''}`);
+  };
   const [clientsList, setClientsList] = useState<any[]>([]);
   const [clientDetail, setClientDetail] = useState<ClientDetail | null>(null);
   const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
@@ -213,15 +223,15 @@ export default function App() {
     try {
       const r = await fetch(`/api/chaser/clients/${selectedClientId}/search?q=${encodeURIComponent(memQuery.trim())}`);
       const d = await r.json();
-      if (!r.ok) return showToast(d.error || 'Search failed', 'error');
+      if (!r.ok) { setMemHits(null); return showToast(d.error || 'Search failed', 'error'); }
       setMemHits(d.results);
     } finally {
       setMemBusy(false);
     }
   };
-  // Tour targets: the client with the most payment history, and one of its open invoices.
-  const tourClient = [...clientsList].sort((a, b) => (b.profile?.totalPaidInvoices ?? 0) - (a.profile?.totalPaidInvoices ?? 0))[0];
-  const tourInvoice = allInvoices.find((i) => i.clientId === tourClient?.id && i.status !== 'paid') || allInvoices[0];
+  // Tour targets: the largest fully open invoice (a real-sized one, not a 0.01 USDC mainnet proof) and its client.
+  const tourInvoice = pickDefaultInvoice(allInvoices);
+  const tourClient = clientsList.find((c) => c.id === tourInvoice?.clientId) || clientsList[0];
   const netLabel = (invoiceDetail?.invoice.network || (summary as any)?.network) === 'testnet' ? 'Sui Testnet' : 'Sui Mainnet';
 
   // Real QR: the Sui Payment Kit URI (sui:pay?...) for this invoice, scannable by Sui wallets.
@@ -239,6 +249,12 @@ export default function App() {
   const [live, setLive] = useState<{ state: string; checkpoint?: string; via?: string }>({ state: 'off' });
   const [liveEpoch, setLiveEpoch] = useState(0); // bump to resume
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== 'hidden');
+  // Back/Forward between ?tab= URLs switches the tab
+  useEffect(() => {
+    const on = () => { const t = new URLSearchParams(window.location.search).get('tab') as TabKey | null; setActiveTab(t && ['today', 'clients', 'invoices', 'pay', 'proof'].includes(t) ? t : 'today'); };
+    window.addEventListener('popstate', on);
+    return () => window.removeEventListener('popstate', on);
+  }, []);
   useEffect(() => {
     const on = () => setPageVisible(document.visibilityState !== 'hidden');
     document.addEventListener('visibilitychange', on);
@@ -261,8 +277,10 @@ export default function App() {
       if (!d.already) showToast(d.message || 'Payment detected live and verified on-chain');
       fetchInvoiceDetail(id);
     });
+    // this invoice was opened live in another tab: stop here instead of reconnecting and kicking that one
+    es.addEventListener('replaced', () => { es.close(); setLive((l) => ({ ...l, state: 'paused-replaced' })); });
     // a refused stream (e.g. 429) closes for good: say so and offer Resume instead of "reconnecting" forever
-    es.onerror = () => setLive((l) => ({ ...l, state: es.readyState === EventSource.CLOSED ? 'paused' : 'reconnecting' }));
+    es.onerror = () => setLive((l) => (l.state === 'paused-replaced' ? l : { ...l, state: es.readyState === EventSource.CLOSED ? 'paused-refused' : 'reconnecting' }));
     return () => { clearTimeout(stop); es.close(); };
   }, [activeTab, selectedInvoiceId, invoiceDetail?.invoice.status, !!invoiceDetail, pageVisible, liveEpoch]);
 
@@ -347,8 +365,9 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setSummary(data);
-      }
-    } catch (_err) {}
+        setApiError(null);
+      } else await failed(res, 'the cash-flow summary');
+    } catch (_err) { await failed(null, 'the cash-flow summary'); }
   };
 
   const fetchClients = async () => {
@@ -358,8 +377,8 @@ export default function App() {
         const data = await res.json();
         setClientsList(data);
         if (data.length && !data.some((c: any) => c.id === selectedClientId)) setSelectedClientId(data[0].id);
-      }
-    } catch (_err) {}
+      } else await failed(res, 'clients');
+    } catch (_err) { await failed(null, 'clients'); }
   };
 
   const fetchAllInvoices = async () => {
@@ -368,9 +387,9 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAllInvoices(data);
-        if (!PAY_ONLY && data.length && !data.some((i: any) => i.id === selectedInvoiceId)) setSelectedInvoiceId((data.find((i: any) => i.status !== 'paid') || data[0]).id);
-      }
-    } catch (_err) {}
+        if (!PAY_ONLY && data.length && !data.some((i: any) => i.id === selectedInvoiceId)) setSelectedInvoiceId(pickDefaultInvoice(data).id);
+      } else await failed(res, 'invoices');
+    } catch (_err) { await failed(null, 'invoices'); }
   };
 
   const fetchClientDetail = async (id: string) => {
@@ -420,8 +439,9 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setProofData(data);
-      }
-    } catch (_err) {}
+        setProofError(false);
+      } else { setProofError(true); await failed(res, 'the live proof'); }
+    } catch (_err) { setProofError(true); await failed(null, 'the live proof'); }
   };
 
   const handleSavePreference = async () => {
@@ -650,7 +670,7 @@ export default function App() {
       {/* Top Header & Navigation with Tabs recipe */}
       <header className="border-b border-secondary bg-primary sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-xl min-h-16 py-xs md:py-0 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-xs">
-          <div className="flex items-center gap-md">
+          <a href="/" aria-label="Invoice Chaser home" className="flex items-center gap-md rounded-lg focus-visible:ring-2 focus-visible:ring-focus-ring">
             <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs">
               IC
             </div>
@@ -660,14 +680,14 @@ export default function App() {
                 Sui USDC
               </span>
             </div>
-          </div>
+          </a>
 
           {/* Navigation Bar adhering to tabs.md */}
           {!PAY_ONLY && <nav aria-label="Main" className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
             {(['today', 'clients', 'invoices', 'pay', 'proof'] as TabKey[]).map((tab) => (
               <button
                 key={tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => { setActiveTab(tab); history.pushState(null, '', `?tab=${tab}`); }}
                 aria-current={activeTab === tab ? 'page' : undefined}
                 className={`border-b-2 px-md py-sm text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                   activeTab === tab
@@ -695,6 +715,13 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-xl py-2xl">
+        {apiError && (
+          <div role="alert" className="mb-xl flex flex-wrap items-center gap-md rounded-xl border border-error-subtle bg-error-secondary px-lg py-md text-sm text-error-primary">
+            <span className="font-semibold">{apiError}.</span>
+            <span className="text-secondary">Numbers on this screen may be missing until it loads.</span>
+            <button onClick={() => { setApiError(null); fetchSummary(); fetchClients(); fetchAllInvoices(); if (activeTab === 'proof') fetchProof(); }} className="ml-auto rounded-lg border border-primary bg-primary px-md py-xs text-sm font-semibold text-secondary hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Retry</button>
+          </div>
+        )}
         {activeTab === 'today' && (
           <div className="space-y-2xl">
             {/* Header info */}
@@ -712,7 +739,7 @@ export default function App() {
                 { label: `1 · ${tourClient?.name ?? 'Client'}'s learned profile`, go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
                 { label: '2 · Memory on vs off', go: () => { tourInvoice && setSelectedInvoiceId(tourInvoice.id); setIgnoreMemory(true); setActiveTab('invoices'); } },
                 { label: '3 · Teach a rule', go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
-                { label: `4 · Pay on ${netLabel}`, go: () => setActiveTab('invoices') },
+                { label: `4 · Pay on ${netLabel}`, go: () => { if (tourInvoice) setSelectedInvoiceId(tourInvoice.id); setActiveTab('pay'); } },
                 { label: '5 · Live proof', go: () => setActiveTab('proof') },
               ].map((st) => (
                 <button key={st.label} onClick={st.go} className="rounded-full border border-utility-brand-200 bg-primary px-md py-xs text-xs font-semibold text-utility-brand-700 hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
@@ -734,7 +761,7 @@ export default function App() {
                 </div>
                 <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
                   <TrendingUp className="w-3.5 h-3.5" />
-                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {summary?.expectedInflow30Days ?? '—'} USDC in 30 days</span>
+                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {summary?.expectedInflow30Days != null ? Number(summary.expectedInflow30Days).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'} USDC in 30 days</span>
                 </div>
               </section>
 
@@ -915,7 +942,7 @@ export default function App() {
                       </span>
                     </div>
                     <div className="text-xs text-secondary mt-xxs">
-                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : c.profile.medianDelayDays < 0 ? `${-c.profile.medianDelayDays} days early` : 'on time'} • Reminders: {c.profile.remindersNeeded} • {c.profile.totalPaidInvoices} paid</>}
+                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : c.profile.medianDelayDays < 0 ? `${-c.profile.medianDelayDays} days early` : 'on time'} • Reminders: ~{Math.round(c.profile.remindersNeeded)} • {c.profile.totalPaidInvoices} paid</>}
                     </div>
                   </button>
                 ))}
@@ -1206,7 +1233,7 @@ export default function App() {
               </div>
               <div className="flex flex-col gap-xxs">
                 <label htmlFor="ni-due" className="text-xs text-tertiary">Due date</label>
-                <input id="ni-due" type="date" value={newInvoice.dueDate} onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <input id="ni-due" type="date" value={newInvoice.dueDate} onChange={(e) => setNewInvoice({ ...newInvoice, dueDate: e.target.value })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus:ring-2 focus:ring-focus-ring" />
               </div>
               <div className="flex flex-col gap-xxs flex-1 min-w-[160px]">
                 <label htmlFor="ni-desc" className="text-xs text-tertiary">Description</label>
@@ -1457,7 +1484,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
               <span className="inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
                 Public Payment Gateway
               </span>
-              <h1 className="text-heading-lg font-bold text-primary">
+              <h1 className="text-heading-lg font-bold text-primary break-all">
                 Pay Invoice #{selectedInvoiceId}
               </h1>
               <p className="text-xs text-secondary">{invoiceDetail ? `${invoiceDetail.invoice.clientName} · due ${invoiceDetail.invoice.dueDate} · ` : ''}Pay in USDC on {netLabel}</p>
@@ -1497,8 +1524,8 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 {live.state !== 'off' && (
                   <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
                     <span className={`w-2 h-2 rounded-full ${live.state === 'paid' ? 'bg-utility-success-600' : live.state === 'reconnecting' ? 'bg-utility-warning-600' : live.state.startsWith('paused') ? 'bg-tertiary' : 'bg-brand-solid animate-pulse'}`} />
-                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : live.state === 'paused' || live.state === 'paused-hidden' ? 'Live stream paused to save gateway credits' : `Watching ${netLabel} live via ${live.via || 'Tatum gRPC'}${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
-                    {live.state === 'paused' && <button onClick={() => setLiveEpoch((n) => n + 1)} className="ml-xs font-semibold text-utility-brand-700 hover:underline">Resume</button>}
+                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : live.state === 'paused-replaced' ? 'Live view moved to another tab with this invoice' : live.state === 'paused-refused' ? 'The server refused the live stream right now; payments are still checked every minute' : live.state === 'paused' || live.state === 'paused-hidden' ? 'Live stream paused to save gateway credits' : `Watching ${netLabel} live via ${live.via || 'Tatum gRPC'}${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
+                    {['paused', 'paused-replaced', 'paused-refused'].includes(live.state) && <button onClick={() => setLiveEpoch((n) => n + 1)} className="ml-xs font-semibold text-utility-brand-700 hover:underline">Resume</button>}
                   </p>
                 )}
               </div>
@@ -1599,7 +1626,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     <ShieldCheck className="w-5 h-5 text-fg-success-primary" />
                     <span className="font-semibold text-sm text-primary">Tatum Sui gRPC Gateway</span>
                   </div>
-                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : ['quota_fallback', 'no_api_key'].includes(proofData.tatumSuiGrpc.gatewayStatus) ? 'warn' : 'error'} ok="Connected (TLS)" warn={proofData?.tatumSuiGrpc.gatewayStatus === 'no_api_key' ? 'No Tatum key · public fullnode' : 'Credits exhausted · public fullnode fallback'} error="Unreachable" />
+                  <StatusBadge state={!proofData ? (proofError ? 'error' : 'loading') : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : ['quota_fallback', 'no_api_key'].includes(proofData.tatumSuiGrpc.gatewayStatus) ? 'warn' : 'error'} ok="Connected (TLS)" warn={proofData?.tatumSuiGrpc.gatewayStatus === 'no_api_key' ? 'No Tatum key · public fullnode' : 'Credits exhausted · public fullnode fallback'} error="Unreachable" />
                 </div>
 
                 <div className="space-y-xs text-xs">
@@ -1644,7 +1671,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     <Brain className="w-5 h-5 text-fg-brand-primary" />
                     <span className="font-semibold text-sm text-primary">Walrus Memory Relayer</span>
                   </div>
-                  <StatusBadge state={!proofData ? 'loading' : proofData.walrusMemory.relayerStatus === 'ok' ? 'ok' : 'error'} ok="Relayer Active" error={`Relayer ${proofData?.walrusMemory.relayerStatus || 'error'}`} />
+                  <StatusBadge state={!proofData ? (proofError ? 'error' : 'loading') : proofData.walrusMemory.relayerStatus === 'ok' ? 'ok' : 'error'} ok="Relayer Active" error={`Relayer ${proofData?.walrusMemory.relayerStatus || 'error'}`} />
                 </div>
 
                 <div className="space-y-xs text-xs">

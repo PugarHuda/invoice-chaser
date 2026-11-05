@@ -316,14 +316,20 @@ router.get('/pay/:id/invoice.pdf', async (req, res) => {
 // moves this invoice's exact amount to the payee, the digest goes through the same verify/settle
 // path as everything else, so a stream hit can never settle what a manual check would reject.
 const LIVE_MS = 240_000 // ponytail: under Vercel's function limit; the page reconnects when it ends
-const liveByIp = new Map() // ponytail: per-instance; 2 open streams per IP so one client can't take every slot
+const liveByIp = new Map() // ponytail: per-instance; ip -> (invoice -> finish) so one client can't take every slot
 router.get('/pay/:id/live', (req, res) => {
   const inv = state().invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
   const ip = (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
-  if ((liveByIp.get(ip) || 0) >= 2) return res.status(429).json({ error: 'Too many live streams from this address' })
-  liveByIp.set(ip, (liveByIp.get(ip) || 0) + 1)
-  res.once('close', () => (liveByIp.get(ip) > 1 ? liveByIp.set(ip, liveByIp.get(ip) - 1) : liveByIp.delete(ip)))
+  // One stream per (address, invoice): a reload, a tab switch or a second tab REPLACES the older stream
+  // (the platform may not report the old client's disconnect for minutes). Up to 4 invoices per address.
+  const mine = liveByIp.get(ip) || new Map()
+  mine.get(inv.id)?.('replaced')
+  if (mine.size >= 4 && !mine.has(inv.id)) return res.status(429).set('Retry-After', '60').json({ error: 'Too many live streams from this address; close another pay page or try again in a minute' })
+  liveByIp.set(ip, mine)
+  const release = () => { if (mine.get(inv.id) === finishRef) mine.delete(inv.id); if (!mine.size) liveByIp.delete(ip) }
+  let finishRef = null
+  res.once('close', () => { finishRef?.(); release() })
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
   res.flushHeaders()
   const send = (event, data) => res.write(`event: ${event}
@@ -337,13 +343,18 @@ data: ${JSON.stringify(data)}
   let closed = false
   let lastSent = 0
   let stop = () => {}
-  const finish = () => {
+  const finish = (reason) => {
     if (closed) return
     closed = true
+    release()
+    // the older tab is told why, so it stops instead of reconnecting and kicking the new one
+    if (reason === 'replaced') send('replaced', { invoice: inv.id })
     stop()
     clearTimeout(timer)
     res.end()
   }
+  finishRef = finish
+  mine.set(inv.id, finish)
   const timer = setTimeout(() => (send('timeout', { after: LIVE_MS / 1000 }), finish()), LIVE_MS)
   try {
     stop = live.watch(PAYEE(), sui.toMicro(owed(inv)), async (digest, seq) => {
@@ -504,10 +515,10 @@ async function settleDigest(invoiceId, requested, channel) {
       if (bound !== digest) return [409, { error: `This Payment Kit payment was made for a different invoice, not ${inv.id}` }]
     } else {
       // Plain transfer: the unique amount is the fingerprint, including what's left on partially paid invoices.
-      // A transfer of exactly what THIS invoice still owes is this invoice's, even if it also equals another
-      // partial's remainder (otherwise the two block each other). Anything else must not match another open
-      // invoice's unique amount or a partial invoice's remainder.
-      const other = tx.received !== expected && now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || (i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
+      // Another open invoice's unique amount always wins (it is the designed fingerprint). A partial's remainder
+      // only blocks when the transfer is not exactly what THIS invoice owes, so two equal remainders can't block
+      // each other while a remainder can never capture another invoice's unique amount.
+      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || (tx.received !== expected && i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
       if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
     }
 
