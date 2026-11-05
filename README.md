@@ -2,7 +2,7 @@
 
 **An invoice tracker for freelancers paid in USDC on Sui that learns how each client pays, and chases each one differently.**
 
-**Live demo: https://invoice-chaser-sigma.vercel.app** (open `/`, then Clients → Acme, Invoices → inv-101, /proof)
+**Live demo: https://invoice-chaser-sigma.vercel.app** (the landing page shows live production numbers; **Open live dashboard** or go straight to [`/?app`](https://invoice-chaser-sigma.vercel.app/?app), then Clients → Acme, Invoices → inv-101, [`/?tab=proof`](https://invoice-chaser-sigma.vercel.app/?tab=proof))
 
 Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · Track 03 Consumer Finance · started in [Tatum AI Builder](https://ai.tatum.io) (see [`docs/ai-builder/prompts.md`](docs/ai-builder/prompts.md), tag `ai-builder-v0`).
 
