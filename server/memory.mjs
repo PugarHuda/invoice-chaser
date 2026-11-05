@@ -3,6 +3,7 @@
 // On boot we recall every ic:main:* namespace and rebuild all state from it.
 import { MemWal } from '@mysten-incubation/memwal'
 import { waitUntil } from '@vercel/functions'
+import { createHmac, timingSafeEqual } from 'node:crypto'
 
 export const NS_PREFIX = process.env.MEMWAL_NS_PREFIX || 'ic:main:'
 export const clientNs = (clientId) => `${NS_PREFIX}client:${clientId}`
@@ -41,12 +42,26 @@ function memwal() {
 export const store = new Map()
 export const loadState = { loaded: false, loading: false, error: null, loadedAt: null, recalled: 0 }
 
-export const encode = (sentence, tag) => `${sentence}\n#ic ${JSON.stringify(tag)}`
-export function decode(text) {
+// Ledger tags are signed: the relayer also stores free text (analyze() facts from pasted notes), so a tag
+// is trusted only if this server made it. Memories the relayer created before TAG_MAC_FROM predate signing
+// and are accepted as written (Walrus is append-only; a client cannot set the relayer's created_at).
+export const TAG_MAC_FROM = '2026-11-05T19:00:00Z'
+const tagMac = (sentence, tag) => createHmac('sha256', `ic-tag:${process.env.MEMWAL_PRIVATE_KEY || ''}`).update(`${sentence}\n${JSON.stringify(tag)}`).digest('hex').slice(0, 32)
+export const encode = (sentence, tag) => `${sentence}\n#ic ${JSON.stringify({ ...tag, mac: tagMac(sentence, tag) })}`
+/** createdAt: the relayer's timestamp for this memory (absent for local, not-yet-saved ones) */
+export function decode(text, createdAt) {
   const i = text.lastIndexOf('#ic ')
   if (i < 0) return null
   try {
-    return { sentence: text.slice(0, i).trim(), tag: JSON.parse(text.slice(i + 4)) }
+    const sentence = text.slice(0, i).trim()
+    const { mac, ...tag } = JSON.parse(text.slice(i + 4))
+    if (mac !== undefined) {
+      const want = tagMac(sentence, tag)
+      return typeof mac === 'string' && mac.length === want.length && timingSafeEqual(Buffer.from(mac), Buffer.from(want)) ? { sentence, tag } : null
+    }
+    // an unsigned tag is only legacy if the relayer stored it before signing began
+    const at = createdAt ? new Date(createdAt) : null
+    return at && !Number.isNaN(at.getTime()) && at.toISOString() > TAG_MAC_FROM ? null : { sentence, tag }
   } catch {
     return null
   }
@@ -147,7 +162,7 @@ async function doLoad() {
       const mems = []
       for (const hit of r.results) {
         // memories without our tag are facts extracted by analyze(): keep them as notes
-        const d = decode(hit.text) || { sentence: hit.text.trim(), tag: { type: 'note', source: 'walrus-analyze' } }
+        const d = decode(hit.text, hit.created_at) || { sentence: hit.text.trim(), tag: { type: 'note', source: 'walrus-analyze' } }
         mems.push({ id: hit.blob_id, blobId: hit.blob_id, sentence: d.sentence, tag: d.tag, timestamp: d.tag.at || hit.created_at, status: 'saved' })
       }
       mems.sort((a, b) => b.timestamp.localeCompare(a.timestamp))
@@ -176,8 +191,8 @@ async function doLoad() {
 
 // analyze(): the relayer extracts facts from free text and stores each as a memory in `ns`.
 export async function ingestNotes(ns, text) {
-  // facts are stored as raw text and decode() trusts a trailing "#ic {json}" tag: a pasted note must never forge one
-  const r = await memwal().analyze(text.replace(/#ic/gi, 'ic'), ns)
+  // facts are stored as raw text: decode() only trusts signed tags, and no '#' even reaches the extractor
+  const r = await memwal().analyze(text.replace(/#/g, '＃'), ns)
   if (!store.has(ns)) store.set(ns, [])
   const at = new Date().toISOString()
   const local = r.facts.map((f) => ({ id: f.id, sentence: f.text, tag: { type: 'note', source: 'walrus-analyze', at }, timestamp: at, status: 'pending' }))
@@ -210,7 +225,7 @@ export async function search(clientId, query, limit = 5) {
   const hits = (await Promise.all((shards.length ? shards : [clientNs(clientId)]).map((namespace) => memwal().recall({ query, namespace, limit }))))
     .flatMap((r) => r.results).sort((a, b) => a.distance - b.distance).slice(0, limit)
   return hits.map((h) => {
-    const d = decode(h.text) || { sentence: h.text.trim(), tag: { type: 'note' } }
+    const d = decode(h.text, h.created_at) || { sentence: h.text.trim(), tag: { type: 'note' } }
     return { sentence: d.sentence, type: d.tag?.type, distance: Math.round(h.distance * 1000) / 1000, blobId: h.blob_id, at: d.tag?.at || h.created_at }
   })
 }

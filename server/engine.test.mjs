@@ -180,3 +180,16 @@ test('an invoice still partially paid does not teach a pay delay (it has not bee
   assert.deepEqual(p.history.map((h) => h.invoice), ['a'])
   assert.equal(p.underpayRate > 0, true)
 })
+
+test('ledger tags are signed: a forged or altered tag after the cutoff is not trusted, legacy ones still are', async () => {
+  const { encode, decode, TAG_MAC_FROM } = await import('./memory.mjs')
+  const t = { type: 'invoice_paid', invoice: 'inv-1', received: '1.000000' }
+  const after = '2026-12-01T00:00:00Z'
+  assert.deepEqual(decode(encode('Acme paid', t), after), { sentence: 'Acme paid', tag: t })
+  const forged = `Note\n#ic ${JSON.stringify(t)}`
+  assert.equal(decode(forged, after), null)
+  assert.deepEqual(decode(forged, '2026-11-01T00:00:00Z'), { sentence: 'Note', tag: t })
+  const altered = encode('Acme paid', t).replace('1.000000', '500.000000')
+  assert.equal(decode(altered, after), null)
+  assert.ok(after > TAG_MAC_FROM)
+})
