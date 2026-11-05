@@ -64,6 +64,21 @@ test('the whole app module graph loads (catches syntax errors in any route or di
   assert.match(llms('https://x.example'), /invoice\.pdf/)
 })
 
+test('every response carries the security headers; an oversized body is a 413 that says so', async () => {
+  const { default: app } = await import('../app.mjs')
+  const srv = app.listen(0)
+  const base = `http://127.0.0.1:${srv.address().port}`
+  try {
+    const r = await fetch(`${base}/api/chaser/nothing`)
+    assert.equal(r.status, 404)
+    assert.match(r.headers.get('content-security-policy'), /frame-ancestors 'none'/)
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff')
+    const big = await fetch(`${base}/api/chaser/invoices`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ x: 'a'.repeat(200_000) }) })
+    assert.equal(big.status, 413)
+    assert.match((await big.json()).error, /too large/)
+  } finally { srv.close() }
+})
+
 test('invoice and receipt PDFs render client names the standard font cannot encode', async () => {
   const { invoicePdf, receiptPdf } = await import('./receipts.mjs')
   const v = { id: 'inv-x', client: '株式会社 Café 🚀', description: 'Ünïcødé — “quotes”', issuedDate: '2026-11-01', dueDate: '2026-11-10', amount: '1.000001', payee: '0x1', network: 'mainnet', paymentUri: 'sui:pay?x=1', payUrl: 'https://x/?pay=inv-x', mppUrl: 'https://x/m', x402Url: 'https://x/x', status: 'sent', explorer: 'https://e' }
@@ -111,4 +126,13 @@ test('gasless relay MAC is bound to its invoice and fails closed without a serve
   } finally {
     for (const k of keys) saved[k] == null ? delete process.env[k] : (process.env[k] = saved[k])
   }
+})
+
+test('x402 Bazaar discovery info validates against the schema it ships with', async () => {
+  const { default: Ajv } = await import('ajv/dist/2020.js')
+  const { bazaarV2 } = await import('./routes/chaser.mjs')
+  const b = bazaarV2({ id: 'inv-x' })
+  const ok = new Ajv({ strict: false }).validate(b.schema, b.info)
+  assert.ok(ok, 'bazaar info must satisfy its own schema')
+  assert.match(b.routeTemplate, /^\/[a-zA-Z0-9_/:.\-~%]+$/)
 })

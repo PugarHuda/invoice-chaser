@@ -1598,7 +1598,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     <ShieldCheck className="w-5 h-5 text-fg-success-primary" />
                     <span className="font-semibold text-sm text-primary">Tatum Sui gRPC Gateway</span>
                   </div>
-                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : proofData.tatumSuiGrpc.gatewayStatus === 'quota_fallback' ? 'warn' : 'error'} ok="Connected (TLS)" warn="Credits exhausted · public fullnode fallback" error="Unreachable" />
+                  <StatusBadge state={!proofData ? 'loading' : proofData.tatumSuiGrpc.gatewayStatus === 'connected' ? 'ok' : ['quota_fallback', 'no_api_key'].includes(proofData.tatumSuiGrpc.gatewayStatus) ? 'warn' : 'error'} ok="Connected (TLS)" warn={proofData?.tatumSuiGrpc.gatewayStatus === 'no_api_key' ? 'No Tatum key · public fullnode' : 'Credits exhausted · public fullnode fallback'} error="Unreachable" />
                 </div>
 
                 <div className="space-y-xs text-xs">

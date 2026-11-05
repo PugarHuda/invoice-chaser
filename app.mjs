@@ -12,6 +12,13 @@ import { discovery } from './server/discovery.mjs'
 const app = express()
 // Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
 app.set('trust proxy', 1)
+// The UI loads only its own bundle and Google Fonts; wallets inject through extension content scripts,
+// which CSP does not govern. frame-ancestors 'none' stops the pay page being framed for clickjacking.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
+app.use((_req, res, next) => {
+  res.set({ 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin', 'X-Frame-Options': 'DENY', 'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()' })
+  next()
+})
 app.use(express.json())
 // The same UI is also published on Walrus Sites (*.wal.app); let it call this API cross-origin.
 app.use('/api', (req, res, next) => {
@@ -51,7 +58,10 @@ app.use((req, res, next) => (/^\/(api|\.well-known)(\/|$)|\.[A-Za-z0-9]+$/.test(
 // JSON errors for the API (e.g. malformed request bodies), never an HTML stack page.
 app.use((err, req, res, next) => {
   if (!req.path.startsWith('/api/')) return next(err)
-  res.status(err.status || err.statusCode || 500).json({ error: err.type === 'entity.parse.failed' ? 'Malformed JSON body' : 'Internal error' })
+  const status = err.status || err.statusCode || 500
+  const error = err.type === 'entity.parse.failed' ? 'Malformed JSON body' : err.type === 'entity.too.large' ? 'Request body too large (max 100 kB)' : status < 500 && err.expose ? err.message : 'Internal error'
+  if (status >= 500) console.error(err)
+  res.status(status).json({ error })
 })
 
 export default app

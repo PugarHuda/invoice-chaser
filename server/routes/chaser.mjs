@@ -405,11 +405,14 @@ router.get('/invoices/:id', (req, res) => {
   res.json({
     invoice: {
       ...withStatus(inv),
+      // same contract as /pay/:id: payAmount is what is still owed (a partial asks only for the rest)
+      payAmount: owed(withStatus(inv)),
+      originalAmount: inv.payAmount,
       clientName: clientName(clients, inv.clientId),
       payeeAddress: PAYEE(),
       coinType: sui.USDC_COIN_TYPE,
       network: sui.NETWORK,
-      paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(inv.payAmount), nonce: inv.id, label: 'Invoice Chaser', message: `Invoice ${inv.id}` }),
+      paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(withStatus(inv))), nonce: inv.id, label: 'Invoice Chaser', message: `Invoice ${inv.id}` }),
       registry: sui.REGISTRY_NAME,
       explorerTx: inv.digest ? `${sui.EXPLORER}/tx/${inv.digest}` : null,
       receipt: receiptOf(inv),
@@ -636,6 +639,25 @@ const paymentRequiredV2 = (req, inv, error = 'Payment required') => ({
   x402Version: 2, error,
   resource: { url: `${req.protocol}://${req.get('host')}${req.originalUrl}`, description: `Invoice ${inv.id} (${inv.description || 'services'})`, mimeType: 'application/json', serviceName: 'Invoice Chaser' },
   accepts: [requirementsV2(inv)],
+  extensions: { bazaar: bazaarV2(inv) },
+})
+// x402 Bazaar discovery extension (coinbase/x402 specs/extensions/bazaar.md): tells x402 catalogs and
+// agents what this resource takes and returns; routeTemplate keys every invoice to one catalog entry.
+export const bazaarV2 = (inv) => ({
+  info: {
+    input: { type: 'http', method: 'GET', pathParams: { id: inv.id } },
+    output: { type: 'json', example: { success: true, invoice: inv.id, digest: '<sui tx digest>', explorer: `${sui.EXPLORER}/tx/<digest>` } },
+  },
+  schema: {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    type: 'object',
+    properties: {
+      input: { type: 'object', properties: { type: { type: 'string', const: 'http' }, method: { type: 'string', enum: ['GET'] }, pathParams: { type: 'object', additionalProperties: { type: 'string' } } }, required: ['type', 'method'], additionalProperties: false },
+      output: { type: 'object', properties: { type: { type: 'string' }, example: { type: 'object' } }, required: ['type'] },
+    },
+    required: ['input'],
+  },
+  routeTemplate: '/api/chaser/x402/:id',
 })
 async function x402v2(req, res, inv, header) {
   const fail = (reason, status = 402) => {
@@ -882,7 +904,7 @@ router.get('/proof', async (_req, res) => {
       protocol: 'gRPC over TLS (sui.rpc.v2)',
       apiKeyConfigured: Boolean(process.env.TATUM_API_KEY),
       // 'connected' only when Tatum itself answered; a public-fullnode fallback is reported as such
-      gatewayStatus: cp.status !== 'fulfilled' ? 'error' : sui.provider() === 'tatum' ? 'connected' : 'quota_fallback',
+      gatewayStatus: cp.status !== 'fulfilled' ? 'error' : sui.provider() === 'tatum' ? 'connected' : process.env.TATUM_API_KEY ? 'quota_fallback' : 'no_api_key',
       provider: sui.providerStatus(),
       latestCheckpoint: cp.status === 'fulfilled' ? cp.value.sequence : null,
       latencyMs: cp.status === 'fulfilled' ? cp.value.latencyMs : null,
