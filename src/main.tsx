@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
+import Landing from './Landing.tsx'
 import './index.css'
 import { registerWebMcp } from './webmcp'
 
@@ -26,8 +27,12 @@ window.fetch = async (input, init = {}) => {
 // WebMCP: in-browser agents get the page's read tools (no-op where unsupported)
 registerWebMcp(new URLSearchParams(window.location.search).get('pay'))
 
+// "/" is the landing page; the dashboard is /?app (or /?tab=<tab>), a pay link /?pay=<id>
+const q = new URLSearchParams(window.location.search)
+const landing = !q.has('pay') && !q.has('app') && !q.has('tab')
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {landing ? <Landing /> : <App />}
   </StrictMode>,
 )

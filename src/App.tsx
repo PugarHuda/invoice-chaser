@@ -165,7 +165,8 @@ interface ProofData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabKey>(PAY_ONLY ? 'pay' : 'today');
+  const START_TAB = new URLSearchParams(window.location.search).get('tab') as TabKey | null;
+  const [activeTab, setActiveTab] = useState<TabKey>(PAY_ONLY ? 'pay' : START_TAB && ['today', 'clients', 'invoices', 'pay', 'proof'].includes(START_TAB) ? START_TAB : 'today');
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>(PAY_ONLY || '');
   const [ignoreMemory, setIgnoreMemory] = useState<boolean>(false);
