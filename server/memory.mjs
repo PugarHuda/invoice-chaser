@@ -49,12 +49,15 @@ export const TAG_MAC_FROM = '2026-11-05T19:00:00Z'
 const tagMac = (sentence, tag) => createHmac('sha256', `ic-tag:${process.env.MEMWAL_PRIVATE_KEY || ''}`).update(`${sentence}\n${JSON.stringify(tag)}`).digest('hex').slice(0, 32)
 export const encode = (sentence, tag) => `${sentence}\n#ic ${JSON.stringify({ ...tag, mac: tagMac(sentence, tag) })}`
 /** createdAt: the relayer's timestamp for this memory (absent for local, not-yet-saved ones) */
+const MARK = '\n#ic '
 export function decode(text, createdAt) {
-  const i = text.lastIndexOf('#ic ')
+  // the tag marker is newline + '#ic ': JSON.stringify never emits a raw newline, so free text inside a
+  // tag value (a client name, a description) can't move the split point
+  const i = text.lastIndexOf(MARK)
   if (i < 0) return null
   try {
     const sentence = text.slice(0, i).trim()
-    const { mac, ...tag } = JSON.parse(text.slice(i + 4))
+    const { mac, ...tag } = JSON.parse(text.slice(i + 5))
     if (mac !== undefined) {
       const want = tagMac(sentence, tag)
       return typeof mac === 'string' && mac.length === want.length && timingSafeEqual(Buffer.from(mac), Buffer.from(want)) ? { sentence, tag } : null

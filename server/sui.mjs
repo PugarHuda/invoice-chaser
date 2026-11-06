@@ -7,7 +7,7 @@ import { GrpcWebFetchTransport } from '@protobuf-ts/grpcweb-transport'
 const RPC_TIMEOUT_MS = 10_000
 import { ChannelCredentials } from '@grpc/grpc-js'
 import { Transaction, coinWithBalance } from '@mysten/sui/transactions'
-import { normalizeStructTag } from '@mysten/sui/utils'
+import { normalizeStructTag, deriveDynamicFieldID } from '@mysten/sui/utils'
 export const isSettlementCoin = (t) => { try { return normalizeStructTag(t) === normalizeStructTag(USDC_COIN_TYPE) } catch { return false } }
 import { paymentKit, createPaymentTransactionUri } from '@mysten/payment-kit'
 import { bcs } from '@mysten/sui/bcs'
@@ -154,7 +154,9 @@ export async function executeSigned(bytesB64, signature) {
 // ---- x402 v2 facilitator (exact scheme on Sui) ---------------------------------------------
 // The agent sends a signed, unexecuted transaction. We check the signature against its sender,
 // simulate it through Tatum to see exactly what it would move, and only then broadcast it.
-export async function inspectSignedPayment(bytesB64, signature, payee, nonce) {
+// amount (micro): when given, the simulation must CREATE this registry's PaymentKey(nonce, amount, payee)
+// record: an event substring match alone would accept an ephemeral receipt or a look-alike nonce.
+export async function inspectSignedPayment(bytesB64, signature, payee, nonce, amount = null) {
   const bytes = Buffer.from(bytesB64, 'base64')
   let sender
   try {
@@ -189,6 +191,11 @@ export async function inspectSignedPayment(bytesB64, signature, payee, nonce) {
   const want = Buffer.from(bcs.string().serialize(nonce).toBytes())
   const bound = (t.events || []).some((e) => e.packageId === PK_PACKAGE && /::payment_kit::PaymentReceipt$/.test(e.eventType || '') && Buffer.from(e.bcs?.data || (e.bcs && typeof e.bcs === 'object' ? Object.values(e.bcs) : [])).includes(want))
   if (!bound) return { ok: false, reason: 'payment_kit_required', detail: `pay through the Payment Kit registry with nonce ${nonce}` }
+  if (amount != null) {
+    const recordId = deriveDynamicFieldID(registryId(), `${PK_PACKAGE}::payment_kit::PaymentKey<${normalizeStructTag(USDC_COIN_TYPE)}>`, PaymentKey.serialize({ nonce, payment_amount: BigInt(amount), receiver: payee }).toBytes())
+    const created = (t.effects?.changedObjects || []).some((o) => o.objectId === recordId && (o.inputState === 'DoesNotExist' || /created/i.test(String(o.idOperation))))
+    if (!created) return { ok: false, reason: 'payment_kit_required', detail: `the transaction must create the ${REGISTRY_NAME} record for nonce ${nonce}, amount ${amount}, payee ${payee}` }
+  }
   return { ok: true, sender, received }
 }
 

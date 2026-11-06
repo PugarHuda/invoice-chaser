@@ -10,6 +10,8 @@ import { credentialGuard } from './server/credential-guard.mjs'
 import { discovery } from './server/discovery.mjs'
 
 const app = express()
+app.set('case sensitive routing', true)
+app.set('strict routing', true)
 // Vercel's edge is one proxy hop: trust it for X-Forwarded-Proto so URLs we publish are https
 app.set('trust proxy', 1)
 // The UI loads only its own bundle and Google Fonts; wallets inject through extension content scripts,

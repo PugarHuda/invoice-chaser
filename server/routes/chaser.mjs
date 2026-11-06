@@ -55,12 +55,17 @@ router.use((req, res, next) => {
   if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k)
   next()
 })
+const isOwner = (req) => {
+  const pass = process.env.APP_PASSCODE
+  if (!pass) return false
+  const got = createHash('sha256').update(req.get('x-passcode') || '').digest()
+  return timingSafeEqual(got, createHash('sha256').update(pass).digest())
+}
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
   if (!pass || req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
-  const got = createHash('sha256').update(req.get('x-passcode') || '').digest()
-  if (!timingSafeEqual(got, createHash('sha256').update(pass).digest())) return res.status(401).json({ error: 'Owner passcode required' })
+  if (!isOwner(req)) return res.status(401).json({ error: 'Owner passcode required' })
   next()
 })
 
@@ -557,7 +562,9 @@ function reserveDigest(digest, invoiceId) {
   reservedDigests.set(digest, { invoiceId, at: Date.now() })
 }
 // extraTag: protocol fields remembered with the payment (e.g. the x402 payment-identifier and its fingerprint)
-async function settleDigest(invoiceId, requested, channel, extraTag = {}) {
+// opts.allowInexact: settle a plain transfer whose amount isn't exactly this invoice's (owner, or a transfer
+// the server built for this invoice). Public callers can't: anyone could aim someone else's payment at it.
+async function settleDigest(invoiceId, requested, channel, extraTag = {}, opts = {}) {
   const held = reservedDigests.get(requested)
   if (held && held.invoiceId !== invoiceId && Date.now() - held.at < RESERVE_MS) return [409, { error: 'This payment was built for a different invoice' }]
   const { invoices } = state()
@@ -613,6 +620,12 @@ async function settleDigest(invoiceId, requested, channel, extraTag = {}) {
       const claims = (i) => sui.toMicro(i.payAmount) === tx.received || (i.status === 'sent' && txAt && quoteAt(i, txAt) && sui.toMicro(quoteAt(i, txAt)) === tx.received)
       const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (claims(i) || (tx.received !== expected && i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
       if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
+      // the unique amount is the only thing tying a plain transfer to this invoice: anything else needs the
+      // owner (or a transfer the server built and reserved for this invoice, e.g. a gasless partial)
+      const exact = new Set([expected, ...(inv.status === 'sent' ? quotedAmounts(inv).map((a) => sui.toMicro(a)) : [])])
+      const builtForThis = held && held.invoiceId === inv.id
+      if (!exact.has(tx.received) && !opts.allowInexact && !builtForThis)
+        return [400, { error: `This transfer (${sui.fromMicro(tx.received)} USDC) isn't exactly what ${inv.id} asks (${owed(inv)} USDC), so it can't be matched automatically. Pay the exact amount, or ask the invoice owner to settle it.` }]
     }
 
     const full = tx.received >= expected
@@ -657,7 +670,7 @@ async function settleDigest(invoiceId, requested, channel, extraTag = {}) {
 router.post('/verify-payment', async (req, res) => {
   const { invoiceId, digest } = req.body || {}
   if (typeof invoiceId !== 'string' || typeof digest !== 'string' || !sui.DIGEST_RE.test(digest)) return res.status(400).json({ error: 'invoiceId and a valid Sui transaction digest are required' })
-  const [code, body] = await settleDigest(invoiceId, digest, req.body.channel === 'wallet' ? 'wallet' : 'pay-page')
+  const [code, body] = await settleDigest(invoiceId, digest, req.body.channel === 'wallet' ? 'wallet' : 'pay-page', {}, { allowInexact: isOwner(req) })
   res.status(code).json(body)
 })
 
@@ -851,7 +864,7 @@ async function x402v2Settle(req, res, inv, want, signature, transaction, fail, v
   if (state().invoices.find((i) => i.id === inv.id)?.status === 'paid') return fail('invalid_transaction_state', 409, 'invoice is already paid')
   let check
   try {
-    check = await sui.inspectSignedPayment(transaction, signature, PAYEE(), inv.id)
+    check = await sui.inspectSignedPayment(transaction, signature, PAYEE(), inv.id, want.amount)
   } catch (e) {
     return fail('unexpected_verify_error', 500, e.message)
   }
@@ -1061,7 +1074,7 @@ router.post('/pay-gasless', async (req, res) => {
     if (!digest || out?.FailedTransaction) return res.status(400).json({ error: `Gasless transfer failed on-chain: ${out?.FailedTransaction?.effects?.status?.error?.message || 'no digest'}`, digest: digest || null })
     let code, body
     for (let i = 0; i < 6; i++) {
-      ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-gasless')
+      ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-gasless', {}, { allowInexact: true })
       if (code === 409 && state().invoices.find((x) => x.id === invoiceId)?.payments?.some((p) => p.digest === digest)) {
         ;[code, body] = [200, { success: true, verifiedOnChain: true, message: 'Paid: settled the moment it reached a checkpoint (live Tatum stream).', explorer: `${sui.EXPLORER}/tx/${digest}` }]
         break
