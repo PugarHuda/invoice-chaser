@@ -532,3 +532,44 @@ export async function buildGaslessUsdcTransfer(sender, payee, micro, invoiceId) 
 }
 // only bytes this server built for THIS invoice are relayed (not a free relay, not re-targetable)
 export const gaslessMacOk = (b64, mac, invoiceId) => gaslessRelayEnabled() && typeof mac === 'string' && /^[0-9a-f]{64}$/.test(mac) && timingSafeEqual(Buffer.from(mac), Buffer.from(serverMac(`gasless:${invoiceId}`, b64)))
+
+// When did this wallet last do anything on Sui, and how much USDC did it send to others (not `payee`) in the
+// last 7 days? (LedgerService.ListTransactions, affected-address filter, newest first, 25 max.) A payer who is
+// active and paying other people but not us is a different conversation from a dormant wallet. Cached 10 min.
+const activityCache = new Map()
+export async function walletActivity(owner, payee = null) {
+  const key = `${owner}:${payee}`
+  const hit = activityCache.get(key)
+  if (hit && Date.now() - hit.at < 600_000) return hit.value
+  await throttle()
+  const call = sui().ledgerService.listTransactions({
+    readMask: { paths: ['digest', 'timestamp', 'balance_changes', 'transaction.sender'] },
+    filter: { terms: [{ literals: [{ negated: false, predicate: { oneofKind: 'affectedAddress', affectedAddress: { address: owner } } }] }] },
+    options: { limit: 25, ordering: 1 /* newest first */ },
+  })
+  const me = normAddr(owner)
+  const us = payee && normAddr(payee)
+  const weekAgo = Date.now() - 7 * 86_400_000
+  let last = null, sent = 0n, outgoing = 0, toUs = 0, seen = 0
+  try {
+    for await (const f of call.responses) {
+      const t = f.transaction
+      if (!t?.digest) continue
+      seen++
+      const ms = t.timestamp ? Number(t.timestamp.seconds) * 1000 : null
+      if (ms && !last) last = { digest: t.digest, at: new Date(ms).toISOString() }
+      if (ms && ms < weekAgo) break
+      if (normAddr(t.transaction?.sender) !== me) continue
+      const usdc = (t.balanceChanges || []).filter((b) => isSettlementCoin(b.coinType))
+      if (us && usdc.some((b) => normAddr(b.address) === us && BigInt(b.amount) > 0n)) { toUs++; continue }
+      const out = usdc.filter((b) => normAddr(b.address) === me).reduce((s, b) => s + BigInt(b.amount), 0n)
+      if (out < 0n) { sent += -out; outgoing++ }
+    }
+  } catch (e) {
+    // a wallet with fewer than 25 transactions runs the stream into the node's pruned history: that is the end
+    if (!/below earliest available/.test(e.message || '')) throw e
+  }
+  const value = { owner, lastActivity: last, usdcSent7d: fromMicro(sent), usdcTransfersOut7d: outgoing, paymentsToUs7d: toUs, scanned: seen, service: 'LedgerService.ListTransactions' }
+  activityCache.set(key, { at: Date.now(), value })
+  return value
+}

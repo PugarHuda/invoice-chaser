@@ -441,3 +441,43 @@ export function foldIcs(line) {
   out.push(cur)
   return out.join('\r\n ')
 }
+
+// Who to chase today: chase_now / nudge / wait / scheduled, with reasons from memory (delay spread, promises)
+// and from the payer wallet on chain (balance vs owed, USDC sent to others this week). Pure, so it is tested.
+export function chaseAction({ today, inv, late, profile, wallet = null, activity = null, owedUsdc, predicted = null }) {
+  const why = []
+  const ps = profile.promiseStats || { kept: 0, broken: 0 }
+  const promised = inv.promise && inv.promise.date >= today
+  const range = profile.delayRange
+  let action
+  if (promised) {
+    action = 'wait'
+    why.push(`promised to pay by ${inv.promise.date} (memory: kept ${ps.kept} of ${ps.kept + ps.broken} earlier promises)`)
+  } else if (inv.promise) {
+    action = 'chase_now'
+    why.push(`broke a promise to pay by ${inv.promise.date}`)
+  } else if (late < 0) {
+    action = 'scheduled'
+    why.push(`due ${inv.dueDate}; memory predicts payment ${predicted || inv.dueDate}`)
+  } else if (late > range.high) {
+    action = 'chase_now'
+    why.push(`${late} day(s) late, past the latest this client has paid before (${range.high} days, ${range.basis})`)
+  } else {
+    action = 'wait'
+    why.push(late < range.low ? `${late} day(s) late; this client usually pays ${range.low}-${range.high} days late` : `${late} day(s) late, within this client's usual ${range.low}-${range.high} days`)
+  }
+  if (wallet) {
+    why.push(`payer wallet holds ${Number(wallet.usdc).toFixed(2)} USDC, owes ${Number(owedUsdc).toFixed(2)}${wallet.covers ? ': enough to pay now' : ''}`)
+    const sentElsewhere = Number(activity?.usdcSent7d) > 0
+    // they have the money and are late: a nudge beats waiting out their usual delay
+    if (wallet.covers && action === 'wait' && !promised && late >= 0) action = 'nudge'
+    // late but the wallet is empty and quiet: firm chasing can't make funds appear
+    if (!wallet.covers && action === 'chase_now' && !sentElsewhere) action = 'nudge'
+    if (sentElsewhere) {
+      why.push(`it sent ${activity.usdcSent7d} USDC to others in the last 7 days (${activity.usdcTransfersOut7d} transfer(s))`)
+      // paying other people while late on us
+      if (late >= 0 && !promised) action = 'chase_now'
+    } else if (activity?.lastActivity) why.push(`last on-chain activity ${activity.lastActivity.at.slice(0, 10)}${activity.paymentsToUs7d ? `, paid us ${activity.paymentsToUs7d} time(s) this week` : ''}`)
+  }
+  return { action, why }
+}

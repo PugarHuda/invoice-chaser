@@ -215,6 +215,7 @@ export default function App() {
 
   // Live Data States
   const [summary, setSummary] = useState<SummaryData | null>(null);
+  const [queue, setQueue] = useState<{ counts: Record<string, number>; items: Array<{ invoiceId: string; clientName: string; owedUsdc: string; action: 'chase_now' | 'nudge' | 'wait' | 'scheduled'; tone: string | null; why: string[]; chain: { usdc: string; covers: boolean } | null }> } | null>(null);
   // an API that failed is said so; the screen never shows zeros it did not get from the server
   const [apiError, setApiError] = useState<string | null>(null);
   const [proofError, setProofError] = useState(false);
@@ -406,6 +407,8 @@ export default function App() {
   }, [activeTab]);
 
   const fetchSummary = async () => {
+    // chase queue: memory x live payer wallet (Tatum); optional, so a failure only hides the card
+    fetch('/api/chaser/chase-queue').then((r) => (r.ok ? r.json() : null)).then((q) => q && setQueue(q)).catch(() => {});
     try {
       const res = await fetch('/api/chaser/summary');
       if (res.ok) {
@@ -859,6 +862,41 @@ export default function App() {
                 </div>
               </section>
             </div>
+
+            {/* Chase queue: Walrus Memory joined with the payer wallet on Sui (Tatum) */}
+            {queue && queue.items.length > 0 && (
+              <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs" aria-labelledby="chase-queue-h">
+                <div className="flex flex-wrap items-center justify-between gap-sm mb-lg">
+                  <div>
+                    <h2 id="chase-queue-h" className="text-heading-xs font-semibold text-primary">Who to chase today</h2>
+                    <p className="text-xs text-secondary">What memory learned about each client, checked against their payer wallet on Sui right now (Tatum ListBalances + ListTransactions)</p>
+                  </div>
+                  <span className="text-xs text-tertiary">{Object.entries(queue.counts).filter(([, n]) => n).map(([k, n]) => `${n} ${k.replace('_', ' ')}`).join(' · ')}</span>
+                </div>
+                <ol className="space-y-sm">
+                  {queue.items.map((q) => {
+                    const tone = q.action === 'chase_now' ? 'border-utility-error-200 bg-utility-error-50 text-utility-error-700' : q.action === 'nudge' ? 'border-utility-warning-200 bg-utility-warning-50 text-utility-warning-700' : q.action === 'wait' ? 'border-utility-brand-200 bg-utility-brand-50 text-utility-brand-700' : 'border-secondary bg-secondary text-secondary';
+                    return (
+                      <li key={q.invoiceId} className="flex flex-wrap items-start justify-between gap-sm p-md rounded-lg bg-secondary border border-secondary">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-xs">
+                            <span className={`inline-flex rounded-full border px-sm py-xxs text-xs font-semibold ${tone}`}>{q.action.replace('_', ' ')}</span>
+                            <span className="font-semibold text-sm text-primary">{q.clientName}</span>
+                            <span className="text-xs text-secondary">{usd(q.owedUsdc)} USDC · #{q.invoiceId}</span>
+                          </div>
+                          <ul className="mt-xs list-disc pl-lg text-xs text-secondary space-y-xxs">
+                            {q.why.map((w, i) => <li key={i}>{w}</li>)}
+                          </ul>
+                        </div>
+                        <button onClick={() => { setSelectedInvoiceId(q.invoiceId); goTab('invoices', q.invoiceId); }} aria-label={`Open invoice ${q.invoiceId} (${q.clientName})`} className="inline-flex items-center rounded-lg border border-secondary bg-primary px-md py-xs text-sm font-semibold text-secondary hover:bg-primary_hover focus-visible:ring-2 focus-visible:ring-focus-ring shrink-0">
+                          Open
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </section>
+            )}
 
             {/* Next Actions & Inflows */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-xl">

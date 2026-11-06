@@ -27,6 +27,8 @@ const digest = (Array.isArray(ledger) ? ledger : []).find((i) => i.digest)?.dige
 if (digest) console.log('verify_payment:', (await call('verify_payment', { digest })).verdict)
 console.log('payer_readiness:', JSON.stringify(await call('payer_readiness', { invoiceId: open[0]?.invoice || 'inv-101' })).slice(0, 160))
 console.log('chain_facts:', (await call('chain_facts')).facts?.chain)
+const q = await call('chase_queue')
+console.log('chase_queue:', q.counts, q.items[0]?.action, q.items[0]?.why?.[0])
 const bad = await client.callTool({ name: 'client_profile', arguments: { clientId: 'nope' } })
 console.log('unknown client isError:', bad.isError)
 await client.close()

@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt, promiseDate } from './engine.mjs'
+import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt, promiseDate, chaseAction } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -319,4 +319,21 @@ test('promises: parsed from text, hold the plan until the date, escalate when br
   // paid on time: kept
   const kept = [...base, mem('2026-11-11T00:00:00Z', { type: 'invoice_paid', client: 'acme', invoice: 'inv-9', paid: '2026-11-11', delay_days: 6 })]
   assert.equal(computeProfile('acme', kept, new Date('2026-11-20T00:00:00Z')).promiseStats.kept, 1)
+})
+
+test('chaseAction: memory timing joined with the payer wallet on chain', () => {
+  const profile = { delayRange: { low: 2, high: 6, basis: 'p10-p90' }, promiseStats: { kept: 1, broken: 1 } }
+  const base = { today: '2026-11-10', inv: { dueDate: '2026-11-05' }, profile, owedUsdc: '100' }
+  const rich = { usdc: '500', covers: true }
+  const empty = { usdc: '0', covers: false }
+  assert.equal(chaseAction({ ...base, late: -2 }).action, 'scheduled')
+  assert.equal(chaseAction({ ...base, late: 4 }).action, 'wait') // within their usual delay, nothing known on chain
+  assert.equal(chaseAction({ ...base, late: 4, wallet: rich }).action, 'nudge') // late and can pay now
+  assert.equal(chaseAction({ ...base, late: 9 }).action, 'chase_now') // later than ever before
+  assert.equal(chaseAction({ ...base, late: 9, wallet: empty }).action, 'nudge') // empty, quiet wallet
+  assert.equal(chaseAction({ ...base, late: 4, wallet: empty, activity: { usdcSent7d: '250.000000', usdcTransfersOut7d: 3 } }).action, 'chase_now') // paying others
+  const promised = { ...base, inv: { dueDate: '2026-11-05', promise: { date: '2026-11-12' } } }
+  assert.equal(chaseAction({ ...promised, late: 9, wallet: rich, activity: { usdcSent7d: '9' } }).action, 'wait') // a live promise wins
+  assert.match(chaseAction({ ...promised, late: 9 }).why[0], /kept 1 of 2/)
+  assert.equal(chaseAction({ ...base, inv: { dueDate: '2026-11-05', promise: { date: '2026-11-08' } }, late: 5 }).action, 'chase_now') // broken promise
 })

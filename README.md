@@ -235,11 +235,12 @@ Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): an
 claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp
 ```
 
-Tools: `list_open_invoices`, `client_profile`, `plan_reminder`, `search_client_memory` (Walrus recall), `payment_terms` (x402 + Payment Kit + `sui:pay`), `learning_summary`, plus four that join Walrus Memory with Sui through Tatum:
+Tools: `list_open_invoices`, `client_profile`, `plan_reminder`, `search_client_memory` (Walrus recall), `payment_terms` (x402 + Payment Kit + `sui:pay`), `learning_summary`, plus five that join Walrus Memory with Sui through Tatum:
 
 - `memory_chain_audit`: the two-way audit above.
 - `verify_payment`: a client says "we paid, here is the tx". Checks the digest on chain (success, USDC to the payee, checkpoint, sender and its SuiNS name) and whether memory already records it, and for which invoice.
 - `payer_readiness`: the wallet this client pays from, learned from memory, read live with `StateService.ListBalances`. Does it hold enough USDC to pay what is owed right now?
+- `chase_queue`: who to chase today. Every open invoice is ranked chase now / nudge / wait / scheduled, joining what memory learned (delay spread, promises kept, underpayment) with the payer wallet live on chain (USDC on hand vs owed via `ListBalances`; last activity and USDC sent to *other* people this week via `ListTransactions`). A late client whose wallet is paying others gets chased; one with a live promise waits; one with an empty, quiet wallet gets a nudge, not a demand. Also on the Today tab and `GET /api/chaser/chase-queue`.
 - `chain_facts`: chain id, epoch, gas price, USDC metadata and the Payment Kit Move function the app checked before trusting them, plus gRPC calls per service.
  `node scripts/mcp-smoke.mjs <base-url>` exercises all of them with the official MCP client.
 

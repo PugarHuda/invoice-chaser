@@ -11,7 +11,7 @@ import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { ciiXml, seller } from '../facturx.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts, promiseDate } from '../engine.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts, promiseDate, chaseAction } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -32,7 +32,7 @@ const buckets = new Map()
 // sync has its own bucket: pages trigger it on load, and that must never use up a payer's payment budget
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000], sync: [120, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/chase-queue'
 router.use((req, res, next) => {
   const isSync = req.path === '/sync-payments'
   const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
@@ -92,7 +92,7 @@ const takenAmounts = (invoices) => new Set(invoices.flatMap((i) => [i.payAmount,
 const owed = (inv) => (inv.status === 'partial' && inv.remaining ? inv.remaining : inv.payAmount)
 
 // API root: the api-catalog anchor (RFC 9727) resolves to an index of the machine-readable descriptions
-router.get('/', (_req, res) => res.json({ name: 'Invoice Chaser API', openapi: '/openapi.json', apiCatalog: '/.well-known/api-catalog', llms: '/llms.txt', mcp: '/api/chaser/mcp', mcpServerCard: '/api/chaser/mcp/server-card', proof: '/api/chaser/proof' }))
+router.get('/', (_req, res) => res.json({ name: 'Invoice Chaser API', openapi: '/openapi.json', apiCatalog: '/.well-known/api-catalog', llms: '/llms.txt', mcp: '/api/chaser/mcp', mcpServerCard: '/api/chaser/mcp/server-card', proof: '/api/chaser/proof', audit: '/api/chaser/audit', chaseQueue: '/api/chaser/chase-queue' }))
 
 router.get('/summary', (req, res) => {
   const now = new Date()
@@ -1012,6 +1012,7 @@ router.post('/mcp', mcpHandler((req) => ({
   memories: (clientId) => memsFor(clientId),
   audit: () => auditMemories(),
   verifyPayment: (d) => verifyPayment(d),
+  chaseQueue: () => chaseQueue(),
   payerReadiness: (inv) => payerLiquidityOf(inv),
   chain: async () => ({ facts: await sui.chainFacts(), provider: sui.providerStatus(), callsThisInstance: sui.grpcCalls }),
   aggregator: process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space',
@@ -1136,6 +1137,48 @@ router.post('/pay-gasless', async (req, res) => {
     res.status(code).json({ ...body, digest, gasless: true })
   } catch (e) {
     res.status(400).json({ error: `Gasless execution failed: ${e.message}` })
+  }
+})
+
+// Chase queue: who to chase today, from what Walrus Memory learned about each client (delay spread, promises
+// kept, underpayment) joined with what their payer wallet shows on Sui right now through Tatum (ListBalances:
+// can they pay? ListTransactions: are they active, paying others?). Each line says why, from both sides.
+let queueCache = null
+let queueP = null
+function chaseQueue() {
+  if (queueCache && Date.now() - queueCache.at < 120_000) return Promise.resolve(queueCache.value)
+  return (queueP ||= buildQueue().finally(() => (queueP = null)))
+}
+const RANK = { chase_now: 0, nudge: 1, wait: 2, scheduled: 3 }
+async function buildQueue() {
+  const today = isoDay(new Date())
+  const { clients, invoices } = state()
+  const items = []
+  for (const raw of invoices) {
+    const inv = withStatus(raw)
+    if (inv.status !== 'sent' && inv.status !== 'overdue' && !(inv.status === 'partial' && !inv.seed)) continue
+    if (Number(inv.baseAmount) < 1) continue
+    const profile = profileOf(inv.clientId)
+    const p = plan(inv, profile)
+    const next = p.steps.find((x) => x.date >= today) || p.steps.at(-1)
+    const late = Math.round((Date.parse(today) - Date.parse(inv.dueDate)) / DAY)
+    const ps = profile.promiseStats || { kept: 0, broken: 0 }
+    const wallet = await payerLiquidityOf(inv).catch(() => null)
+    const activity = wallet ? await sui.walletActivity(wallet.owner, PAYEE()).catch(() => null) : null
+    const { action, why } = chaseAction({ today, inv, late, profile, wallet, activity, owedUsdc: owed(inv), predicted: p.predictedPayDate })
+    if (profile.underpayRate) why.push(`underpaid ${Math.round(profile.underpayRate)}% of past invoices: ask for the exact amount`)
+    items.push({ invoiceId: inv.id, clientId: inv.clientId, clientName: clientName(clients, inv.clientId), owedUsdc: owed(inv), dueDate: inv.dueDate, daysLate: late, action, tone: next?.tone || null, nextReminder: next?.date || null, why, memory: { ewmaDelayDays: profile.ewmaDelayDays, delayRange: profile.delayRange, promises: ps, underpayRate: profile.underpayRate || 0 }, chain: wallet ? { wallet: wallet.owner, name: wallet.name, usdc: wallet.usdc, covers: wallet.covers, source: wallet.source, lastActivity: activity?.lastActivity?.at || null, usdcSent7d: activity?.usdcSent7d ?? null, paymentsToUs7d: activity?.paymentsToUs7d ?? null } : null })
+  }
+  items.sort((a, b) => RANK[a.action] - RANK[b.action] || Number(b.owedUsdc) - Number(a.owedUsdc))
+  const value = { generatedAt: new Date().toISOString(), counts: Object.fromEntries(Object.keys(RANK).map((k) => [k, items.filter((i) => i.action === k).length])), items, services: ['Walrus Memory (learned profile, promises)', 'StateService.ListBalances (Tatum)', 'LedgerService.ListTransactions (Tatum)'] }
+  queueCache = { at: Date.now(), value }
+  return value
+}
+router.get('/chase-queue', async (_req, res) => {
+  try {
+    res.json(await chaseQueue())
+  } catch (e) {
+    res.status(502).json({ error: e.message })
   }
 })
 
