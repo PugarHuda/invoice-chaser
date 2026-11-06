@@ -482,7 +482,7 @@ router.post('/invoices/:id/receipt', async (req, res) => {
   }
 })
 
-router.get('/invoices/:id', (req, res) => {
+router.get('/invoices/:id', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
@@ -503,6 +503,18 @@ router.get('/invoices/:id', (req, res) => {
       receipt: receiptOf(inv),
       receiptsEnabled: receiptsEnabled(),
     },
+    // the payer wallet this client said it pays from, else the last one it paid from (Walrus Memory),
+    // read through Tatum: can they pay this invoice right now?
+    payerLiquidity: await (async () => {
+      const client = clients.find((c) => c.id === inv.clientId)
+      const last = memsFor(inv.clientId).find((m) => m.tag?.payer)?.tag
+      const owner = client?.expectedPayer?.address || last?.payer
+      if (!owner || inv.status === 'paid') return null
+      const w = await sui.walletBalances(owner).catch(() => null)
+      if (!w) return null
+      const need = sui.toMicro(owed(withStatus(inv)))
+      return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, service: 'StateService.ListBalances' }
+    })(),
     adaptivePlan: plan(inv, profile),
     incentive: incentive(withStatus(inv), profile),
     defaultPlan: plan(inv, profile, { ignoreMemory: true }),

@@ -328,6 +328,21 @@ export async function chainFacts() {
   return value
 }
 
+// What a wallet holds right now (StateService.ListBalances: every coin in one call), cached 1 h per
+// address: the payer's ability to pay, read before chasing them. Public chain data, no money moves.
+const walletCache = new Map()
+export async function walletBalances(owner) {
+  const hit = walletCache.get(owner)
+  if (hit && Date.now() - hit.at < 3_600_000) return hit.value
+  await throttle()
+  const { response } = await once(() => sui().stateService.listBalances({ owner, pageSize: 50 }))
+  const all = json(response).balances || []
+  const of = (pred) => all.filter((b) => pred(b.coinType)).reduce((s, b) => s + BigInt(b.balance), 0n)
+  const value = { owner, usdcMicro: of(isSettlementCoin).toString(), usdc: fromMicro(of(isSettlementCoin)), sui: Number(of((t) => { try { return normalizeStructTag(t) === normalizeStructTag('0x2::sui::SUI') } catch { return false } })) / 1e9, coins: all.length, at: new Date().toISOString() }
+  walletCache.set(owner, { at: Date.now(), value })
+  return value
+}
+
 export const paymentUri = ({ payee, micro, nonce, label, message }) =>
   createPaymentTransactionUri({ receiverAddress: payee, amount: BigInt(micro), coinType: USDC_COIN_TYPE, nonce, registryName: REGISTRY_NAME, label, message })
 

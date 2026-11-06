@@ -125,6 +125,7 @@ interface InvoiceDetail {
     promise?: { date: string; at: string; source: string } | null;
     terms?: { kind: 'early_discount' | 'late_fee'; pct: number; until: string | null; original: string; expired?: boolean } | null;
   };
+  payerLiquidity?: { owner: string; usdc: string; sui: number; covers: boolean; source: string; name: string | null; at: string } | null;
   incentive?: { kind: 'early_discount' | 'late_fee' | null; pct?: number; until?: string; newBase?: number; reason: string };
   adaptivePlan: {
     cites?: Array<{ sentence: string; blobId: string | null; status: string; at: string }>;
@@ -1523,6 +1524,11 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                           {(!ignoreMemory ? invoiceDetail.adaptivePlan.memoriesUsed : invoiceDetail.defaultPlan.memoriesUsed).map((m, idx) => (
                             <li key={idx}>{m}</li>
                           ))}
+                          {!ignoreMemory && invoiceDetail.payerLiquidity && (
+                            <li title={`${invoiceDetail.payerLiquidity.owner}, read ${invoiceDetail.payerLiquidity.at} via Tatum StateService.ListBalances`}>
+                              Payer wallet right now ({invoiceDetail.payerLiquidity.source}{invoiceDetail.payerLiquidity.name ? `, ${invoiceDetail.payerLiquidity.name}` : ''}): {Number(invoiceDetail.payerLiquidity.usdc).toLocaleString('en-US', { maximumFractionDigits: 2 })} USDC, {invoiceDetail.payerLiquidity.sui.toFixed(3)} SUI. {invoiceDetail.payerLiquidity.covers ? 'Enough USDC to pay this invoice now: a nudge can work.' : 'Not enough USDC there to pay this invoice yet: expect a delay, or another wallet.'}
+                            </li>
+                          )}
                         </ul>
                         {!ignoreMemory && (invoiceDetail.adaptivePlan.cites?.length ?? 0) > 0 && (
                           <div className="pt-xs space-y-xxs">
