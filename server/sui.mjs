@@ -117,7 +117,8 @@ export async function usdcReceived(digest, payee) {
   await throttle()
   const { response } = await once(() => sui().ledgerService.getTransaction({
     digest,
-    readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint', 'timestamp', 'events'] },
+    // the sender rides along: payer recognition needs no second GetTransaction (one Tatum call per settlement)
+    readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint', 'timestamp', 'events', 'transaction.sender'] },
   }))
   const tx = json(response.transaction)
   const ok = tx?.effects?.status?.success === true
@@ -127,7 +128,7 @@ export async function usdcReceived(digest, payee) {
   const ts = tx?.timestamp ? new Date(Number(tx.timestamp.seconds) * 1000).toISOString() : null
   // did this transaction go through the Sui Payment Kit (any payment_kit event)?
   const paymentKit = (tx?.events?.events || []).some((e) => /::payment_kit::/.test(e.eventType || ''))
-  return { ok, received, paymentKit, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts }
+  return { ok, received, paymentKit, digest: tx?.digest ?? null, checkpoint: tx?.checkpoint ?? null, timestamp: ts, sender: tx?.transaction?.sender || null }
 }
 
 export const normAddr = (a) => (a || '').toLowerCase().replace(/^0x0*/, '0x')

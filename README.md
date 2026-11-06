@@ -45,12 +45,12 @@ Walrus Memory is the **system of record**, not a log on the side.
 
 ## How it uses Tatum
 
-All chain reads go through **Tatum's Sui Mainnet gRPC gateway** (`sui-mainnet-grpc.gateway.tatum.io:443`, `x-api-key`), using `SuiGrpcClient` from `@mysten/sui` over native gRPC ([`server/sui.mjs`](server/sui.mjs)):
+All invoice verification and chain reads go through **Tatum's Sui Mainnet gRPC gateway** (`sui-mainnet-grpc.gateway.tatum.io:443`, `x-api-key`), using `SuiGrpcClient` from `@mysten/sui` over native gRPC ([`server/sui.mjs`](server/sui.mjs)):
 
 | Purpose | Call |
 |---|---|
 | Verify an invoice payment | `LedgerService.GetTransaction` → `effects.status`, `balance_changes`, `timestamp` |
-| Detect incoming USDC | `StateService.GetBalance` (balance watcher, `/api/chaser/cron-check`) |
+| Skip the costly transaction scan when nothing arrived | `StateService.GetBalance` guards the `ListTransactions` reconcile scan in `/sync-payments` (scan only when the payee USDC balance changed) |
 | Live proof | `LedgerService.GetCheckpoint` (latest) |
 | Build the payer's USDC transfer (coin selection, gas price, budget) | `Transaction.build` through the same gateway (`/api/chaser/pay-tx`) |
 | Execute an agent-signed payment | `TransactionExecutionService` (`scripts/ap-agent.mjs`) |
@@ -72,11 +72,12 @@ Every invoice is also a payable HTTP resource for accounts-payable agents:
 ```
 GET /api/chaser/x402/<invoice>            -> 402 { x402Version: 1, accepts: [{ scheme: "exact", network: "sui:mainnet",
                                                asset: <USDC>, maxAmountRequired, payTo, resource, ... }] }
-GET /api/chaser/x402/<invoice>            -> 200 receipt   (with  X-PAYMENT: <Sui tx digest>)
-    X-PAYMENT: <digest>
+GET /api/chaser/x402/<invoice>            -> 200 receipt   (with  X-PAYMENT: base64 PaymentPayload)
+    X-PAYMENT: base64 { x402Version: 1, scheme: "exact", network: "sui:mainnet", payload: { signature, transaction } }
+    X-PAYMENT: <Sui tx digest>              (project extension: the agent already executed the payment)
 ```
 
-The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` and a `sui:pay` URI, so an agent pays through the Payment Kit registry and the chain rejects a second payment. The server verifies the digest through Tatum exactly like a human payment (success, USDC to `payTo`, unique amount, newer than the invoice, never used before), answers with an `X-PAYMENT-RESPONSE` header, and the payment is remembered with `channel: "x402"`. [`scripts/ap-agent.mjs`](scripts/ap-agent.mjs) is a reference agent: reads the 402 terms, enforces its own budget, builds and signs the USDC transfer, executes it through Tatum, retries with `X-PAYMENT`.
+The 402 terms also carry `extra.paymentKit = { registry, registryId, nonce }` and a `sui:pay` URI, so an agent pays through the Payment Kit registry and the chain rejects a second payment. The server verifies the digest through Tatum exactly like a human payment (success, USDC to `payTo`, unique amount, newer than the invoice, never used before), answers with an `X-PAYMENT-RESPONSE` header, and the payment is remembered with `channel: "x402"`. A standard v1 `X-PAYMENT` (base64 PaymentPayload with the signed transaction) goes through the same facilitator path as v2 below: signer = sender, simulation, Payment Kit receipt for this nonce, then broadcast through Tatum. A bare digest is accepted as a project extension. Failures follow the x402 error vocabulary (`errorReason` such as `invalid_payload`, `invalid_payment_requirements`, `invalid_transaction_state`, `unexpected_settle_error`, `settlement_pending`, with detail in `errorMessage`) in a `success: false` payment response. [`scripts/ap-agent.mjs`](scripts/ap-agent.mjs) is a reference agent: reads the 402 terms, enforces its own budget, builds and signs the USDC transfer, executes it through Tatum, retries with `X-PAYMENT`.
 
 ```bash
 AP_AGENT_KEY=suiprivkey1... AP_MAX_USDC=1 node --env-file=.env.local scripts/ap-agent.mjs https://invoice-chaser-sigma.vercel.app/api/chaser/x402/<invoice>
@@ -281,7 +282,8 @@ Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 - Memory storage is renewed by the Walrus Memory relayer, not by this app. The durability audit reports the earliest expiry so it is visible long before it matters.
 - The default relayer sees memory plaintext (it does encryption and embeddings). Memories hold client aliases and amounts only, no emails. `MemWalManual` would keep plaintext client-side.
 
-- Payments through the Payment Kit registry cannot be duplicated (enforced on-chain). For a *plain* transfer settled by pasted digest, replay protection is per process (in-flight lock + every digest already in memory); two serverless instances verifying the same digest at the same moment could both accept it, limited by the unique-amount rule to one invoice's exact amount.
+- The shared `default-payment-registry` keeps payment records for 30 epochs (about 30 days on mainnet; `@mysten/payment-kit` default) unless the registry's epoch expiration is raised. Within that window a second Payment Kit payment for the same invoice and amount aborts on-chain. After it, the app's own spent-digest memory still refuses a reused transaction, but the chain no longer does. A private registry with a longer `setConfigEpochExpirationDuration` (set `PAYMENT_REGISTRY`) removes the limit.
+- Payments through the Payment Kit registry cannot be duplicated (enforced on-chain, within the record lifetime above). For a *plain* transfer settled by pasted digest, replay protection is per process (in-flight lock + every digest already in memory); two serverless instances verifying the same digest at the same moment could both accept it, limited by the unique-amount rule to one invoice's exact amount.
 - If the process dies before a Walrus write finishes, that memory is lost; a payment made through the registry is recovered by the next `/sync-payments`.
 
 ## License

@@ -32,7 +32,7 @@ const buckets = new Map()
 // sync has its own bucket: pages trigger it on load, and that must never use up a payer's payment budget
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000], sync: [120, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/cron-check'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof'
 router.use((req, res, next) => {
   const isSync = req.path === '/sync-payments'
   const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
@@ -596,7 +596,7 @@ async function settleDigest(invoiceId, requested, channel) {
     const ms = memsFor(inv.clientId)
     const last = ms.find((m) => m.tag?.type === 'reminder_sent' && m.tag.invoice === inv.id)
     // Payer recognition: who paid, their SuiNS name, and whether this client has paid from it before.
-    const payer = await sui.txSender(digest).catch(() => null)
+    const payer = tx.sender || (await sui.txSender(digest).catch(() => null))
     const payerName = payer ? await sui.suinsName(payer) : null
     const knownPayers = new Set(ms.map((m) => m.tag?.payer).filter(Boolean))
     const newPayer = Boolean(payer && knownPayers.size && !knownPayers.has(payer))
@@ -636,6 +636,7 @@ router.post('/verify-payment', async (req, res) => {
 let lastSync = 0
 let syncing = null
 let lastReconcile = 0
+let reconcileBalance = null // payee USDC balance at the last clean reconcile scan (per instance)
 async function syncPayments() {
   const open = state().invoices.filter((i) => i.status === 'sent' || (i.status === 'partial' && !i.seed))
   const settled = []
@@ -655,24 +656,33 @@ async function syncPayments() {
   const unpaid = state().invoices.filter((i) => i.status === 'sent' && !i.seed && !settled.some((x) => x.invoice === i.id && x.code === 200))
   let reconciled = 0
   let scanned = 0
-  // the ListTransactions scan is the costly part: at most once per 5 minutes per instance
+  // the ListTransactions scan is the costly part: at most once per 5 minutes per instance, and only when
+  // one cheap StateService.GetBalance shows the payee's USDC changed since the last clean scan
+  let skippedByBalance = false
   if (unpaid.length && Date.now() - lastReconcile > 5 * 60_000) {
     lastReconcile = Date.now()
-    const { usedDigests } = state()
-    const since = unpaid.map((i) => i.createdAt).filter(Boolean).sort()[0] || null
-    const incoming = await sui.recentIncoming(PAYEE(), { since })
-    scanned = incoming.scanned
-    for (const inv of unpaid) {
-      const want = new Set(quotedAmounts(inv).map((a) => sui.toMicro(a)))
-      const hit = incoming.find((t) => want.has(t.received) && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
-      if (!hit) continue
-      const [code, body] = await settleDigest(inv.id, hit.digest, 'reconcile')
-      if (code === 200) reconciled++
-      settled.push({ invoice: inv.id, digest: hit.digest, code, message: body.message || body.error, via: 'reconcile' })
+    const bal = await sui.usdcBalance(PAYEE()).catch(() => null)
+    if (bal !== null && bal === reconcileBalance) skippedByBalance = true
+    else {
+      const { usedDigests } = state()
+      const since = unpaid.map((i) => i.createdAt).filter(Boolean).sort()[0] || null
+      const incoming = await sui.recentIncoming(PAYEE(), { since })
+      scanned = incoming.scanned
+      let clean = true
+      for (const inv of unpaid) {
+        const want = new Set(quotedAmounts(inv).map((a) => sui.toMicro(a)))
+        const hit = incoming.find((t) => want.has(t.received) && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
+        if (!hit) continue
+        const [code, body] = await settleDigest(inv.id, hit.digest, 'reconcile')
+        if (code === 200) reconciled++
+        if (code >= 500 || body.retry) clean = false // try again next round even if the balance doesn't move
+        settled.push({ invoice: inv.id, digest: hit.digest, code, message: body.message || body.error, via: 'reconcile' })
+      }
+      if (clean) reconcileBalance = bal
     }
   }
   lastSync = Date.now()
-  return { checked: open.length, settled, reconciled, scannedTransactions: scanned, at: new Date(lastSync).toISOString() }
+  return { checked: open.length, settled, reconciled, scannedTransactions: scanned, skippedByBalance, at: new Date(lastSync).toISOString() }
 }
 router.post('/sync-payments', async (_req, res) => {
   // ponytail: one sync per instance per 60 s whoever asks; each open invoice costs one gRPC lookup
@@ -947,9 +957,6 @@ router.post('/pay-tx', async (req, res) => {
   }
 })
 
-// Balance watcher: a balance increase that equals an open invoice's unique amount flags that invoice.
-let lastBalance = null
-const likely = new Map()
 // Sponsored payment: the payer signed the bytes the server built (and already co-signed as gas owner).
 // Both signatures cover exactly those bytes, so this endpoint can only ever submit that payment.
 router.post('/pay-sponsored', async (req, res) => {
@@ -1014,20 +1021,6 @@ router.post('/pay-gasless', async (req, res) => {
     res.status(code).json({ ...body, digest, gasless: true })
   } catch (e) {
     res.status(400).json({ error: `Gasless execution failed: ${e.message}` })
-  }
-})
-
-router.get('/cron-check', async (_req, res) => {
-  try {
-    const bal = await sui.usdcBalance(PAYEE())
-    const delta = lastBalance === null ? 0n : bal - lastBalance
-    lastBalance = bal
-    const open = state().invoices.filter((i) => i.status === 'sent')
-    const match = delta > 0n ? open.find((i) => sui.toMicro(i.payAmount) === delta) : null
-    if (match) likely.set(match.id, new Date().toISOString())
-    res.json({ timestamp: new Date().toISOString(), service: 'StateService.GetBalance', payeeAddress: PAYEE(), balance: sui.fromMicro(bal), delta: sui.fromMicro(delta < 0n ? 0n : delta), likelyPaid: match?.id || null, checkedInvoicesCount: open.length, status: 'ok' })
-  } catch (e) {
-    res.status(502).json({ status: 'error', error: e.message })
   }
 })
 
