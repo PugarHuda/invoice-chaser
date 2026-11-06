@@ -37,6 +37,10 @@ app.use(discovery)
 app.use('/api/tatum', tatumRoutes)
 app.use('/api/chaser', chaserRoutes)
 
+// Browsers and crawlers ask for /favicon.ico regardless of the page's inline icon: serve the same SVG.
+const FAVICON = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#4f37fd\"/><text x=\"16\" y=\"21\" font-size=\"14\" font-family=\"Arial\" font-weight=\"700\" fill=\"white\" text-anchor=\"middle\">IC</text></svg>"
+app.get('/favicon.ico', (_req, res) => res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(FAVICON))
+
 // Production UI (vite build -> public/). In dev, server/index.mjs serves it through Vite instead.
 const dist = path.join(process.cwd(), 'public')
 if (fs.existsSync(path.join(dist, 'index.html'))) {

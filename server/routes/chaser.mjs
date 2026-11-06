@@ -29,14 +29,16 @@ const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
 const buckets = new Map()
-const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000] }
+// sync has its own bucket: pages trigger it on load, and that must never use up a payer's payment budget
+const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000], sync: [120, 10 * 60_000] }
 // GETs that call an external service on every request
 const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/cron-check'
 router.use((req, res, next) => {
-  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp') || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
+  const isSync = req.path === '/sync-payments'
+  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
   const expensive = isExpensiveRead(req)
   if (req.method === 'GET' && !isPayment && !expensive) return next()
-  const kind = isPayment ? 'payment' : expensive ? 'expensive' : 'write'
+  const kind = isSync ? 'sync' : isPayment ? 'payment' : expensive ? 'expensive' : 'write'
   const [max, windowMs] = LIMITS[kind]
   // On Vercel the edge sets x-vercel-forwarded-for (clients can't spoof it). Elsewhere use req.ip,
   // which honours only the configured proxy hop ('trust proxy' = 1), never the client-supplied leftmost XFF.
@@ -884,6 +886,7 @@ router.post('/mcp', mcpHandler((req) => ({
   profileOf,
   plan,
   owed,
+  statusOf: (i) => invoiceStatus(i),
   search: (clientId, q) => mem.search(clientId, q, 5),
   terms: (inv) => paymentTerms(req, inv),
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),

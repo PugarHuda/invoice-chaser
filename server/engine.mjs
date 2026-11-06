@@ -312,8 +312,10 @@ export function plan(inv, profile, { ignoreMemory = false } = {}) {
     const d = applyConstraints(addDays(due, 2), c)
     steps.push({ dayOffset: Math.round((d - due) / DAY), date: isoDay(d), tone: c.forceTone || 'friendly', reason: 'Usually pays on time: no pre-emptive chasing, one check-in only if late' })
   } else {
-    const first = applyConstraints(addDays(due, Math.max(1, delay - 1)), c)
-    steps.push({ dayOffset: Math.round((first - due) / DAY), date: isoDay(first), tone, reason: `One ${tone} reminder just before they usually pay` })
+    const want = addDays(due, Math.max(1, delay - 1))
+    const first = applyConstraints(want, c)
+    // say so when a rule moved the reminder: it is then no longer "just before they usually pay"
+    steps.push({ dayOffset: Math.round((first - due) / DAY), date: isoDay(first), tone, reason: isoDay(first) === isoDay(want) ? `One ${tone} reminder just before they usually pay` : `One ${tone} reminder; your rules moved it from ${isoDay(want)} to ${isoDay(first)}` })
     const second = applyConstraints(addDays(due, delay + 3), c)
     steps.push({ dayOffset: Math.round((second - due) / DAY), date: isoDay(second), tone: tone === 'firm' ? 'firm' : 'formal', reason: 'Escalate only if it is later than their usual pattern' })
   }

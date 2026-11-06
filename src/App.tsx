@@ -4,7 +4,13 @@ import { Transaction } from '@mysten/sui/transactions';
 import QRCode from 'qrcode';
 
 // ?pay=<invoice> is the public, client-facing pay page (no owner tabs).
-const PAY_ONLY = new URLSearchParams(window.location.search).get('pay');
+// '?pay=' with no id is still the pay page (it then shows "invoice not found"), never the owner dashboard
+const PAY_ONLY = new URLSearchParams(window.location.search).has('pay') ? new URLSearchParams(window.location.search).get('pay') || '-' : null;
+const usd = (v: string | number | undefined | null) => (v == null || v === '' ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// the plan predicts with the recent-weighted (EWMA) delay, so the profile shows that one too
+const delayLabel = (p: { ewmaDelayDays?: number; medianDelayDays: number }) => { const d = Math.round(p.ewmaDelayDays ?? p.medianDelayDays); return d > 0 ? `+${d} days` : d < 0 ? `${-d} days early` : 'on time'; };
+// ?inv=<id> deep-links an invoice on the owner tabs
+const START_INV = new URLSearchParams(window.location.search).get('inv');
 // Default selection: the largest invoice still fully open, then any unpaid one, then the first.
 const pickDefaultInvoice = (list: any[]) =>
   [...list].filter((i) => i.status === 'sent' || i.status === 'overdue').sort((a, b) => Number(b.baseAmount) - Number(a.baseAmount))[0] || list.find((i) => i.status !== 'paid') || list[0];
@@ -175,8 +181,14 @@ export default function App() {
   const START_TAB = new URLSearchParams(window.location.search).get('tab') as TabKey | null;
   const [activeTab, setActiveTab] = useState<TabKey>(PAY_ONLY ? 'pay' : START_TAB && ['today', 'clients', 'invoices', 'pay', 'proof'].includes(START_TAB) ? START_TAB : 'today');
   const [selectedClientId, setSelectedClientId] = useState<string>('');
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>(PAY_ONLY || '');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>(PAY_ONLY || START_INV || '');
   const [ignoreMemory, setIgnoreMemory] = useState<boolean>(false);
+  // every tab change is a URL (Back/Forward/reload work); the same tab twice adds no history entry
+  const goTab = (tab: TabKey, inv?: string) => {
+    setActiveTab(tab);
+    const url = `?tab=${tab}${inv ? `&inv=${encodeURIComponent(inv)}` : ''}`;
+    if (url !== window.location.search) history.pushState(null, '', url);
+  };
   const [clientNote, setClientNote] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastTone, setToastTone] = useState<'ok' | 'error'>('ok');
@@ -259,6 +271,10 @@ export default function App() {
     window.addEventListener('popstate', on);
     return () => window.removeEventListener('popstate', on);
   }, []);
+  // a title per page: tabs in history and bookmarks are distinguishable, a pay page names its invoice
+  useEffect(() => {
+    document.title = PAY_ONLY ? `Pay invoice ${PAY_ONLY} · Invoice Chaser` : `${activeTab === 'proof' ? '/proof' : activeTab[0].toUpperCase() + activeTab.slice(1)} · Invoice Chaser`;
+  }, [activeTab]);
   useEffect(() => {
     const on = () => setPageVisible(document.visibilityState !== 'hidden');
     document.addEventListener('visibilitychange', on);
@@ -701,11 +717,11 @@ export default function App() {
           </a>
 
           {/* Navigation Bar adhering to tabs.md */}
-          {!PAY_ONLY && <nav aria-label="Main" className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
+          {!PAY_ONLY && <nav aria-label="Main" className="order-last md:order-none w-full md:w-auto flex gap-lg overflow-x-auto [mask-image:linear-gradient(to_right,black_80%,transparent)] md:[mask-image:none] border-b border-transparent md:h-16 items-end pb-xxs whitespace-nowrap">
             {(['today', 'clients', 'invoices', 'pay', 'proof'] as TabKey[]).map((tab) => (
               <button
                 key={tab}
-                onClick={() => { setActiveTab(tab); history.pushState(null, '', `?tab=${tab}`); }}
+                onClick={() => goTab(tab)}
                 aria-current={activeTab === tab ? 'page' : undefined}
                 className={`border-b-2 px-md py-sm text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                   activeTab === tab
@@ -754,17 +770,17 @@ export default function App() {
             <section className="rounded-xl border border-utility-brand-200 bg-utility-brand-50 p-lg flex flex-wrap items-center gap-sm">
               <span className="text-sm font-semibold text-utility-brand-700 mr-sm">Judging? 2-minute tour:</span>
               {[
-                { label: `1 · ${tourClient?.name ?? 'Client'}'s learned profile`, go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
-                { label: '2 · Memory on vs off', go: () => { tourInvoice && setSelectedInvoiceId(tourInvoice.id); setIgnoreMemory(true); setActiveTab('invoices'); } },
-                { label: '3 · Teach a rule', go: () => { tourClient && setSelectedClientId(tourClient.id); setActiveTab('clients'); } },
-                { label: `4 · Pay on ${netLabel}`, go: () => { if (tourInvoice) setSelectedInvoiceId(tourInvoice.id); setActiveTab('pay'); } },
-                { label: '5 · Live proof', go: () => setActiveTab('proof') },
+                { label: `1 · ${tourClient?.name ?? 'Client'}'s learned profile`, go: () => { tourClient && setSelectedClientId(tourClient.id); goTab('clients'); } },
+                { label: '2 · Memory on vs off', go: () => { tourInvoice && setSelectedInvoiceId(tourInvoice.id); setIgnoreMemory(true); goTab('invoices', tourInvoice?.id); } },
+                { label: '3 · Teach a rule', go: () => { tourClient && setSelectedClientId(tourClient.id); goTab('clients'); setTimeout(() => { const el = document.getElementById('teach-rule'); el?.scrollIntoView({ behavior: 'smooth', block: 'center' }); el?.focus({ preventScroll: true }); }, 300); } },
+                { label: `4 · Pay on ${netLabel}`, go: () => { if (tourInvoice) setSelectedInvoiceId(tourInvoice.id); goTab('pay', tourInvoice?.id); } },
+                { label: '5 · Live proof', go: () => goTab('proof') },
               ].map((st) => (
                 <button key={st.label} onClick={st.go} className="rounded-full border border-utility-brand-200 bg-primary px-md py-xs text-xs font-semibold text-utility-brand-700 hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
                   {st.label}
                 </button>
               ))}
-              {tourClient?.id === 'c1' && <span className="text-xs text-tertiary w-full">Aug–Oct client history is seeded demo data (labelled in each timeline). Everything you do here becomes a real Walrus Mainnet memory.</span>}
+              {<span className="text-xs text-tertiary w-full">Aug–Oct client history is seeded demo data (labelled in each timeline). Everything you do here becomes a real Walrus Mainnet memory.</span>}
             </section>
 
             {/* Overview Stats (Card Recipe: rounded-xl, border-secondary, bg-primary, p-xl, shadow-xs) */}
@@ -775,11 +791,11 @@ export default function App() {
                   <DollarSign className="w-4 h-4 text-fg-brand-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {summary ? summary.expectedInflow7Days : '—'} <span className="text-xs font-normal text-secondary">USDC</span>
+                  {summary ? usd(summary.expectedInflow7Days) : '—'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
                 <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
                   <TrendingUp className="w-3.5 h-3.5" />
-                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {summary?.expectedInflow30Days != null ? Number(summary.expectedInflow30Days).toLocaleString('en-US', { maximumFractionDigits: 2 }) : '—'} USDC in 30 days</span>
+                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {usd(summary?.expectedInflow30Days)} USDC in 30 days</span>
                 </div>
               </section>
 
@@ -789,7 +805,7 @@ export default function App() {
                   <AlertCircle className="w-4 h-4 text-fg-error-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {summary ? summary.overdueAmount : '0.00'} <span className="text-xs font-normal text-secondary">USDC</span>
+                  {summary ? usd(summary.overdueAmount) : '0.00'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
                 <div className="text-xs text-secondary mt-xs flex items-center gap-xxs font-medium">
                   <span>Tracked across {clientsList.length} clients</span>
@@ -850,7 +866,7 @@ export default function App() {
                           <button
                             onClick={() => {
                               setSelectedInvoiceId(action.invoiceId);
-                              setActiveTab('invoices');
+                              goTab('invoices', action.invoiceId);
                             }}
                             className="inline-flex items-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring shrink-0"
                           >
@@ -891,7 +907,7 @@ export default function App() {
                               <div>{item.clientName}</div>
                               <div className="text-xs text-tertiary">#{item.invoiceId} • Due {item.dueDate}</div>
                             </td>
-                            <td className="px-md py-sm text-sm text-tertiary">
+                            <td className="px-md py-sm text-sm text-tertiary whitespace-nowrap">
                               {item.predictedPayDate} {item.delayDays > 0 ? `(+${item.delayDays}d)` : '(On time)'}
                             </td>
                             <td className="px-md py-sm text-sm text-right">
@@ -960,7 +976,7 @@ export default function App() {
                       </span>
                     </div>
                     <div className="text-xs text-secondary mt-xxs">
-                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Delay: {c.profile.medianDelayDays > 0 ? `+${c.profile.medianDelayDays} days` : c.profile.medianDelayDays < 0 ? `${-c.profile.medianDelayDays} days early` : 'on time'} • Reminders: ~{Math.round(c.profile.remindersNeeded)} • {c.profile.totalPaidInvoices} paid</>}
+                      {c.profile.totalPaidInvoices === 0 ? 'No payment history yet' : <>Typical delay: {delayLabel(c.profile)} • Reminders: ~{Math.round(c.profile.remindersNeeded)} • {c.profile.totalPaidInvoices} paid</>}
                     </div>
                   </button>
                 ))}
@@ -991,9 +1007,9 @@ export default function App() {
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-md">
                       <div className="p-md bg-secondary rounded-lg border border-secondary">
-                        <span className="text-xs text-tertiary">Median Delay</span>
+                        <span className="text-xs text-tertiary" title={`Recent-weighted (EWMA), what the plan predicts with; median ${clientDetail.profile.medianDelayDays} days`}>Typical Delay</span>
                         <div className="text-heading-xs font-bold text-primary mt-xxs">
-                          {clientDetail.profile.medianDelayDays} days
+                          {delayLabel(clientDetail.profile)}
                         </div>
                       </div>
 
@@ -1116,6 +1132,7 @@ export default function App() {
                         <span>Paste an email or call notes from this client</span>
                       </label>
                       <textarea
+                        id="teach-rule"
                         value={noteText}
                         onChange={(e) => setNoteText(e.target.value)}
                         rows={3}
@@ -1210,7 +1227,7 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <h1 className="text-heading-lg font-semibold text-primary flex flex-wrap items-center gap-x-md gap-y-xs">Invoice Detail <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></h1>
+                <div className="flex flex-wrap items-center gap-x-md gap-y-xs"><h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></div>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>
@@ -1319,7 +1336,7 @@ export default function App() {
                       )}
 
                       <button
-                        onClick={() => setActiveTab('pay')}
+                        onClick={() => goTab('pay', selectedInvoiceId)}
                         className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
@@ -1553,7 +1570,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
               {/* Amount Display */}
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
-                <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${(invoiceDetail.invoice as any).originalAmount} USDC)` : 'Payable Amount (Unique Micro-Suffix)'}</span>
+                <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${(invoiceDetail.invoice as any).originalAmount} USDC)` : invoiceDetail?.invoice.status === 'paid' ? 'Amount paid' : 'Payable Amount (Unique Micro-Suffix)'}</span>
                 <div className="mt-xs text-heading-md sm:text-heading-xl font-semibold text-primary break-all tabular-nums">
                   {invoiceDetail?.invoice.payAmount ?? '—'}{' '}
                   <span className="text-sm font-normal text-secondary">USDC</span>
@@ -1603,6 +1620,8 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 </div>
               </div>
 
+              {/* paid: a receipt, not payment instructions */}
+              {invoiceDetail?.invoice.status !== 'paid' && (<>
               {/* One-click: connect a Sui wallet and pay */}
               <div className="space-y-sm border-t border-secondary pt-lg">
                 <button
@@ -1666,6 +1685,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   </button>
                 </div>
               </div>
+              </>)}
             </section>
             )}
           </div>

@@ -98,8 +98,11 @@ export async function invoicePdf(v) {
     // stamp in the empty top-right corner, clear of every text line
     page.drawRectangle({ x: 400, y: 745, width: 140, height: 50, borderColor: rgb(0.1, 0.55, 0.3), borderWidth: 3 })
     page.drawText('PAID', { x: 432, y: 758, size: 28, font: bold, color: rgb(0.1, 0.55, 0.3) })
-    line('Paid on-chain:', { f: bold, size: 10, gap: 14 })
-    line(`${v.explorer}/tx/${v.digest}`, { size: 9, color: brand })
+    // seeded history has no transaction: say so instead of printing a /tx/null link
+    if (v.digest) {
+      line('Paid on-chain:', { f: bold, size: 10, gap: 14 })
+      line(`${v.explorer}/tx/${v.digest}`, { size: 9, color: brand })
+    } else line('Paid (demo history, no on-chain transaction).', { size: 9, color: grey })
   } else {
     const png = await QR.toBuffer(v.paymentUri, { margin: 1, width: 360 })
     const img = await doc.embedPng(png)

@@ -17,7 +17,9 @@ function build(deps) {
   s.registerTool('list_open_invoices', { title: 'Open invoices', description: 'Unpaid or partially paid USDC invoices with what is owed, the predicted pay date and the next planned reminder.', inputSchema: {}, annotations: RO }, async () =>
     text(deps.state().invoices.filter((i) => i.status !== 'paid' && !(i.seed && i.status === 'partial')).map((i) => {
       const p = deps.plan(i, deps.profileOf(i.clientId))
-      return { invoice: i.id, client: nameOf(i.clientId), clientId: i.clientId, owedUsdc: deps.owed(i), due: i.dueDate, status: i.status, predictedPayDate: p.predictedPayDate, nextReminder: p.steps[0] }
+      const today = new Date().toISOString().slice(0, 10)
+      // same view as the dashboard: derived status (overdue) and the next reminder still ahead
+      return { invoice: i.id, client: nameOf(i.clientId), clientId: i.clientId, owedUsdc: deps.owed(i), due: i.dueDate, status: deps.statusOf(i), predictedPayDate: p.predictedPayDate, nextReminder: p.steps.find((s) => s.date >= today) || null, terms: i.terms || null }
     })))
 
   s.registerTool('client_profile', { title: 'Learned client profile', description: 'What Invoice Chaser learned about a client from Walrus Memory: typical delay, reminders needed, best tone, underpay rate, rules, expected payer, prediction history.', inputSchema: { clientId: z.string().describe('client id, e.g. c1') }, annotations: RO }, async ({ clientId }) => {
