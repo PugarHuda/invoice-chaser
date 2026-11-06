@@ -1156,8 +1156,12 @@ async function payerLiquidityOf(inv) {
 // amount and a checkpoint. All claims are re-checked against Sui through Tatum in batches; a memory that
 // the chain doesn't back (wrong amount, failed or missing tx, other checkpoint) is listed, never hidden.
 let auditCache = null
-async function auditMemories() {
-  if (auditCache && Date.now() - auditCache.at < 600_000) return auditCache.value
+let auditP = null // one audit in flight: concurrent callers share it instead of each hitting Tatum
+function auditMemories() {
+  if (auditCache && Date.now() - auditCache.at < 600_000) return Promise.resolve(auditCache.value)
+  return (auditP ||= runAudit().finally(() => (auditP = null)))
+}
+async function runAudit() {
   const pays = [...mem.store.values()].flat().filter((m) => (m.tag?.type === 'invoice_paid' || m.tag?.type === 'invoice_partial'))
   const claims = pays.filter((m) => m.tag.digest && m.tag.received)
   const facts = await sui.transactionsFacts([...new Set(claims.map((m) => m.tag.digest))], PAYEE())

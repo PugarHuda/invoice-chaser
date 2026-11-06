@@ -1430,13 +1430,13 @@ export default function App() {
                           aria-checked={ignoreMemory}
                           aria-label="Ignore memory"
                           onClick={() => setIgnoreMemory(!ignoreMemory)}
-                          className={`flex h-5 w-9 items-center rounded-full p-xxs transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
+                          className={`flex h-6 w-11 shrink-0 items-center rounded-full p-xxs transition-colors focus-visible:ring-2 focus-visible:ring-focus-ring ${
                             ignoreMemory ? 'bg-brand-solid' : 'bg-tertiary'
                           }`}
                         >
                           <span
-                            className={`size-4 rounded-full bg-primary shadow-xs transform transition-transform ${
-                              ignoreMemory ? 'translate-x-4' : 'translate-x-0'
+                            className={`size-5 rounded-full bg-primary shadow-xs transform transition-transform ${
+                              ignoreMemory ? 'translate-x-5' : 'translate-x-0'
                             }`}
                             aria-hidden="true"
                           />
@@ -1697,7 +1697,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                       showToast('Address copied to clipboard');
                     }}
                     aria-label="Copy payee address" title="Copy payee address"
-                    className="p-xs text-secondary hover:text-primary rounded focus-visible:ring-2 focus-visible:ring-focus-ring"
+                    className="inline-flex size-7 shrink-0 items-center justify-center text-secondary hover:text-primary rounded focus-visible:ring-2 focus-visible:ring-focus-ring"
                   >
                     <Copy className="w-3.5 h-3.5" />
                   </button>
