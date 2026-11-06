@@ -40,7 +40,7 @@ app.use('/api/tatum', tatumRoutes)
 app.use('/api/chaser', chaserRoutes)
 
 // Browsers and crawlers ask for /favicon.ico regardless of the page's inline icon: serve the same SVG.
-const FAVICON = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"8\" fill=\"#4f37fd\"/><text x=\"16\" y=\"21\" font-size=\"14\" font-family=\"Arial\" font-weight=\"700\" fill=\"white\" text-anchor=\"middle\">IC</text></svg>"
+const FAVICON = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="9" fill="#2b0e94"/><path d="M8 4h16a2 2 0 0 1 2 2v20l-4-2.5-4 2.5-4-2.5-4 2.5-4-2.5V6a2 2 0 0 1 2-2z" fill="#fefefe"/><rect x="10" y="9" width="9" height="2.2" rx="1.1" fill="#2b0e94"/><rect x="10" y="13.5" width="5" height="2.2" rx="1.1" fill="#2b0e94" opacity=".55"/><path d="M15.5 16.5l3 2.6-3 2.6M20 16.5l3 2.6-3 2.6" fill="none" stroke="#ad2b9d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 app.get('/favicon.ico', (_req, res) => res.type('image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(FAVICON))
 
 // Production UI (vite build -> public/). In dev, server/index.mjs serves it through Vite instead.

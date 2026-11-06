@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { LogoMark } from './Logo';
 import { getWallets } from '@mysten/wallet-standard';
 import { Transaction } from '@mysten/sui/transactions';
 import QRCode from 'qrcode';
@@ -737,9 +738,7 @@ export default function App() {
       <header className="border-b border-secondary bg-primary sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-xl min-h-16 py-xs md:py-0 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-xs">
           <a href={PAY_ONLY ? `?pay=${encodeURIComponent(PAY_ONLY)}` : '/'} className="flex items-center gap-md rounded-lg focus-visible:ring-2 focus-visible:ring-focus-ring">
-            <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs" aria-hidden="true">
-              IC
-            </div>
+            <LogoMark size={32} />
             <div>
               <span className="font-semibold text-sm text-primary tracking-tight">Invoice Chaser</span>
               <span className="ml-xs inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">

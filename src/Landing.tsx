@@ -3,6 +3,7 @@
 // Look: deep indigo night, a neon city skyline (an original SVG generated below), heavy uppercase type.
 import { useEffect, useState } from 'react';
 import { ArrowRight, Bot, Database, ExternalLink, ShieldCheck } from 'lucide-react';
+import { LogoMark, Wordmark } from './Logo';
 
 type Proof = {
   tatumSuiGrpc: { gatewayStatus: string; latestCheckpoint: string | null; latencyMs: number | null; network: string };
@@ -65,7 +66,7 @@ function Skyline() {
     );
   };
   return (
-    <svg className="pointer-events-none absolute inset-x-0 bottom-0 h-[40%] w-full sm:h-[50%] lg:h-[54%]" viewBox="0 0 1440 520" preserveAspectRatio="xMidYMax slice" aria-hidden="true" focusable="false">
+    <svg className="pointer-events-none absolute inset-x-0 bottom-0 h-[50%] w-full lg:h-[54%]" viewBox="0 0 1440 520" preserveAspectRatio="xMidYMax slice" aria-hidden="true" focusable="false">
       <defs>
         <linearGradient id="sk-far" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#3a1a8e" /><stop offset="1" stopColor="#1d0b5c" /></linearGradient>
         <linearGradient id="sk-mid" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#5023b8" /><stop offset="1" stopColor="#230d6e" /></linearGradient>
@@ -85,6 +86,7 @@ function Skyline() {
       <g fill="url(#sk-far)" opacity="0.9">
         {FAR.map((b, i) => <rect key={i} x={b.x} y={520 - b.h - 120} width={b.w} height={b.h + 120} />)}
       </g>
+      {tower(640, 84, 150, 'url(#sk-towerA)', 'sk-c')}
       {tower(330, 120, 60, 'url(#sk-towerA)', 'sk-a')}
       {tower(1010, 96, 20, 'url(#sk-towerB)', 'sk-b')}
       <g>
@@ -148,13 +150,12 @@ export default function Landing() {
 
   return (
     <div className="ic-landing min-h-screen bg-[#040114] text-[#fefefe]">
-      <div className="px-sm pt-sm sm:px-xl sm:pt-xl lg:px-4xl">
-        {/* hero frame */}
-        <section className="relative mx-auto flex min-h-[760px] max-w-7xl flex-col overflow-hidden rounded-[28px] border border-[#530e5c] bg-[linear-gradient(180deg,#0f0b4d_0%,#1c0f6e_45%,#3a1590_100%)] sm:min-h-[720px] lg:min-h-[82vh]">
-          <header className="relative z-10 flex items-center justify-between gap-md px-xl py-xl lg:px-6xl">
+      {/* full-bleed hero: one screen tall, edge to edge */}
+        <section className="relative flex min-h-[100svh] w-full flex-col overflow-hidden bg-[linear-gradient(180deg,#0f0b4d_0%,#1c0f6e_45%,#3a1590_100%)] [min-height:max(100svh,720px)]">
+          <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between gap-md px-xl py-xl lg:px-6xl">
             <a href="/" className={`flex items-center gap-sm ${link}`} aria-label="Invoice Chaser home">
-              <span className="size-6 rounded-full bg-[#d8d5ee]" aria-hidden="true" />
-              <span className="ic-display text-sm font-extrabold tracking-wide">Invoice Chaser</span>
+              <LogoMark size={30} tile="#5820ad" />
+              <Wordmark />
             </a>
             <nav aria-label="Main" className="flex items-center gap-lg lg:gap-4xl">
               <a href="#how" className={`hidden text-xs text-[#c9c6e4] hover:text-white md:inline ${link}`}>How it works</a>
@@ -187,7 +188,6 @@ export default function Landing() {
 
           <Skyline />
         </section>
-      </div>
 
       <main>
         {/* live numbers */}
