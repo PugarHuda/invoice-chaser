@@ -763,7 +763,7 @@ export default function App() {
                 {tab === 'today' && 'Today'}
                 {tab === 'clients' && 'Clients'}
                 {tab === 'invoices' && 'Invoices'}
-                {tab === 'pay' && 'Public Pay Page'}
+                {tab === 'pay' && 'Client Pay Page'}
                 {tab === 'proof' && '/proof'}
               </button>
             ))}
@@ -1423,7 +1423,7 @@ export default function App() {
                         className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
-                        Open Public Pay Page
+                        Preview client pay page
                       </button>
                       <button
                         onClick={() => { navigator.clipboard?.writeText(`${window.location.origin}/?pay=${invoiceDetail.invoice.id}`); showToast('Pay link copied: send it to your client'); }}
@@ -1658,6 +1658,41 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
 
         {activeTab === 'pay' && (
           <div className="max-w-2xl mx-auto space-y-xl">
+            {/* owner only: this tab previews what one client sees at their own link */}
+            {!PAY_ONLY && (() => {
+              const clientLink = `${window.location.origin}/?pay=${encodeURIComponent(selectedInvoiceId)}`;
+              return (
+                <div className="rounded-xl border border-utility-warning-200 bg-utility-warning-50 p-lg space-y-sm text-utility-warning-700">
+                  <p className="text-sm font-semibold">Preview: this is what your client sees</p>
+                  <p className="text-xs">You don't pay here. Each invoice has its own link, and a client who opens it sees only that invoice (its amount, due date and payment options), not your dashboard.</p>
+                  <div className="flex flex-wrap items-center gap-sm">
+                    <label htmlFor="pay-preview-select" className="text-xs font-medium">Invoice:</label>
+                    <select
+                      id="pay-preview-select"
+                      value={selectedInvoiceId}
+                      onChange={(e) => { setSelectedInvoiceId(e.target.value); goTab('pay', e.target.value); }}
+                      className="max-w-full truncate rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
+                    >
+                      {[...allInvoices].sort((a: any, b: any) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv: any) => (
+                        <option key={inv.id} value={inv.id}>#{inv.id} · {inv.clientName} · {inv.payAmount} USDC · {inv.status}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-sm">
+                    <code className="min-w-0 flex-1 truncate rounded-md border border-utility-warning-200 bg-primary px-md py-xs text-xs text-secondary">{clientLink}</code>
+                    <button
+                      onClick={() => { navigator.clipboard?.writeText(clientLink); showToast('Client link copied: send it to your client'); }}
+                      className="inline-flex items-center gap-xs rounded-lg border border-primary bg-primary px-md py-xs text-sm font-semibold text-secondary hover:bg-primary_hover focus-visible:ring-2 focus-visible:ring-focus-ring"
+                    >
+                      <Copy className="w-3.5 h-3.5" /> Copy link for client
+                    </button>
+                    <a href={clientLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xs rounded-lg border border-primary bg-primary px-md py-xs text-sm font-semibold text-secondary hover:bg-primary_hover focus-visible:ring-2 focus-visible:ring-focus-ring">
+                      <ExternalLink className="w-3.5 h-3.5" /> Open as client
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
             <div className="text-center space-y-xs">
               <span className="inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
                 Public Payment Gateway
