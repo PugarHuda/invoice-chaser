@@ -48,6 +48,7 @@ interface SummaryData {
     delayDays: number;
     status: string;
   }>;
+  hiddenSmall?: number;
   nextActions: Array<{
     invoiceId: string;
     clientId: string;
@@ -833,7 +834,7 @@ export default function App() {
                 <div className="flex items-center justify-between mb-lg">
                   <div>
                     <h2 className="text-heading-xs font-semibold text-primary">Recommended Next Actions</h2>
-                    <p className="text-xs text-secondary">Derived from past client settlement history and preferences</p>
+                    <p className="text-xs text-secondary">Derived from past client settlement history and preferences{summary?.hiddenSmall ? ` · ${summary.hiddenSmall} test invoice(s) under 1 USDC hidden (see Invoices)` : ''}</p>
                   </div>
                   <span className="inline-flex items-center gap-xs rounded-full border border-utility-brand-200 bg-utility-brand-50 px-md py-xxs text-xs font-medium text-utility-brand-700">
                     Walrus Memory

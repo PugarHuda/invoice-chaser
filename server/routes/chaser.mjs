@@ -88,9 +88,13 @@ router.get('/summary', (_req, res) => {
   let overdue = 0
   const upcomingInflows = []
   const nextActions = []
+  let hiddenSmall = 0
   for (const raw of invoices) {
     const inv = withStatus(raw)
     if (inv.status !== 'sent' && inv.status !== 'overdue' && !(inv.status === 'partial' && !inv.seed)) continue
+    // invoices priced under 1 USDC are mainnet test payments (memories can't be deleted): kept everywhere
+    // else, left out of Today's totals and lists
+    if (Number(inv.baseAmount) < 1) { hiddenSmall++; continue }
     const profile = profileOf(inv.clientId)
     const p = plan(inv, profile)
     const predicted = p.predictedPayDate || inv.dueDate
@@ -114,6 +118,7 @@ router.get('/summary', (_req, res) => {
     activeClientNamespaces: clients.length,
     upcomingInflows,
     nextActions,
+    hiddenSmall,
     memory: { loadedAt: mem.loadState.loadedAt, pending: mem.pendingCount(), error: mem.loadState.error, namespacePrefix: mem.NS_PREFIX },
     network: sui.NETWORK,
     learning: learningSummary(clients.map((c) => profileOf(c.id))),
