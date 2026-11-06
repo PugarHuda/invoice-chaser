@@ -173,6 +173,10 @@ export function computeProfile(clientId, memories) {
   })
   delays.sort((a, b) => a - b)
   const median = delays.length ? delays[Math.floor(delays.length / 2)] : 0
+  // how wide this client's pay date really varies: empirical 10th/90th percentile of learned delays
+  // (nearest rank). Under 3 paid invoices there's no spread to learn yet: ±2 days around the median.
+  const q = (p) => delays[Math.min(delays.length - 1, Math.max(0, Math.ceil(p * delays.length) - 1))]
+  const spread = delays.length >= 3 ? { low: q(0.1), high: q(0.9) } : { low: median - 2, high: median + 2 }
 
   const toneStats = Object.fromEntries(TONES.map((t) => [t, { hits: 0, total: 0, rate: 0 }]))
   for (const r of reminders) {
@@ -199,6 +203,7 @@ export function computeProfile(clientId, memories) {
   return {
     clientId,
     medianDelayDays: median,
+    delayRange: { ...spread, basis: delays.length >= 3 ? `p10-p90 of ${delays.length} paid invoices` : 'too little history: median ±2 days' },
     ewmaDelayDays: Math.round(ewma * 10) / 10,
     remindersNeeded,
     bestTone,

@@ -86,6 +86,9 @@ router.get('/summary', (_req, res) => {
   const { clients, invoices } = state()
   let expected = 0
   let overdue = 0
+  // 7-day range from each client's learned delay spread: low = surely in by the horizon, high = possibly
+  let expectedLow = 0
+  let expectedHigh = 0
   const upcomingInflows = []
   const nextActions = []
   let hiddenSmall = 0
@@ -102,9 +105,15 @@ router.get('/summary', (_req, res) => {
     // what is still owed, terms included; a discount they are predicted to miss is forecast at full price
     const left = Number(t?.kind === 'early_discount' && !t.expired && inv.status !== 'partial' && predicted > t.until ? t.original : owed(inv))
     if (predicted <= horizon30) expected30 += left
+    // a pay date can't be before today; an overdue invoice's window starts now
+    const at = (d) => { const x = isoDay(new Date(`${inv.dueDate}T00:00:00Z`).getTime() + d * DAY); return x < today ? today : x }
+    const earliest = at(profile.delayRange.low)
+    const latest = at(profile.delayRange.high)
+    if (latest <= horizon) expectedLow += left
+    if (earliest <= horizon) expectedHigh += left
     if (predicted <= horizon) {
       expected += left
-      upcomingInflows.push({ invoiceId: inv.id, clientName: clientName(clients, inv.clientId), payAmount: owed(inv), dueDate: inv.dueDate, predictedPayDate: predicted, delayDays: p.predictedDelayDays ?? 0, status: inv.status })
+      upcomingInflows.push({ invoiceId: inv.id, clientName: clientName(clients, inv.clientId), payAmount: owed(inv), dueDate: inv.dueDate, predictedPayDate: predicted, earliest, latest, delayDays: p.predictedDelayDays ?? 0, status: inv.status })
     }
     if (inv.dueDate < today) overdue += left
     const step = p.steps.find((s) => s.date >= today) || p.steps.at(-1)
@@ -113,6 +122,7 @@ router.get('/summary', (_req, res) => {
   nextActions.sort((a, b) => a.actionDate.localeCompare(b.actionDate))
   res.json({
     expectedInflow7Days: expected.toFixed(2),
+    expectedInflow7DaysRange: { low: expectedLow.toFixed(2), high: expectedHigh.toFixed(2) },
     expectedInflow30Days: expected30.toFixed(2),
     overdueAmount: overdue.toFixed(2),
     activeClientNamespaces: clients.length,
