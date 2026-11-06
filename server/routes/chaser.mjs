@@ -1066,6 +1066,8 @@ router.get('/proof', async (_req, res) => {
       namespaces: Object.fromEntries(counts.map((n) => [n.namespace, n.count])),
       pendingMemoriesCount: mem.pendingCount(),
       loadedAt: mem.loadState.loadedAt,
+      // how this instance last synced from Walrus: full recall, or incremental (listMemories watermark, only changed namespaces)
+      lastSync: mem.loadState.lastSync || null,
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       sampleMemories: [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
     },

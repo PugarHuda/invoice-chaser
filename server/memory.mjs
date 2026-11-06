@@ -136,13 +136,46 @@ export function loadAll() {
 const STALE_MS = 120_000
 export async function ready() {
   if (!loadState.loaded) return loadAll()
-  if (!loading && Date.now() - Date.parse(loadState.loadedAt) > STALE_MS) waitUntil(loadAll())
+  if (!loading && Date.now() - Date.parse(loadState.loadedAt) > STALE_MS) waitUntil(refresh())
 }
-async function doLoad() {
+
+// Incremental sync (MemWal listMemories watermark): a stale instance asks the relayer what changed
+// since its cursor and re-recalls only those namespaces; nothing changed = no recall at all.
+let listCursor = null
+async function walkChanges(cursor) {
+  const changed = new Set()
+  let page
+  let guard = 0
+  do {
+    page = await memwal().listMemories({ cursor: cursor || undefined, limit: 500 })
+    if (page.must_resync) return { resync: true }
+    for (const m of page.memories) changed.add(m.namespace_id)
+    for (const d of page.deleted || []) changed.add(d.namespace_id)
+    cursor = page.next_cursor || cursor
+  } while (page.has_more && ++guard < 20)
+  return { changed, cursor }
+}
+export function refresh() {
+  loading ??= (async () => {
+    if (!listCursor) return doLoad()
+    const w = await walkChanges(listCursor).catch(() => ({ resync: true }))
+    if (w.resync) return doLoad()
+    listCursor = w.cursor
+    if (!w.changed.size) {
+      Object.assign(loadState, { loadedAt: new Date().toISOString(), lastSync: { mode: 'incremental', changedNamespaces: 0 } })
+      return loadState
+    }
+    return doLoad([...w.changed])
+  })().finally(() => (loading = null))
+  return loading
+}
+async function doLoad(only = null) {
   loadState.loading = true
   loadState.error = null
   try {
-    const nss = await namespaces()
+    // full load: take the watermark first, so anything written during the recall shows up next poll
+    if (!only) listCursor = (await walkChanges(null).catch(() => ({}))).cursor || null
+    const nss = (await namespaces()).filter((ns) => !only || only.includes(ns.name))
     const fresh = new Map()
     const truncated = []
     let n = 0
@@ -179,9 +212,12 @@ async function doLoad() {
       const missing = mems.filter((m) => !(m.blobId && seen.has(m.blobId)) && !seen.has(contentKey(m)))
       if (missing.length) fresh.set(ns, [...missing, ...(fresh.get(ns) || [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp)))
     }
-    store.clear()
+    const dropped = recalled.reduce((s, r) => s + (r?.dropped_count || 0), 0) // blobs the relayer couldn't decrypt/download
+    if (!only) store.clear()
     for (const [k, v] of fresh) store.set(k, v)
-    Object.assign(loadState, { truncated, loaded: true, loadedAt: new Date().toISOString(), recalled: n, namespaces: nss.length })
+    // a partial reload keeps the other namespaces' truncation state; a full one replaces it
+    const keepTrunc = only ? (loadState.truncated || []).filter((ns) => !only.includes(ns)) : []
+    Object.assign(loadState, { truncated: [...keepTrunc, ...truncated], loaded: true, loadedAt: new Date().toISOString(), recalled: only ? loadState.recalled : n, namespaces: only ? loadState.namespaces : nss.length, lastSync: { mode: only ? 'incremental' : 'full', changedNamespaces: nss.length, dropped } })
   } catch (e) {
     loadState.error = String(e?.message || e)
   } finally {
@@ -212,10 +248,14 @@ export async function ingestNotes(ns, text) {
 export async function restoreAll() {
   const sum = { restored: 0, skipped: 0, failed: 0 }
   for (const ns of await namespaces()) {
-    const r = await memwal().restore(ns.name, Math.min(100, Math.max(1, ns.memory_count)))
-    sum.restored += r.restored
-    sum.skipped += r.skipped
-    sum.failed += r.failed
+    // the relayer says when a page was known-incomplete (truncated): keep restoring, bounded
+    for (let pass = 0; pass < 5; pass++) {
+      const r = await memwal().restore(ns.name, Math.min(100, Math.max(1, ns.memory_count)))
+      sum.restored += r.restored
+      sum.skipped += r.skipped
+      sum.failed += r.failed
+      if (!r.truncated) break
+    }
   }
   return sum
 }
