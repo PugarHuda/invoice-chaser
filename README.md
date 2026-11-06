@@ -296,6 +296,15 @@ npm run dev                  # http://localhost:3000
 
 Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
 
+## Private mode (after judging)
+
+Reads are open by default, so judges can browse the dashboard; every write already needs `APP_PASSCODE`. Setting `PRIVATE_READS=1` (with `APP_PASSCODE`) and redeploying puts the owner's data behind the passcode too: clients, invoices, memories, plans, CSV/calendar exports and the MCP server. Payers and agents keep what they need:
+- the pay page with its PDF, e-invoice XML and live stream;
+- x402 and MPP;
+- `/summary` and `/proof`, which serve totals only (the landing page's live stats), with no client names or memory samples.
+
+The dashboard asks for the passcode once and sends it with every request. Exports download through `fetch`, so the passcode goes along.
+
 ## Known limits
 
 - **Tatum credits.** On 2026-11-04 the free plan's credit limit was reached (HTTP 402 "plan limit exceeded" on both gRPC and REST). The organizers' rule for this case is to fall back to public RPC and say so, so the app does exactly that. On a 402, every Sui read, simulation, broadcast and the live checkpoint stream switch to the public Sui fullnode (`fullnode.mainnet.sui.io`, gRPC-web) for 10 minutes, then Tatum is tried again. `/proof` shows `gatewayStatus: "quota_fallback"` plus the provider and retry time. The pay page names the provider, and every payment memory records `verified_via`. The cause was ours: live streams left open in background tabs, and 10-second sync polling. Streams now pause while the tab is hidden and stop after 15 minutes (with a Resume button), sync runs at most once a minute, and the reconciliation scan at most every 5 minutes.

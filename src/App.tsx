@@ -6,6 +6,15 @@ import QRCode from 'qrcode';
 // ?pay=<invoice> is the public, client-facing pay page (no owner tabs).
 // '?pay=' with no id is still the pay page (it then shows "invoice not found"), never the owner dashboard
 const PAY_ONLY = new URLSearchParams(window.location.search).has('pay') ? new URLSearchParams(window.location.search).get('pay') || '-' : null;
+// owner downloads (CSV, calendar) through fetch, so a stored passcode goes along (PRIVATE_READS)
+const ownerDownload = async (e: { preventDefault: () => void }, path: string, name: string) => {
+  e.preventDefault();
+  const r = await fetch(path);
+  if (!r.ok) return;
+  const url = URL.createObjectURL(await r.blob());
+  Object.assign(document.createElement('a'), { href: url, download: name }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
 const usd = (v: string | number | undefined | null) => (v == null || v === '' ? '—' : Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 // the plan predicts with the recent-weighted (EWMA) delay, so the profile shows that one too
 const delayLabel = (p: { ewmaDelayDays?: number; medianDelayDays: number }) => { const d = Math.round(p.ewmaDelayDays ?? p.medianDelayDays); return d > 0 ? `+${d} days` : d < 0 ? `${-d} days early` : 'on time'; };
@@ -1263,7 +1272,7 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <div className="flex flex-wrap items-center gap-x-md gap-y-xs"><h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></div>
+                <div className="flex flex-wrap items-center gap-x-md gap-y-xs"><h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} onClick={(e) => ownerDownload(e, '/api/chaser/export.csv', 'invoice-chaser.csv')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} onClick={(e) => ownerDownload(e, '/api/chaser/reminders.ics', 'invoice-chaser-reminders.ics')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></div>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>

@@ -61,6 +61,18 @@ const isOwner = (req) => {
   const got = createHash('sha256').update(req.get('x-passcode') || '').digest()
   return timingSafeEqual(got, createHash('sha256').update(pass).digest())
 }
+// PRIVATE_READS=1 (with APP_PASSCODE set) also puts the owner's data behind the passcode: clients,
+// invoices, memories, plans, exports and MCP. Payers and agents keep what they need: the pay page and its
+// PDF/XML/live stream, x402, MPP, and aggregate-only /summary and /proof (the landing page's live stats).
+const privateReads = () => process.env.PRIVATE_READS === '1' && Boolean(process.env.APP_PASSCODE)
+const PUBLIC_READS = [/^\/$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
+const ownerView = (req) => !privateReads() || isOwner(req)
+router.use((req, res, next) => {
+  if (!privateReads() || isOwner(req)) return next()
+  if ((req.method === 'GET' || req.method === 'HEAD') && !PUBLIC_READS.some((r) => r.test(req.path))) return res.status(401).json({ error: 'Owner passcode required' })
+  if (req.path === '/mcp') return res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Owner passcode required (x-passcode header)' }, id: null })
+  next()
+})
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
@@ -82,7 +94,7 @@ const owed = (inv) => (inv.status === 'partial' && inv.remaining ? inv.remaining
 // API root: the api-catalog anchor (RFC 9727) resolves to an index of the machine-readable descriptions
 router.get('/', (_req, res) => res.json({ name: 'Invoice Chaser API', openapi: '/openapi.json', apiCatalog: '/.well-known/api-catalog', llms: '/llms.txt', mcp: '/api/chaser/mcp', mcpServerCard: '/api/chaser/mcp/server-card', proof: '/api/chaser/proof' }))
 
-router.get('/summary', (_req, res) => {
+router.get('/summary', (req, res) => {
   const now = new Date()
   const horizon = isoDay(now.getTime() + 7 * DAY)
   const horizon30 = isoDay(now.getTime() + 30 * DAY)
@@ -131,8 +143,9 @@ router.get('/summary', (_req, res) => {
     expectedInflow30Days: expected30.toFixed(2),
     overdueAmount: overdue.toFixed(2),
     activeClientNamespaces: clients.length,
-    upcomingInflows,
-    nextActions,
+    // private mode, not the owner: totals only (the landing page's stats), no client names or amounts
+    upcomingInflows: ownerView(req) ? upcomingInflows : [],
+    nextActions: ownerView(req) ? nextActions : [],
     hiddenSmall,
     memory: { loadedAt: mem.loadState.loadedAt, pending: mem.pendingCount(), error: mem.loadState.error, namespacePrefix: mem.NS_PREFIX },
     network: sui.NETWORK,
@@ -1180,7 +1193,8 @@ router.get('/proof', async (_req, res) => {
       // writes this instance made: batched rememberBulk calls (items per call) vs single remember calls
       writes: mem.writeStats,
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
-      sampleMemories: [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
+      // private mode: none, even for the owner -- /proof is CDN-cached for everyone (s-maxage)
+      sampleMemories: privateReads() ? [] : [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
     },
   })
 })
