@@ -114,6 +114,7 @@ interface InvoiceDetail {
     paymentUri?: string;
     slushPayUrl?: string;
     eInvoice?: boolean;
+    payee?: { name: string | null; recordedPayments: number; since: string | null };
     registry?: string;
     explorerTx?: string | null;
     receipt?: { blobId: string; url: string; at: string } | null;
@@ -1630,6 +1631,14 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     <Copy className="w-3.5 h-3.5" />
                   </button>
                 </div>
+                {invoiceDetail?.invoice.payee && (
+                  <p className="text-xs text-tertiary">
+                    {invoiceDetail.invoice.payee.name ? <>SuiNS: <span className="font-semibold text-secondary">{invoiceDetail.invoice.payee.name}</span> · </> : null}
+                    {invoiceDetail.invoice.payee.recordedPayments
+                      ? `${invoiceDetail.invoice.payee.recordedPayments} earlier on-chain payments to this exact address are on record in Walrus Memory${invoiceDetail.invoice.payee.since ? ` (since ${invoiceDetail.invoice.payee.since.slice(0, 10)})` : ''}. Check the address matches before paying.`
+                      : 'No earlier payments to this address on record. Check it with the sender before paying.'}
+                  </p>
+                )}
               </div>
 
               {/* paid: a receipt, not payment instructions */}

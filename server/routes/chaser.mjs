@@ -291,7 +291,7 @@ router.post('/invoices', (req, res) => {
 })
 
 // Public, payer-facing view: only what a client needs to pay. Never the learned profile or plan.
-router.get('/pay/:id', (req, res) => {
+router.get('/pay/:id', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
@@ -305,6 +305,12 @@ router.get('/pay/:id', (req, res) => {
       explorerTx: i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : null,
       receipt: receiptOf(i),
       eInvoice: Boolean(seller()),
+      // anti-fraud signal for the payer: the payee's SuiNS name (Tatum NameService, cached 1 h) and how many
+      // payments to this exact address are already on record in Walrus Memory, with the first one's date
+      payee: await (async () => {
+        const paid = invoices.filter((x) => x.status === 'paid' && x.payments?.some((p) => p.digest)).map((x) => x.settledAt).filter(Boolean).sort()
+        return { name: await sui.suinsName(PAYEE()), recordedPayments: paid.length, since: paid[0] || null }
+      })(),
       terms: i.terms ? { kind: i.terms.kind, pct: i.terms.pct, until: i.terms.until, original: i.terms.original, expired: Boolean(i.terms.expired) } : null,
     },
   })
