@@ -13,3 +13,11 @@ body {
   color: var(--color-text-primary);
   font-family: var(--font-family-sans);
 }
+
+/* Landing: heavy display face for headings, and the skyline's windows flicker like a city at night */
+.ic-display { font-family: 'Raleway', var(--font-family-sans); font-variant-numeric: lining-nums tabular-nums; }
+.ic-glow { text-shadow: 0 2px 24px rgba(10, 4, 50, 0.85); }
+.ic-landing ::selection { background: #ad2b9d; color: #fff; }
+.ic-windows rect { animation: ic-flicker 6s ease-in-out infinite; }
+@keyframes ic-flicker { 0%, 100% { opacity: 0.9; } 45% { opacity: 0.25; } 55% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ic-windows rect { animation: none; } }
