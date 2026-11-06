@@ -744,58 +744,76 @@ export const bazaarV2 = (inv) => ({
   },
   routeTemplate: '/api/chaser/x402/:id',
 })
+// Failures follow the x402 v2 HTTP transport: a standard errorReason (detail in errorMessage) in a
+// PAYMENT-RESPONSE with success:false, and fresh PAYMENT-REQUIRED terms on a 402.
+const X402_REASON = { invalid_transaction: 'invalid_payload', invalid_signature: 'invalid_payload', signer_is_not_sender: 'invalid_payload', simulation_failed: 'invalid_transaction_state', payment_kit_required: 'invalid_payment_requirements' }
+const x402Fail = (req, res, inv, version) => (errorReason, status = 402, errorMessage, transaction = '') => {
+  const network = `sui:${sui.NETWORK}`
+  if (status === 402) res.set('PAYMENT-REQUIRED', b64json(paymentRequiredV2(req, inv, errorMessage || errorReason)))
+  const pr = b64json({ success: false, errorReason, ...(errorMessage ? { errorMessage } : {}), transaction, network })
+  res.set(version === 1 ? 'X-PAYMENT-RESPONSE' : 'PAYMENT-RESPONSE', pr)
+  return res.status(status).json({ x402Version: version, error: errorReason, ...(errorMessage ? { errorMessage } : {}), ...(transaction ? { transaction } : {}) })
+}
+// v2: PAYMENT-SIGNATURE = base64 { x402Version: 2, accepted, payload: { signature, transaction } }
 async function x402v2(req, res, inv, header) {
-  const fail = (reason, status = 402) => {
-    res.set('PAYMENT-REQUIRED', b64json(paymentRequiredV2(req, inv, reason)))
-    return res.status(status).json({ x402Version: 2, error: reason })
-  }
+  const fail = x402Fail(req, res, inv, 2)
   let p
   try {
     p = JSON.parse(Buffer.from(header, 'base64').toString('utf8'))
   } catch {
-    return fail('invalid_payload', 400)
+    return fail('invalid_payload', 400, 'PAYMENT-SIGNATURE is not base64 JSON')
   }
+  if (p?.x402Version !== 2) return fail('invalid_x402_version', 400)
   const want = requirementsV2(inv)
   const a = p?.accepted || {}
-  if (p?.x402Version !== 2 || a.scheme !== 'exact' || a.network !== want.network || a.asset !== want.asset || a.amount !== want.amount || sui.normAddr(a.payTo) !== sui.normAddr(want.payTo)) return fail('payment_requirements_mismatch')
-  const { signature, transaction } = p.payload || {}
-  if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400)
-  // one v2 settlement per invoice at a time (per instance), held from inspection through settlement
-  if (x402Inflight.has(inv.id)) return fail('payment_in_progress', 409)
-  if (mem.loadState.truncated?.length) return fail('memory_not_fully_loaded', 503)
+  if (a.scheme !== 'exact') return fail('invalid_scheme')
+  if (a.network !== want.network) return fail('invalid_network')
+  if (a.asset !== want.asset || a.amount !== want.amount || sui.normAddr(a.payTo) !== sui.normAddr(want.payTo)) return fail('invalid_payment_requirements', 402, 'accepted does not match the current requirements of this invoice')
+  return x402Signed(req, res, inv, want, p.payload, fail, 2)
+}
+// Shared facilitator path for v2 and standard v1 signed payloads: verify, simulate, broadcast, settle.
+async function x402Signed(req, res, inv, want, payload, fail, version) {
+  const { signature, transaction } = payload || {}
+  if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400, 'payload needs signature and transaction (base64)')
+  // one settlement per invoice at a time (per instance), held from inspection through settlement
+  if (x402Inflight.has(inv.id)) return fail('invalid_transaction_state', 409, 'a payment for this invoice is already being settled')
+  if (mem.loadState.truncated?.length) return fail('unexpected_verify_error', 503, 'memory is not fully loaded; retry shortly')
   x402Inflight.add(inv.id)
   try {
-    return await x402v2Settle(req, res, inv, want, signature, transaction, fail)
+    return await x402v2Settle(req, res, inv, want, signature, transaction, fail, version)
   } finally {
     x402Inflight.delete(inv.id)
   }
 }
 const x402Inflight = new Set()
-async function x402v2Settle(req, res, inv, want, signature, transaction, fail) {
-  if (state().invoices.find((i) => i.id === inv.id)?.status === 'paid') return fail('invoice_already_paid', 409)
+async function x402v2Settle(req, res, inv, want, signature, transaction, fail, version = 2) {
+  if (state().invoices.find((i) => i.id === inv.id)?.status === 'paid') return fail('invalid_transaction_state', 409, 'invoice is already paid')
   let check
   try {
     check = await sui.inspectSignedPayment(transaction, signature, PAYEE(), inv.id)
   } catch (e) {
-    return fail(`verify_error: ${e.message}`, 502)
+    return fail('unexpected_verify_error', 500, e.message)
   }
-  if (!check.ok) return fail(check.reason + (check.detail ? `: ${check.detail}` : ''))
-  if (check.received !== BigInt(want.amount)) return fail(`amount_mismatch: simulated ${sui.fromMicro(check.received)} USDC to payTo, invoice needs ${owed(inv)}`)
+  if (!check.ok) return fail(X402_REASON[check.reason] || 'invalid_payload', 402, check.reason + (check.detail ? `: ${check.detail}` : ''))
+  if (check.received !== BigInt(want.amount)) return fail('invalid_payload', 402, `simulated ${sui.fromMicro(check.received)} USDC to payTo, invoice needs ${owed(inv)}`)
   let digest
   try {
     const out = await sui.executeSigned(transaction, signature)
     digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest
   } catch (e) {
-    return fail(`settlement_failed: ${e.message}`, 502)
+    return fail('unexpected_settle_error', 500, e.message)
   }
   let code, body
   for (let i = 0; i < 6; i++) {
-    ;[code, body] = await settleDigest(inv.id, digest, 'x402-v2')
+    ;[code, body] = await settleDigest(inv.id, digest, version === 2 ? 'x402-v2' : 'x402')
     if (!body.retry) break
     await new Promise((r) => setTimeout(r, 2000))
   }
-  res.set('PAYMENT-RESPONSE', b64json({ success: code === 200, transaction: digest, network: want.network, payer: check.sender, amount: want.amount, ...(code === 200 ? {} : { errorReason: body.error }) }))
-  res.status(code).json({ ...body, protocol: 'x402-v2' })
+  // broadcast but not visible yet: the agent should poll, not pay again
+  if (code !== 200 && body.retry) return fail('settlement_pending', 202, body.error, digest)
+  if (code !== 200) return fail('unexpected_settle_error', code >= 500 ? code : 500, body.error, digest)
+  res.set(version === 1 ? 'X-PAYMENT-RESPONSE' : 'PAYMENT-RESPONSE', b64json({ success: true, transaction: digest, network: want.network, payer: check.sender, amount: want.amount }))
+  res.status(200).json({ ...body, protocol: version === 2 ? 'x402-v2' : 'x402' })
 }
 
 router.get('/x402/:id', async (req, res) => {
@@ -811,7 +829,22 @@ router.get('/x402/:id', async (req, res) => {
     res.set('PAYMENT-REQUIRED', b64json(paymentRequiredV2(req, inv)))
     return res.status(402).json({ x402Version: 1, error: 'Payment required', accepts: [paymentTerms(req, inv)] })
   }
-  if (!sui.DIGEST_RE.test(payment)) return res.status(400).json({ error: 'X-PAYMENT must be a Sui transaction digest' })
+  if (!sui.DIGEST_RE.test(payment)) {
+    // standard v1: X-PAYMENT = base64 { x402Version: 1, scheme: 'exact', network, payload: { signature, transaction } }
+    const fail = x402Fail(req, res, inv, 1)
+    if (inv.status === 'paid') return fail('invalid_transaction_state', 409, 'invoice is already paid')
+    let p
+    try {
+      p = JSON.parse(Buffer.from(payment, 'base64').toString('utf8'))
+    } catch {
+      return fail('invalid_payload', 400, 'X-PAYMENT is neither a base64 PaymentPayload nor a Sui transaction digest')
+    }
+    if (p?.x402Version !== 1) return fail('invalid_x402_version', 400)
+    if (p.scheme !== 'exact') return fail('invalid_scheme')
+    if (p.network !== `sui:${sui.NETWORK}` && p.network !== `sui-${sui.NETWORK}`) return fail('invalid_network')
+    return x402Signed(req, res, inv, requirementsV2(inv), p.payload, fail, 1)
+  }
+  // project extension: a digest the agent already executed itself
   const [code, body] = await settleDigest(inv.id, payment, 'x402')
   if (code === 200) res.set('X-PAYMENT-RESPONSE', Buffer.from(JSON.stringify({ success: true, transaction: inv.digest || payment, network: `sui:${sui.NETWORK}` })).toString('base64'))
   res.status(code).json(body)
@@ -828,9 +861,14 @@ router.get('/mpp/:id', (req, res, next) => {
   res.set('Cache-Control', 'no-store')
   mpp(() => state().usedDigests).charge({ amount: owed(inv), description: `Invoice ${inv.id}`, meta: { invoice: inv.id } })(req, res, next)
 }, async (req, res) => {
+  // mppx wraps res.json to attach a success Payment-Receipt; MPP sends receipts only on success, so
+  // failures go out as RFC 9457 problem+json through res.send (no receipt), like mppx's own errors.
+  const problem = (status, detail) =>
+    res.status(status).type('application/problem+json').send(JSON.stringify({ type: `https://paymentauth.org/problems/${status === 409 ? 'payment-already-used' : status >= 500 ? 'verification-unavailable' : 'verification-failed'}`, title: status === 409 ? 'Payment not applicable' : 'Payment verification failed', status, detail, protocol: 'mpp' }))
   const digest = credentialDigest(req)
-  if (!digest || !sui.DIGEST_RE.test(digest)) return res.status(400).json({ error: 'MPP credential carries no Sui digest' })
+  if (!digest || !sui.DIGEST_RE.test(digest)) return problem(400, 'MPP credential carries no Sui digest')
   const [code, body] = await settleDigest(req.params.id, digest, 'mpp')
+  if (code !== 200) return problem(code, body.error)
   res.status(code).json({ ...body, protocol: 'mpp' })
 })
 
