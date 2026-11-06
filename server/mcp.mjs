@@ -6,18 +6,21 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod'
 
 const text = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }], ...(obj && typeof obj === 'object' ? { structuredContent: Array.isArray(obj) ? { items: obj } : obj } : {}) })
+// errors carry text only: structuredContent would be validated against the success schema
+const fail = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }], isError: true })
 // local derived state: closed world; only the Walrus recall search reaches out
 const RO = { readOnlyHint: true, openWorldHint: false }
 const RO_OPEN = { readOnlyHint: true, openWorldHint: true }
-// outputSchema: clients get a declared shape for structuredContent (the SDK validates every result against it)
+// outputSchema: clients get a declared shape for structuredContent (the SDK validates every result against it).
+// Declared as passthrough objects: a raw shape becomes additionalProperties:false and strict clients reject extra fields.
 const loose = (shape) => z.object(shape).passthrough()
 const step = loose({ date: z.string(), tone: z.string(), reason: z.string() })
 const OUT = {
-  list: { items: z.array(loose({ invoice: z.string(), client: z.string(), owedUsdc: z.string(), due: z.string(), status: z.string(), predictedPayDate: z.string().nullable(), nextReminder: step.nullable() })) },
-  profile: { client: loose({ id: z.string(), name: z.string() }), profile: loose({ ewmaDelayDays: z.number(), totalPaidInvoices: z.number(), bestTone: z.string(), confidence: z.number() }) },
-  plan: { type: z.string(), predictedPayDate: z.string().nullable(), steps: z.array(step), memoriesUsed: z.array(z.string()) },
-  search: { items: z.array(z.object({}).passthrough()) },
-  terms: { payTo: z.string(), amount: z.string(), asset: z.string(), network: z.string(), payPage: z.string(), protocols: z.object({}).passthrough() },
+  list: loose({ items: z.array(loose({ invoice: z.string(), client: z.string(), owedUsdc: z.string(), due: z.string(), status: z.string(), predictedPayDate: z.string().nullable(), nextReminder: step.nullable() })) }),
+  profile: loose({ client: loose({ id: z.string(), name: z.string() }), profile: loose({ ewmaDelayDays: z.number(), totalPaidInvoices: z.number(), bestTone: z.string(), confidence: z.number() }) }),
+  plan: loose({ type: z.string(), predictedPayDate: z.string().nullable(), steps: z.array(step), memoriesUsed: z.array(z.string()) }),
+  search: loose({ items: z.array(z.object({}).passthrough()) }),
+  terms: loose({ payTo: z.string(), amount: z.string(), asset: z.string(), network: z.string(), payPage: z.string(), protocols: z.object({}).passthrough() }),
 }
 
 /** deps: { state, profileOf, plan, owed, statusOf, search, terms, learning, memories, aggregator, baseUrl } */
@@ -37,25 +40,25 @@ function build(deps) {
 
   s.registerTool('client_profile', { title: 'Learned client profile', description: 'What Invoice Chaser learned about a client from Walrus Memory: typical delay, reminders needed, best tone, underpay rate, rules, expected payer, prediction history.', inputSchema: { clientId: z.string().describe('client id, e.g. c1') }, outputSchema: OUT.profile, annotations: RO }, async ({ clientId }) => {
     const c = findClient(clientId)
-    if (!c) return { ...text({ error: `unknown client ${clientId}`, clients: deps.state().clients.map((x) => ({ id: x.id, name: x.name })) }), isError: true }
+    if (!c) return fail({ error: `unknown client ${clientId}`, clients: deps.state().clients.map((x) => ({ id: x.id, name: x.name })) })
     const { evidence, ...p } = deps.profileOf(clientId)
     return text({ client: c, profile: p })
   })
 
   s.registerTool('plan_reminder', { title: 'Reminder plan', description: 'The memory-driven reminder plan for an invoice (or the default plan with ignoreMemory) and the memories it cites.', inputSchema: { invoiceId: z.string(), ignoreMemory: z.boolean().optional() }, outputSchema: OUT.plan, annotations: RO }, async ({ invoiceId, ignoreMemory }) => {
     const i = findInvoice(invoiceId)
-    if (!i) return { ...text({ error: `unknown invoice ${invoiceId}` }), isError: true }
+    if (!i) return fail({ error: `unknown invoice ${invoiceId}` })
     return text(deps.plan(i, deps.profileOf(i.clientId), { ignoreMemory: Boolean(ignoreMemory) }))
   })
 
   s.registerTool('search_client_memory', { title: 'Search client memory', description: "Semantic search (Walrus Memory recall) over one client's memories, e.g. 'when do they usually pay?'.", inputSchema: { clientId: z.string(), query: z.string().min(2).max(200), mode: z.enum(['relevance', 'recent', 'weighted']).optional().describe('relevance = closest by meaning (default), recent = newest among matches, weighted = meaning blended with recency') }, outputSchema: OUT.search, annotations: RO_OPEN }, async ({ clientId, query, mode }) => {
-    if (!findClient(clientId)) return { ...text({ error: `unknown client ${clientId}` }), isError: true }
+    if (!findClient(clientId)) return fail({ error: `unknown client ${clientId}` })
     return text(await deps.search(clientId, query, mode))
   })
 
   s.registerTool('payment_terms', { title: 'How to pay an invoice', description: 'Payment terms (Sui USDC, Payment Kit registry + nonce), the sui:pay URI, the human pay link, and the agent endpoints: x402 v1/v2, MPP and the live payment stream.', inputSchema: { invoiceId: z.string() }, outputSchema: OUT.terms, annotations: RO }, async ({ invoiceId }) => {
     const i = findInvoice(invoiceId)
-    if (!i) return { ...text({ error: `unknown invoice ${invoiceId}` }), isError: true }
+    if (!i) return fail({ error: `unknown invoice ${invoiceId}` })
     const api = `${deps.baseUrl}/api/chaser`
     return text({
       ...deps.terms(i),
@@ -98,7 +101,17 @@ function build(deps) {
   })
 
   // an agent can check the memory it reads is true before relying on it: every payment memory re-checked on Sui
-  s.registerTool('memory_chain_audit', { title: 'Audit memory against the chain', description: 'Re-check every payment memory in Walrus (digest, USDC amount, checkpoint) against Sui through Tatum BatchGetTransactions; lists any memory the chain does not back.', inputSchema: {}, outputSchema: { verified: z.number(), withTransaction: z.number(), mismatched: z.array(z.object({}).passthrough()), service: z.string() }, annotations: RO_OPEN }, async () => text(await deps.audit()))
+  s.registerTool('memory_chain_audit', { title: 'Audit memory against the chain', description: 'Two-way reconciliation of Walrus Memory and Sui through Tatum: every payment memory (digest, USDC amount, checkpoint) re-checked with BatchGetTransactions, and every USDC transfer to the payee in the last 30 days (ListTransactions) that no memory records.', inputSchema: {}, outputSchema: loose({ verified: z.number(), withTransaction: z.number(), mismatched: z.array(z.object({}).passthrough()), service: z.string() }), annotations: RO_OPEN }, async () => text(await deps.audit()))
+
+  s.registerTool('verify_payment', { title: 'Check a payment digest', description: 'A client says "we paid, here is the tx". Checks the digest on Sui through Tatum (success, USDC that reached the payee, checkpoint, sender and its SuiNS name) and whether Walrus Memory already records it, and for which invoice.', inputSchema: { digest: z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{43,44}$/).describe('Sui transaction digest (base58)') }, outputSchema: loose({ digest: z.string(), verdict: z.string(), chain: z.object({}).passthrough(), memory: z.array(z.object({}).passthrough()) }), annotations: RO_OPEN }, async ({ digest }) => text(await deps.verifyPayment(digest)))
+
+  s.registerTool('payer_readiness', { title: 'Can the payer pay now?', description: "The wallet this client pays from (learned from Walrus Memory: client rule or last payment), read live on Sui through Tatum ListBalances: USDC and SUI on hand and whether it covers what is owed. Chase a payer who can pay; wait for one who can't.", inputSchema: { invoiceId: z.string() }, annotations: RO_OPEN }, async ({ invoiceId }) => {
+    const inv = findInvoice(invoiceId)
+    if (!inv) return fail({ error: `unknown invoice ${invoiceId}` })
+    return text((await deps.payerReadiness(inv)) || { invoice: invoiceId, note: 'no known payer wallet for this client yet, or the invoice is paid' })
+  })
+
+  s.registerTool('chain_facts', { title: 'Sui facts via Tatum', description: 'What the app checked on Sui through Tatum gRPC before trusting it: chain id, epoch, gas price, the USDC coin metadata, the Payment Kit Move function and package versions, plus how many gRPC calls this instance made per service.', inputSchema: {}, annotations: RO_OPEN }, async () => text(await deps.chain()))
 
   s.registerTool('learning_summary', { title: 'Is it learning?', description: "Mean prediction error on each client's first invoice vs their latest, across the whole book.", inputSchema: {}, annotations: RO }, async () => text(deps.learning() || { note: 'needs a client with 2+ paid invoices' }))
   return s

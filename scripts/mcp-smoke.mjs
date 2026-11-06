@@ -20,6 +20,13 @@ console.log('search:', hits.slice(0, 2).map((h) => `${h.distance} ${h.sentence.s
 const terms = await call('payment_terms', { invoiceId: 'inv-101' })
 console.log('terms:', terms.network, terms.amount, terms.extra?.paymentKit?.nonce, terms.payPage)
 console.log('learning:', await call('learning_summary'))
+const audit = await call('memory_chain_audit')
+console.log('audit:', `${audit.verified}/${audit.withTransaction} memories match chain`, 'chain->memory', `${audit.chainToMemory?.recordedInMemory}/${audit.chainToMemory?.incomingTransfers}`)
+const ledger = await (await fetch(`${base}/api/chaser/invoices`)).json().catch(() => [])
+const digest = (Array.isArray(ledger) ? ledger : []).find((i) => i.digest)?.digest
+if (digest) console.log('verify_payment:', (await call('verify_payment', { digest })).verdict)
+console.log('payer_readiness:', JSON.stringify(await call('payer_readiness', { invoiceId: open[0]?.invoice || 'inv-101' })).slice(0, 160))
+console.log('chain_facts:', (await call('chain_facts')).facts?.chain)
 const bad = await client.callTool({ name: 'client_profile', arguments: { clientId: 'nope' } })
 console.log('unknown client isError:', bad.isError)
 await client.close()

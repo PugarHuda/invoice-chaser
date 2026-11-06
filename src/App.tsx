@@ -1899,6 +1899,9 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                         <>
                           <p>{a.verified}/{a.withTransaction} payment memories re-checked on-chain (digest, USDC amount, checkpoint) in {a.gatewayCalls} Tatum {a.service?.split(' ')[0]} call{a.gatewayCalls === 1 ? '' : 's'}{a.mismatched ? ` · ${a.mismatched} mismatch(es): see /api/chaser/audit` : ''}</p>
                           <p>{a.demoHistoryWithoutTransaction} seeded history memories carry no transaction (labelled demo data)</p>
+                          {a.chainToMemory && !a.chainToMemory.error && (
+                            <p>Other way round: {a.chainToMemory.recordedInMemory}/{a.chainToMemory.incomingTransfers} USDC transfers to the payee in the last {a.chainToMemory.windowDays} days are recorded in memory{a.chainToMemory.unrecorded ? ` · ${a.chainToMemory.unrecorded} not yet recorded` : ''} (Tatum ListTransactions, {a.chainToMemory.scannedTransactions} transactions scanned)</p>
+                          )}
                         </>
                       )}
                     </div>

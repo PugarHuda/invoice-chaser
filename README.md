@@ -49,6 +49,7 @@ Walrus Memory is the **system of record**, not a log on the side.
 Walrus Memory is this app's ledger, so it should be checkable, not just trusted. Every payment memory claims three things: a transaction digest, a USDC amount and a checkpoint. The **memory-chain audit** re-checks all of those claims against Sui through Tatum's `LedgerService.BatchGetTransactions`, one gateway call per 50 payments. It confirms each transaction exists, succeeded, moved exactly that much USDC to the payee, and landed in that checkpoint. A memory the chain doesn't back is listed by invoice, digest and Walrus blob, never hidden.
 
 - **Live result:** 7 of 7 payment memories that carry a transaction match the chain, checked in **one** Tatum call. The 10 seeded history memories have no transaction and are counted separately as demo data.
+- **The other direction:** every USDC transfer that reached the payee wallet in the last 30 days (Tatum `LedgerService.ListTransactions`, affected-address filter) is matched against memory. Live: 7 of 7 recorded, 0 unrecorded. Money the agent never learned about would be listed here with digest, amount and sender.
 - **Where to see it:** `/proof` (`walrusMemory.chainAudit`), the /proof tab, `GET /api/chaser/audit` for details, and the MCP tool `memory_chain_audit`. An agent can check the memory is true before it relies on it.
 - **How the pieces fit:** Tatum verifies a payment once, when it settles. Walrus remembers it permanently. The audit closes the loop by making the remembered history re-provable at any time.
 
@@ -234,7 +235,13 @@ Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): an
 claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp
 ```
 
-Tools: `list_open_invoices`, `client_profile`, `plan_reminder`, `search_client_memory` (Walrus recall), `payment_terms` (x402 + Payment Kit + `sui:pay`), `learning_summary`. `node scripts/mcp-smoke.mjs <base-url>` exercises all of them with the official MCP client.
+Tools: `list_open_invoices`, `client_profile`, `plan_reminder`, `search_client_memory` (Walrus recall), `payment_terms` (x402 + Payment Kit + `sui:pay`), `learning_summary`, plus four that join Walrus Memory with Sui through Tatum:
+
+- `memory_chain_audit`: the two-way audit above.
+- `verify_payment`: a client says "we paid, here is the tx". Checks the digest on chain (success, USDC to the payee, checkpoint, sender and its SuiNS name) and whether memory already records it, and for which invoice.
+- `payer_readiness`: the wallet this client pays from, learned from memory, read live with `StateService.ListBalances`. Does it hold enough USDC to pay what is owed right now?
+- `chain_facts`: chain id, epoch, gas price, USDC metadata and the Payment Kit Move function the app checked before trusting them, plus gRPC calls per service.
+ `node scripts/mcp-smoke.mjs <base-url>` exercises all of them with the official MCP client.
 
 ## Tested end to end on Sui Testnet
 

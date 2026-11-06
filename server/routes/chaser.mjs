@@ -516,18 +516,7 @@ router.get('/invoices/:id', async (req, res) => {
       receipt: receiptOf(inv),
       receiptsEnabled: receiptsEnabled(),
     },
-    // the payer wallet this client said it pays from, else the last one it paid from (Walrus Memory),
-    // read through Tatum: can they pay this invoice right now?
-    payerLiquidity: await (async () => {
-      const client = clients.find((c) => c.id === inv.clientId)
-      const last = memsFor(inv.clientId).find((m) => m.tag?.payer)?.tag
-      const owner = client?.expectedPayer?.address || last?.payer
-      if (!owner || inv.status === 'paid') return null
-      const w = await sui.walletBalances(owner).catch(() => null)
-      if (!w) return null
-      const need = sui.toMicro(owed(withStatus(inv)))
-      return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, service: 'StateService.ListBalances' }
-    })(),
+    payerLiquidity: await payerLiquidityOf(inv),
     adaptivePlan: plan(inv, profile),
     incentive: incentive(withStatus(inv), profile),
     defaultPlan: plan(inv, profile, { ignoreMemory: true }),
@@ -1022,6 +1011,9 @@ router.post('/mcp', mcpHandler((req) => ({
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
   memories: (clientId) => memsFor(clientId),
   audit: () => auditMemories(),
+  verifyPayment: (d) => verifyPayment(d),
+  payerReadiness: (inv) => payerLiquidityOf(inv),
+  chain: async () => ({ facts: await sui.chainFacts(), provider: sui.providerStatus(), callsThisInstance: sui.grpcCalls }),
   aggregator: process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space',
   baseUrl: `${req.protocol}://${req.get('host')}`,
 })))
@@ -1147,6 +1139,19 @@ router.post('/pay-gasless', async (req, res) => {
   }
 })
 
+// the payer wallet this client said it pays from, else the last one it paid from (Walrus Memory),
+// read through Tatum: can they pay this invoice right now?
+async function payerLiquidityOf(inv) {
+  const client = state().clients.find((c) => c.id === inv.clientId)
+  const last = memsFor(inv.clientId).find((m) => m.tag?.payer)?.tag
+  const owner = client?.expectedPayer?.address || last?.payer
+  if (!owner || invoiceStatus(inv) === 'paid') return null
+  const w = await sui.walletBalances(owner).catch(() => null)
+  if (!w) return null
+  const need = sui.toMicro(owed(withStatus(inv)))
+  return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, owedUsdc: owed(withStatus(inv)), service: 'StateService.ListBalances' }
+}
+
 // Memory <-> chain audit ("Total Recall" both ways): every payment memory in Walrus claims a digest, an
 // amount and a checkpoint. All claims are re-checked against Sui through Tatum in batches; a memory that
 // the chain doesn't back (wrong amount, failed or missing tx, other checkpoint) is listed, never hidden.
@@ -1162,10 +1167,34 @@ async function auditMemories() {
     const why = !f?.found ? 'transaction not found on chain' : !f.ok ? 'transaction failed on chain' : f.received !== sui.toMicro(m.tag.received) ? `chain moved ${sui.fromMicro(f.received)} USDC, memory says ${m.tag.received}` : m.tag.checkpoint && String(m.tag.checkpoint) !== String(f.checkpoint) ? `checkpoint ${f.checkpoint}, memory says ${m.tag.checkpoint}` : null
     if (why) mismatched.push({ invoice: m.tag.invoice, digest: m.tag.digest, blobId: m.blobId || null, why })
   }
-  const value = { checkedAt: new Date().toISOString(), paymentMemories: pays.length, withTransaction: claims.length, verified: claims.length - mismatched.length, mismatched, demoHistoryWithoutTransaction: pays.length - claims.length, gatewayCalls: Math.ceil(new Set(claims.map((m) => m.tag.digest)).size / 50), service: 'LedgerService.BatchGetTransactions (Tatum)' }
+  // the other direction: every USDC that reached the payee wallet in the last 30 days (LedgerService.ListTransactions,
+  // affected-address filter) that no Walrus memory accounts for. Money the agent never learned about shows up here.
+  let chainToMemory
+  try {
+    const known = new Set([...mem.store.values()].flat().map((m) => m.tag?.digest).filter(Boolean))
+    const incoming = await sui.recentIncoming(PAYEE(), { since: new Date(Date.now() - 30 * 86_400_000).toISOString(), limit: 200 })
+    const unrecorded = incoming.filter((t) => !known.has(t.digest)).map((t) => ({ digest: t.digest, usdc: sui.fromMicro(t.received), sender: t.sender, timestamp: t.timestamp }))
+    chainToMemory = { windowDays: 30, incomingTransfers: incoming.length, recordedInMemory: incoming.length - unrecorded.length, unrecorded, scannedTransactions: incoming.scanned, service: 'LedgerService.ListTransactions (Tatum)' }
+  } catch (e) {
+    chainToMemory = { error: e.message }
+  }
+  const value = { checkedAt: new Date().toISOString(), paymentMemories: pays.length, withTransaction: claims.length, verified: claims.length - mismatched.length, mismatched, demoHistoryWithoutTransaction: pays.length - claims.length, gatewayCalls: Math.ceil(new Set(claims.map((m) => m.tag.digest)).size / 50), service: 'LedgerService.BatchGetTransactions (Tatum)', chainToMemory }
   auditCache = { at: Date.now(), value }
   return value
 }
+// One transaction, both sides: what Sui says it did (Tatum BatchGetTransactions + sender + SuiNS name)
+// and what Walrus Memory says it paid. Read-only, so an agent can check a digest a client sends before trusting it.
+async function verifyPayment(digest) {
+  const f = (await sui.transactionsFacts([digest], PAYEE())).get(digest)
+  const recorded = [...mem.store.values()].flat().filter((m) => m.tag?.digest === digest).map((m) => ({ invoice: m.tag.invoice, type: m.tag.type, usdc: m.tag.received || null, blobId: m.blobId || null }))
+  const reserved = state().invoices.find((i) => i.digest === digest || (i.payments || []).some((p) => p.digest === digest))
+  const sender = f?.found ? await sui.txSender(digest).catch(() => null) : null
+  const name = sender ? await sui.suinsName(sender) : null
+  const chain = f?.found ? { found: true, success: f.ok, usdcToPayee: sui.fromMicro(f.received), checkpoint: String(f.checkpoint ?? ''), sender, senderName: name } : { found: false, error: f?.error || 'not found' }
+  const verdict = !f?.found ? 'not on chain' : !f.ok ? 'failed on chain' : f.received <= 0n ? 'moved no USDC to the payee' : recorded.length ? 'on chain and recorded in memory' : 'on chain but not recorded in memory: settle it with POST /api/chaser/verify-payment'
+  return { digest, verdict, chain, memory: recorded, invoice: reserved?.id || null, explorer: `${sui.EXPLORER}/tx/${digest}`, services: ['LedgerService.BatchGetTransactions', 'LedgerService.GetTransaction', 'NameService.ReverseLookupName'] }
+}
+
 router.get('/audit', async (_req, res) => {
   try {
     res.json(await auditMemories())
@@ -1223,7 +1252,7 @@ router.get('/proof', async (_req, res) => {
       // writes this instance made: batched rememberBulk calls (items per call) vs single remember calls
       writes: mem.writeStats,
       // every payment memory re-checked against Sui through Tatum (counts; details at /api/chaser/audit)
-      chainAudit: audit.status === 'fulfilled' ? { ...audit.value, mismatched: audit.value.mismatched.length } : { error: audit.reason?.message || 'unavailable' },
+      chainAudit: audit.status === 'fulfilled' ? { ...audit.value, mismatched: audit.value.mismatched.length, chainToMemory: audit.value.chainToMemory?.error ? audit.value.chainToMemory : { ...audit.value.chainToMemory, unrecorded: audit.value.chainToMemory?.unrecorded?.length ?? 0 } } : { error: audit.reason?.message || 'unavailable' },
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       // private mode: none, even for the owner -- /proof is CDN-cached for everyone (s-maxage)
       sampleMemories: privateReads() ? [] : [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
