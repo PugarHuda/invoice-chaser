@@ -37,11 +37,14 @@ type TabKey = 'today' | 'clients' | 'invoices' | 'pay' | 'proof';
 interface SummaryData {
   expectedInflow7Days: string;
   expectedInflow30Days?: string;
+  expectedInflow7DaysRange?: { low: string; high: string };
   overdueAmount: string;
   activeClientNamespaces: number;
   upcomingInflows: Array<{
     invoiceId: string;
     clientName: string;
+    earliest?: string;
+    latest?: string;
     payAmount: string;
     dueDate: string;
     predictedPayDate: string;
@@ -801,6 +804,11 @@ export default function App() {
                 <div className="mt-md text-heading-md font-semibold text-primary">
                   {summary ? usd(summary.expectedInflow7Days) : '—'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
+                {summary?.expectedInflow7DaysRange && (
+                  <div className="text-xs text-tertiary mt-xxs" title="From each client's learned pay-date spread (10th-90th percentile of past delays in Walrus Memory)">
+                    Range {usd(summary.expectedInflow7DaysRange.low)} – {usd(summary.expectedInflow7DaysRange.high)} USDC, from each client's learned spread
+                  </div>
+                )}
                 <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
                   <TrendingUp className="w-3.5 h-3.5" />
                   <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {usd(summary?.expectedInflow30Days)} USDC in 30 days</span>
@@ -917,6 +925,7 @@ export default function App() {
                             </td>
                             <td className="px-md py-sm text-sm text-tertiary whitespace-nowrap">
                               {item.predictedPayDate} {item.delayDays > 0 ? `(+${item.delayDays}d)` : '(On time)'}
+                              {item.earliest && item.latest && item.earliest !== item.latest && <div className="text-xs text-quaternary">likely {item.earliest.slice(5)} – {item.latest.slice(5)}</div>}
                             </td>
                             <td className="px-md py-sm text-sm text-right">
                               <div className="font-semibold text-primary">{item.payAmount} USDC</div>

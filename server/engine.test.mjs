@@ -279,3 +279,15 @@ test('quoteAt: an amount quoted earlier pays in full if paid before the terms ch
   assert.equal(parsePreference('late fee 0%').lateFeePct, 0)
   assert.equal(incentive({ status: 'overdue', dueDate: '2026-11-01', baseAmount: 100 }, { totalPaidInvoices: 3, ewmaDelayDays: 0, confidence: 1, constraints: { lateFeePct: 0 } }, new Date('2026-11-30T00:00:00Z')).kind, null)
 })
+
+test('forecast range comes from the learned delay spread', () => {
+  const p = computeProfile('acme', acme) // three invoices, all 5 days late: no spread
+  assert.equal(p.delayRange.low, 5)
+  assert.equal(p.delayRange.high, 5)
+  const varied = [1, 9, 3, 4, 2].flatMap((d, i) => [mem(`2026-0${i + 1}-01T00:00:00Z`, { type: 'invoice_sent', client: 'v', invoice: `v${i}`, base: 10, pay_amount: '10.001000', due: `2026-0${i + 1}-10` }), mem(`2026-0${i + 1}-20T00:00:00Z`, { type: 'invoice_paid', client: 'v', invoice: `v${i}`, delay_days: d, paid: `2026-0${i + 1}-20` })])
+  const v = computeProfile('v', varied)
+  assert.deepEqual([v.delayRange.low, v.delayRange.high], [1, 9])
+  assert.match(v.delayRange.basis, /p10-p90 of 5/)
+  // under three paid invoices: median ±2 days
+  assert.deepEqual([computeProfile('v', varied.slice(0, 4)).delayRange.low, computeProfile('v', varied.slice(0, 4)).delayRange.high], [7, 11])
+})
