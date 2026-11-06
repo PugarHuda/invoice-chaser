@@ -237,3 +237,20 @@ test('invoice terms change the amount owed; an unpaid discount expires after its
   assert.equal(inv.status, 'paid')
   assert.equal(computeProfile('g', s.get('n')).totalPaidInvoices, 1)
 })
+
+test('a late fee raises what counts as paid in full; a discount paid late stays partial', () => {
+  const base = [
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i2', base: 100, pay_amount: '100.001000', due: '2026-11-05' }),
+    mem('2026-11-20T00:00:00Z', { type: 'invoice_terms', client: 'g', invoice: 'i2', kind: 'late_fee', pct: 1.5, pay_amount: '101.502000' }),
+    mem('2026-11-21T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i2', received: '100.001000', digest: 'P', paid: '2026-11-21', delay_days: 16 }),
+  ]
+  assert.equal(deriveState(new Map([['n', base]])).invoices[0].remaining, '1.501000')
+  assert.equal(computeProfile('g', base).totalPaidInvoices, 0)
+  const disc = [
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i3', base: 300, pay_amount: '300.001234', due: '2026-11-20' }),
+    mem('2026-11-02T00:00:00Z', { type: 'invoice_terms', client: 'g', invoice: 'i3', kind: 'early_discount', pct: 1, until: '2026-11-20', pay_amount: '297.005678' }),
+    mem('2026-11-25T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i3', received: '297.005678', digest: 'Q', paid: '2026-11-25', delay_days: 5 }),
+  ]
+  assert.equal(deriveState(new Map([['n', disc]]), new Date('2026-11-26T00:00:00Z')).invoices[0].status, 'partial')
+  assert.equal(computeProfile('g', disc).totalPaidInvoices, 0)
+})

@@ -549,7 +549,11 @@ async function settleDigest(invoiceId, requested, channel) {
     if (!tx.ok) return [400, { error: `Transaction did not succeed on ${NET}` }]
     if (tx.received <= 0n) return [400, { error: 'Transaction sent no USDC to the payee address' }]
     if (tx.timestamp && tx.timestamp < inv.createdAt) return [400, { error: 'Transaction is older than the invoice' }]
-    const expected = sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
+    // The discount deadline is judged by when the chain says it was paid, not when we verify it: an
+    // on-time payment of the discounted amount that is only seen after the deadline still settles in full.
+    const t = inv.terms
+    const discountHonored = t?.kind === 'early_discount' && t.expired && tx.timestamp && isoDay(tx.timestamp) <= t.until && tx.received === sui.toMicro(t.amount)
+    const expected = discountHonored ? sui.toMicro(t.amount) : sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
     // A transfer that exactly matches another open invoice's unique amount belongs to that one.
     // A Payment Kit payment names its invoice (nonce): it must be THIS invoice's registry record.
     if (tx.paymentKit) {
@@ -569,7 +573,7 @@ async function settleDigest(invoiceId, requested, channel) {
     // a dust transfer named against someone else's invoice must not write a permanent "underpaid" memory
     // ponytail: 1% floor; exact-amount-only would also block real underpayments, which the profile learns from
     if (!full && tx.received * 100n < expected) return [400, { error: `A partial payment must be at least 1% of what is owed (${sui.fromMicro(expected / 100n)} USDC)` }]
-    const totalReceived = sui.toMicro(inv.payAmount) - expected + tx.received
+    const totalReceived = (discountHonored ? 0n : sui.toMicro(inv.payAmount) - expected) + tx.received
     const paid = isoDay(tx.timestamp || Date.now())
     // negative = paid early; kept as-is so the profile can learn early payers (plans still clamp at due)
     const delay = Math.round((new Date(paid) - new Date(inv.dueDate)) / DAY)
@@ -595,7 +599,7 @@ async function settleDigest(invoiceId, requested, channel) {
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay < 0 ? `${-delay} day(s) before due` : `${delay} day(s) after due`}, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
+      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: discountHonored ? t.amount : inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
     )
     return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : `the public Sui fullnode (${sui.fallbackReason()})`}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
@@ -620,7 +624,10 @@ async function syncPayments() {
   const open = state().invoices.filter((i) => i.status === 'sent' || (i.status === 'partial' && !i.seed))
   const settled = []
   for (const inv of open) {
-    const digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(owed(inv)), inv.id)
+    // a payment made under terms that later changed (expired discount) is keyed by the amount it was made for
+    const amounts = [...new Set([owed(inv), inv.terms?.expired && inv.terms.amount].filter(Boolean))]
+    let digest = null
+    for (const a of amounts) if ((digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(a), inv.id))) break
     if (!digest) continue
     const [code, body] = await settleDigest(inv.id, digest, 'payment-kit')
     settled.push({ invoice: inv.id, digest, code, message: body.message || body.error })

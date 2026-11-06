@@ -62,6 +62,11 @@ export function deriveState(store, now = new Date()) {
       if (t.digest && usedDigests.has(t.digest)) continue // the same payment recorded twice counts once
       if (t.digest) usedDigests.add(t.digest)
       const inv = invoices.get(t.invoice)
+      // a discount only covers payments made by its deadline (chain time): a later one counts against the full amount
+      if (inv.terms?.kind === 'early_discount' && !inv.terms.expired && t.type === 'invoice_partial' && (t.paid || isoDay(m.timestamp)) > inv.terms.until) {
+        inv.payAmount = inv.terms.original
+        inv.terms = { ...inv.terms, expired: true }
+      }
       // amounts as integer micro-units so sums are exact; seeded history may lack `received`
       const got = t.received != null ? micro(t.received) : t.type === 'invoice_paid' ? micro(inv.payAmount) : 0n
       inv.receivedMicro = (inv.receivedMicro || 0n) + got
@@ -129,8 +134,9 @@ export function computeProfile(clientId, memories) {
   // A top-up is also recorded as invoice_partial, so "finished" = everything received covers the
   // invoice (each payment counted once by digest), not the type of the last event.
   const owedMicro = new Map(memories.filter((m) => m.tag?.type === 'invoice_sent').map((m) => [m.tag.invoice, micro(m.tag.pay_amount)]))
-  // agreed new terms (discount / late fee) change what "paid in full" means
-  for (const m of memories.filter((x) => x.tag?.type === 'invoice_terms' && owedMicro.has(x.tag.invoice)).sort((x, y) => x.timestamp.localeCompare(y.timestamp))) owedMicro.set(m.tag.invoice, micro(m.tag.pay_amount))
+  // a late fee changes what "paid in full" means. A discount does not: paid in time it settles as
+  // invoice_paid (finished either way); paid late it is a partial against the full amount, as in deriveState.
+  for (const m of memories.filter((x) => x.tag?.type === 'invoice_terms' && x.tag.kind === 'late_fee' && owedMicro.has(x.tag.invoice)).sort((x, y) => x.timestamp.localeCompare(y.timestamp))) owedMicro.set(m.tag.invoice, micro(m.tag.pay_amount))
   const gotMicro = new Map()
   const seenDigest = new Set()
   for (const m of memories) {
