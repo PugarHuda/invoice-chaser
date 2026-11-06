@@ -576,7 +576,10 @@ async function settleDigest(invoiceId, requested, channel) {
       // Another open invoice's unique amount always wins (it is the designed fingerprint). A partial's remainder
       // only blocks when the transfer is not exactly what THIS invoice owes, so two equal remainders can't block
       // each other while a remainder can never capture another invoice's unique amount.
-      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (sui.toMicro(i.payAmount) === tx.received || (tx.received !== expected && i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
+      // Same rule as settling: an open invoice also claims the amount it was quoted at the payment's chain time.
+      const txAt = tx.timestamp ? new Date(tx.timestamp).toISOString() : null
+      const claims = (i) => sui.toMicro(i.payAmount) === tx.received || (i.status === 'sent' && txAt && quoteAt(i, txAt) && sui.toMicro(quoteAt(i, txAt)) === tx.received)
+      const other = now.find((i) => i.id !== inv.id && i.status !== 'paid' && (claims(i) || (tx.received !== expected && i.status === 'partial' && sui.toMicro(owed(i)) === tx.received)))
       if (other) return [409, { error: `This transfer matches ${other.id}'s exact amount, not ${inv.id}` }]
     }
 
