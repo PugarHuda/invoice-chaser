@@ -56,11 +56,15 @@ All invoice verification and chain reads go through **Tatum's Sui Mainnet gRPC g
 | Build the payer's USDC transfer (coin selection, gas price, budget) | `Transaction.build` through the same gateway (`/api/chaser/pay-tx`) |
 | Execute an agent-signed payment | `TransactionExecutionService` (`scripts/ap-agent.mjs`) |
 | Build the Payment Kit registry payment for a wallet / agent | `processRegistryPayment` built through the gateway (`/api/chaser/pay-tx`) |
-| Find an invoice's payment with no digest | Payment Kit registry dynamic field `PaymentKey<USDC>{nonce, amount, receiver}` (`/api/chaser/sync-payments`) |
+| Find every open invoice's payment with no digest | Each Payment Kit record's object id is derived locally (`PaymentKey<USDC>{nonce, amount, receiver}`), then **one** `LedgerService.BatchGetObjects` call covers all open invoices and every amount they were ever quoted (`/api/chaser/sync-payments`). Only `NOT_FOUND` counts as unpaid. |
 | Payer recognition | `GetTransaction` → `transaction.sender`, `NameService.ReverseLookupName` (SuiNS) |
 | Real network fee before the payer signs | `SimulateTransaction` on the built Payment Kit tx (gas used − storage rebate) |
 | SUI → USDC for an agent short on USDC | Cetus aggregator route, transaction built and executed through the gateway (`server/swap.mjs`) |
 | USD prices | **Tatum Data API** `GET /v4/data/rate/symbol` (SUI, USDC) on /proof and fee display |
+| Verify chain facts instead of trusting config (/proof) | `LedgerService.GetServiceInfo` (chain id, epoch, height, oldest available checkpoint, node version), `LedgerService.GetEpoch` (reference gas price), `StateService.GetCoinInfo` (USDC decimals/symbol must match the amounts we compute), `MovePackageService.GetFunction` + `ListPackageVersions` (Payment Kit's `process_registry_payment` exists with the shape we build against) |
+| Can the payer pay right now? | `StateService.ListBalances` on the client's stated or last-used payer wallet (from Walrus Memory), shown in the plan's *Why* panel |
+| x402 facilitator binding | `SimulateTransaction` must **create** the registry's `PaymentKey(nonce, amount, payee)` object (derived id), not just emit an event |
+| Which Tatum services did this instance really use? | A protobuf-ts interceptor counts every gRPC call per `service.method` and provider; `/proof` → `tatumSuiGrpc.callsThisInstance` |
 
 Sui JSON-RPC is deprecated, and gRPC has no "transactions by address" query. The Payment Kit registry solves that: a payment is a record keyed by the invoice, so we look it up directly. Unique amounts remain as the fingerprint for plain transfers. Calls are throttled under the free tier's 3 req/s, and 429s / reset channels are retried with backoff.
 
