@@ -52,8 +52,15 @@ export function noteProviderError(e) {
   return true
 }
 let client
+// Every gRPC call is counted per service.method and per provider (protobuf-ts interceptor), so /proof
+// shows exactly which Tatum services this instance used, not a claim in the README.
+export const grpcCalls = { since: new Date().toISOString(), tatum: {}, 'public-fullnode': {} }
+const counter = (prov) => {
+  const bump = (method) => { const k = `${method.service.typeName.split('.').pop()}.${method.name}`; grpcCalls[prov][k] = (grpcCalls[prov][k] || 0) + 1 }
+  return [{ interceptUnary: (next, method, input, opt) => (bump(method), next(method, input, opt)), interceptServerStreaming: (next, method, input, opt) => (bump(method), next(method, input, opt)) }]
+}
 export function sui() {
-  if (provider() === 'public-fullnode') return (publicClient ??= new SuiGrpcClient({ network: NETWORK, transport: new GrpcWebFetchTransport({ baseUrl: PUBLIC_GRPC, timeout: RPC_TIMEOUT_MS }) }).$extend(paymentKit()))
+  if (provider() === 'public-fullnode') return (publicClient ??= new SuiGrpcClient({ network: NETWORK, transport: new GrpcWebFetchTransport({ baseUrl: PUBLIC_GRPC, timeout: RPC_TIMEOUT_MS, interceptors: counter('public-fullnode') }) }).$extend(paymentKit()))
   client ??= new SuiGrpcClient({
     network: NETWORK,
     transport: new GrpcTransport({
@@ -61,6 +68,7 @@ export function sui() {
       channelCredentials: ChannelCredentials.createSsl(),
       meta: { 'x-api-key': process.env.TATUM_API_KEY },
       timeout: RPC_TIMEOUT_MS,
+      interceptors: counter('tatum'),
     }),
   }).$extend(paymentKit())
   return client
@@ -279,6 +287,46 @@ export async function findInvoicePayment(payee, micro, nonce) {
 // on desktop, so a payer without a wallet extension still gets a prefilled, nonce-protected payment.
 export const slushPayUrl = ({ payee, micro, nonce, label, message }) =>
   'https://my.slush.app/pay?' + new URLSearchParams({ receiver: payee, amount: String(micro), coinType: USDC_COIN_TYPE, nonce, registry: REGISTRY_NAME, label, message })
+
+// Every registry record we're waiting for, in ONE LedgerService.BatchGetObjects call (chunks of 50):
+// each record's object id is derived locally from PaymentKey(nonce, amount, payee), so N open invoices
+// cost one gateway call instead of N GetDynamicField calls. Returns Map("nonce|micro" -> paying digest).
+export const paymentRecordId = (payee, micro, nonce) => deriveDynamicFieldID(registryId(), `${PK_PACKAGE}::payment_kit::PaymentKey<${normalizeStructTag(USDC_COIN_TYPE)}>`, PaymentKey.serialize({ nonce, payment_amount: BigInt(micro), receiver: payee }).toBytes())
+export async function findInvoicePayments(payee, wanted) {
+  const found = new Map()
+  for (let i = 0; i < wanted.length; i += 50) {
+    const chunk = wanted.slice(i, i + 50).map((w) => ({ ...w, id: paymentRecordId(payee, w.micro, w.nonce) }))
+    await throttle()
+    const { response } = await once(() => sui().ledgerService.batchGetObjects({ requests: chunk.map((w) => ({ objectId: w.id })), readMask: { paths: ['object_id', 'previous_transaction'] } }))
+    response.objects.forEach((r, k) => { if (r.result.oneofKind === 'object' && r.result.object.previousTransaction) found.set(`${chunk[k].nonce}|${chunk[k].micro}`, r.result.object.previousTransaction) })
+  }
+  return found
+}
+
+// Chain facts verified through Tatum instead of trusted from config (cached 10 min):
+// LedgerService.GetServiceInfo (chain id, epoch, height, how far back history goes), LedgerService.GetEpoch
+// (reference gas price), StateService.GetCoinInfo (the settlement coin's on-chain decimals/symbol must
+// match what amounts are computed with), MovePackageService.GetFunction + ListPackageVersions (the
+// Payment Kit function every invoice payment calls exists, with the shape we build against).
+let facts = null
+export async function chainFacts() {
+  if (facts && Date.now() - facts.at < 600_000) return facts.value
+  const call = async (fn) => { await throttle(); return json((await once(fn)).response) }
+  const info = await call(() => sui().ledgerService.getServiceInfo({}))
+  const epoch = await call(() => sui().ledgerService.getEpoch({ readMask: { paths: ['epoch', 'start', 'reference_gas_price'] } }))
+  const coin = await call(() => sui().stateService.getCoinInfo({ coinType: USDC_COIN_TYPE }))
+  const fn = await call(() => sui().movePackageService.getFunction({ packageId: PK_PACKAGE, moduleName: 'payment_kit', name: 'process_registry_payment' }))
+  const versions = await call(() => sui().movePackageService.listPackageVersions({ packageId: PK_PACKAGE }))
+  const value = {
+    chainId: info.chainId, chain: info.chain, epoch: info.epoch, checkpointHeight: info.checkpointHeight, lowestAvailableCheckpoint: info.lowestAvailableCheckpoint, server: info.server || null,
+    referenceGasPriceMist: epoch.epoch?.referenceGasPrice ?? null, epochStart: epoch.epoch?.start ? new Date(Number(epoch.epoch.start.seconds) * 1000).toISOString() : null,
+    settlementCoin: { type: USDC_COIN_TYPE, symbol: coin.metadata?.symbol, name: coin.metadata?.name, decimals: coin.metadata?.decimals, matchesConfig: coin.metadata?.decimals === COIN_DECIMALS },
+    paymentKit: { package: PK_PACKAGE, function: 'payment_kit::process_registry_payment', parameters: fn.function?.parameters?.length ?? null, typeParameters: fn.function?.typeParameters?.length ?? null, verified: Boolean(fn.function), versions: (versions.versions || []).map((v) => v.version) },
+    services: ['LedgerService.GetServiceInfo', 'LedgerService.GetEpoch', 'StateService.GetCoinInfo', 'MovePackageService.GetFunction', 'MovePackageService.ListPackageVersions'],
+  }
+  facts = { at: Date.now(), value }
+  return value
+}
 
 export const paymentUri = ({ payee, micro, nonce, label, message }) =>
   createPaymentTransactionUri({ receiverAddress: payee, amount: BigInt(micro), coinType: USDC_COIN_TYPE, nonce, registryName: REGISTRY_NAME, label, message })

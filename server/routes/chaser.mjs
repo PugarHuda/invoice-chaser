@@ -519,11 +519,9 @@ router.post('/invoices/:id/terms', async (req, res) => {
   if (inflight.has(inv.id) || x402Inflight.has(inv.id) || [...reservedDigests.values()].some((r) => r.invoiceId === inv.id && Date.now() - r.at < RESERVE_MS))
     return res.status(409).json({ error: 'A payment for this invoice is in progress; try again in a moment' })
   // a payment already on-chain under the current or an earlier amount must settle first, not be repriced
-  for (const a of quotedAmounts(inv)) {
-    const paid = await sui.findInvoicePayment(PAYEE(), sui.toMicro(a), inv.id).catch(() => undefined)
-    if (paid === undefined) return res.status(502).json({ error: 'Payment Kit registry lookup failed; try again in a few seconds' })
-    if (paid) return res.status(409).json({ error: `This invoice already has an on-chain payment (${paid}); run Sync payments first` })
-  }
+  const recs = await sui.findInvoicePayments(PAYEE(), quotedAmounts(inv).map((a) => ({ nonce: inv.id, micro: sui.toMicro(a) }))).catch(() => null)
+  if (!recs) return res.status(502).json({ error: 'Payment Kit registry lookup failed; try again in a few seconds' })
+  if (recs.size) return res.status(409).json({ error: `This invoice already has an on-chain payment (${[...recs.values()][0]}); run Sync payments first` })
   const rec = incentive(withStatus(inv), profileOf(inv.clientId))
   if (!rec.kind) return res.status(409).json({ error: rec.reason })
   if (req.body?.kind !== rec.kind) return res.status(409).json({ error: `The current recommendation is ${rec.kind.replace('_', ' ')}, not ${String(req.body?.kind || 'none').replace('_', ' ')}` })
@@ -714,11 +712,13 @@ let reconcileBalance = null // payee USDC balance at the last clean reconcile sc
 async function syncPayments() {
   const open = state().invoices.filter((i) => i.status === 'sent' || (i.status === 'partial' && !i.seed))
   const settled = []
+  // every (invoice, amount) a payment could be keyed by, including amounts quoted under earlier terms,
+  // looked up in one BatchGetObjects call through Tatum
+  const wanted = open.flatMap((inv) => [...new Set([owed(inv), ...(inv.status === 'sent' ? quotedAmounts(inv) : [])])].map((a) => ({ inv, nonce: inv.id, micro: sui.toMicro(a) })))
+  const records = wanted.length ? await sui.findInvoicePayments(PAYEE(), wanted) : new Map()
   for (const inv of open) {
-    // a payment made under terms that later changed (expired discount) is keyed by the amount it was made for
-    const amounts = [...new Set([owed(inv), ...(inv.status === 'sent' ? quotedAmounts(inv) : [])])]
-    let digest = null
-    for (const a of amounts) if ((digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(a), inv.id))) break
+    const hit = wanted.find((w) => w.inv === inv && records.has(`${w.nonce}|${w.micro}`))
+    const digest = hit ? records.get(`${hit.nonce}|${hit.micro}`) : null
     if (!digest) continue
     const [code, body] = await settleDigest(inv.id, digest, 'payment-kit')
     settled.push({ invoice: inv.id, digest, code, message: body.message || body.error })
@@ -1128,7 +1128,7 @@ router.get('/proof', async (req, res, next) => {
   next()
 })
 router.get('/proof', async (_req, res) => {
-  const [cp, bal, h, nss, rSui, rUsdc, dur] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability()])
+  const [cp, bal, h, nss, rSui, rUsdc, dur, chain] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability(), sui.chainFacts()])
   const counts = nss.status === 'fulfilled' ? nss.value : []
   res.json({
     tatumSuiGrpc: {
@@ -1146,6 +1146,10 @@ router.get('/proof', async (_req, res) => {
       network: sui.NETWORK,
       rates: { SUI: rSui.status === 'fulfilled' ? rSui.value : null, USDC: rUsdc.status === 'fulfilled' ? rUsdc.value : null, api: 'Tatum Data API /v4/data/rate/symbol' },
       paymentKit: { registry: sui.REGISTRY_NAME, registryId: sui.registryId(), explorer: `${sui.EXPLORER}/object/${sui.registryId()}` },
+      // verified on-chain through Tatum, not trusted from config
+      chain: chain.status === 'fulfilled' ? chain.value : { error: chain.reason?.message || 'unavailable' },
+      // every gRPC call this instance made, per service.method and provider (counted by a transport interceptor)
+      callsThisInstance: sui.grpcCalls,
       errorDetail: [cp, bal].find((x) => x.status === 'rejected')?.reason?.message || null,
     },
     walrusMemory: {
