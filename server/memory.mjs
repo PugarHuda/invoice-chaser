@@ -160,21 +160,22 @@ export function refresh() {
     if (!listCursor) return doLoad()
     const w = await walkChanges(listCursor).catch(() => ({ resync: true }))
     if (w.resync) return doLoad()
-    listCursor = w.cursor
     if (!w.changed.size) {
+      listCursor = w.cursor // nothing changed: safe to advance
       Object.assign(loadState, { loadedAt: new Date().toISOString(), lastSync: { mode: 'incremental', changedNamespaces: 0 } })
       return loadState
     }
-    return doLoad([...w.changed])
+    // the watermark advances only once the changed namespaces actually reloaded (doLoad commits it)
+    return doLoad([...w.changed], w.cursor)
   })().finally(() => (loading = null))
   return loading
 }
-async function doLoad(only = null) {
+async function doLoad(only = null, nextCursor = null) {
   loadState.loading = true
   loadState.error = null
   try {
     // full load: take the watermark first, so anything written during the recall shows up next poll
-    if (!only) listCursor = (await walkChanges(null).catch(() => ({}))).cursor || null
+    const wm = only ? nextCursor : (await walkChanges(null).catch(() => ({}))).cursor || null
     const nss = (await namespaces()).filter((ns) => !only || only.includes(ns.name))
     const fresh = new Map()
     const truncated = []
@@ -217,9 +218,11 @@ async function doLoad(only = null) {
     for (const [k, v] of fresh) store.set(k, v)
     // a partial reload keeps the other namespaces' truncation state; a full one replaces it
     const keepTrunc = only ? (loadState.truncated || []).filter((ns) => !only.includes(ns)) : []
+    listCursor = wm // committed only after store + loadState are updated
     Object.assign(loadState, { truncated: [...keepTrunc, ...truncated], loaded: true, loadedAt: new Date().toISOString(), recalled: only ? loadState.recalled : n, namespaces: only ? loadState.namespaces : nss.length, lastSync: { mode: only ? 'incremental' : 'full', changedNamespaces: nss.length, dropped } })
   } catch (e) {
     loadState.error = String(e?.message || e)
+    listCursor = null // a failed (partial) reload forces a full resync next time
   } finally {
     loadState.loading = false
   }

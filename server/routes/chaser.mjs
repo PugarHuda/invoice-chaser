@@ -541,6 +541,8 @@ async function settleDigest(invoiceId, requested, channel) {
   if (inv0.status === 'paid') return [409, { error: 'Invoice is already paid' }]
   // global on purpose: spent digests are checked across every client, so any missing namespace could hide one
   if (mem.loadState.truncated?.length) return [503, { error: 'Memory recall is incomplete; refusing to settle until every namespace is fully loaded' }]
+  // the last Walrus sync failed: spent digests from other instances may be missing, so don't settle on stale state
+  if (mem.loadState.error) { mem.loadAll().catch(() => {}); return [503, { error: 'Memory sync from Walrus failed; retrying, try again in a few seconds', retry: true }] }
   // Reserve digest + invoice synchronously so two concurrent requests cannot both settle.
   if (inflight.has(requested) || inflight.has(invoiceId)) return [409, { error: 'This payment is already being verified' }]
   inflight.add(requested).add(invoiceId)
