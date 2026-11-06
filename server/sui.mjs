@@ -298,7 +298,12 @@ export async function findInvoicePayments(payee, wanted) {
     const chunk = wanted.slice(i, i + 50).map((w) => ({ ...w, id: paymentRecordId(payee, w.micro, w.nonce) }))
     await throttle()
     const { response } = await once(() => sui().ledgerService.batchGetObjects({ requests: chunk.map((w) => ({ objectId: w.id })), readMask: { paths: ['object_id', 'previous_transaction'] } }))
-    response.objects.forEach((r, k) => { if (r.result.oneofKind === 'object' && r.result.object.previousTransaction) found.set(`${chunk[k].nonce}|${chunk[k].micro}`, r.result.object.previousTransaction) })
+    // fail closed: only a definite NOT_FOUND (gRPC code 5) means "not paid"; anything else is an error
+    if (response.objects.length !== chunk.length) throw new Error('BatchGetObjects returned a different number of results')
+    response.objects.forEach((r, k) => {
+      if (r.result.oneofKind === 'object' && r.result.object.previousTransaction) found.set(`${chunk[k].nonce}|${chunk[k].micro}`, r.result.object.previousTransaction)
+      else if (!(r.result.oneofKind === 'error' && r.result.error.code === 5)) throw new Error(`registry lookup failed: ${r.result.error?.message || r.result.oneofKind}`)
+    })
   }
   return found
 }
@@ -309,8 +314,18 @@ export async function findInvoicePayments(payee, wanted) {
 // match what amounts are computed with), MovePackageService.GetFunction + ListPackageVersions (the
 // Payment Kit function every invoice payment calls exists, with the shape we build against).
 let facts = null
-export async function chainFacts() {
-  if (facts && Date.now() - facts.at < 600_000) return facts.value
+let factsP = null
+let factsFailedAt = 0
+// observability must never starve payment checks: one computation in flight, a failure backs off 5 min,
+// and nothing new is started while the shared throttle queue is busy (the last result is served instead)
+export function chainFacts() {
+  if (facts && Date.now() - facts.at < 600_000) return Promise.resolve(facts.value)
+  if (factsP) return factsP
+  if (Date.now() - factsFailedAt < 300_000 || last - Date.now() > 1_000) return facts ? Promise.resolve({ ...facts.value, stale: true }) : Promise.reject(new Error('chain facts deferred: gateway busy or recently failed'))
+  factsP = computeFacts().catch((e) => { factsFailedAt = Date.now(); throw e }).finally(() => (factsP = null))
+  return factsP
+}
+async function computeFacts() {
   const call = async (fn) => { await throttle(); return json((await once(fn)).response) }
   const info = await call(() => sui().ledgerService.getServiceInfo({}))
   const epoch = await call(() => sui().ledgerService.getEpoch({ readMask: { paths: ['epoch', 'start', 'reference_gas_price'] } }))

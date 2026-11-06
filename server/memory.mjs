@@ -90,11 +90,42 @@ function pump() {
   pumping ??= drain().finally(() => (pumping = null))
   return pumping
 }
+// Writes to Walrus, as /proof shows them: batched (rememberBulk) vs single (remember)
+export const writeStats = { bulkCalls: 0, bulkItems: 0, singleCalls: 0, lastBatch: null }
+// Several queued memories go in ONE rememberBulk request (max 20): the relayer embeds + SEAL-encrypts
+// them together and collapses N x 3 Sui transactions into about 2N + K. Anything that doesn't come back
+// done stays queued and is retried one by one below.
+async function drainBulk() {
+  const batch = queue.slice(0, 20)
+  const key = createHmac('sha256', 'ic-bulk').update(batch.map((b) => b.m.id).join(',')).digest('hex').slice(0, 32)
+  const accepted = await memwal().rememberBulk(batch.map(({ ns, m }) => ({ text: encode(m.sentence, m.tag), namespace: ns })), { idempotencyKey: key })
+  const done = await memwal().waitForRememberJobs(accepted.job_ids, batch.map((b) => b.ns))
+  writeStats.bulkCalls++
+  writeStats.lastBatch = { at: new Date().toISOString(), items: batch.length, succeeded: done.succeeded, failed: done.failed }
+  done.results.forEach((r, i) => {
+    if (r.status !== 'done') return
+    const { m } = batch[i]
+    Object.assign(m, { blobId: r.blob_id, status: 'saved' })
+    delete m.error
+    queue.splice(queue.indexOf(batch[i]), 1)
+    writeStats.bulkItems++
+  })
+}
 async function drain() {
   while (queue.length) {
+      if (queue.length > 1 && !queue[0].m.attempts) {
+        try {
+          await drainBulk()
+          continue
+        } catch (e) {
+          queue[0].m.error = String(e?.message || e) // fall through: write one by one
+        }
+      }
       const { ns, m } = queue[0]
       try {
-        const job = await memwal().remember(encode(m.sentence, m.tag), ns, { idempotencyKey: m.id })
+        // dedupe: a retry after the 30-minute idempotency window still can't mint a second blob
+        const job = await memwal().remember(encode(m.sentence, m.tag), ns, { idempotencyKey: m.id, dedupe: true })
+        writeStats.singleCalls++
         const done = await memwal().waitForRememberJob(job.job_id)
         m.blobId = done?.blob_id || job.blob_id
         m.status = 'saved'

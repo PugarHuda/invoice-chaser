@@ -1177,6 +1177,8 @@ router.get('/proof', async (_req, res) => {
       loadedAt: mem.loadState.loadedAt,
       // how this instance last synced from Walrus: full recall, or incremental (listMemories watermark, only changed namespaces)
       lastSync: mem.loadState.lastSync || null,
+      // writes this instance made: batched rememberBulk calls (items per call) vs single remember calls
+      writes: mem.writeStats,
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       sampleMemories: [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),
     },
