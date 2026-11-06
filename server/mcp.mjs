@@ -1,6 +1,7 @@
 // MCP server: lets Claude, Cursor or any MCP agent read what Invoice Chaser has learned.
 // Stateless Streamable HTTP (a fresh server per request) so it runs on serverless. Read-only tools.
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { z } from 'zod'
 
@@ -75,7 +76,8 @@ function build(deps) {
     list: async () => ({ resources: deps.state().clients.map((c) => ({ uri: `invoice-chaser://clients/${c.id}/memories`, name: `${c.name}: Walrus memories`, mimeType: 'application/json' })) }),
   }), { title: 'Client memories (Walrus)', description: 'Every memory Invoice Chaser holds about one client: the sentence, its event type, when, and the Walrus blob that stores it (SEAL-encrypted).', mimeType: 'application/json' }, async (uri, { clientId }) => {
     const c = findClient(String(clientId))
-    if (!c) throw new Error(`unknown client ${clientId}`)
+    // resource not found = invalid params (-32602, the code the 2026-07-28 spec settles on), not an internal error
+    if (!c) throw new McpError(ErrorCode.InvalidParams, `unknown client ${clientId}`)
     const items = deps.memories(c.id).map((m) => ({ at: m.timestamp, type: m.tag?.type || 'note', sentence: m.sentence, blobId: m.blobId || null, walrus: m.blobId ? `${deps.aggregator}/v1/blobs/${m.blobId}` : null }))
     return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify({ client: { id: c.id, name: c.name }, count: items.length, memories: items }, null, 2) }] }
   })

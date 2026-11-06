@@ -34,6 +34,6 @@ const landing = !q.has('pay') && !q.has('app') && !q.has('tab')
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {landing ? <Landing /> : <Suspense fallback={null}><App /></Suspense>}
+    {landing ? <Landing /> : <Suspense fallback={<p role="status" style={{ padding: '3rem 1rem', textAlign: 'center', font: '14px system-ui, sans-serif', color: '#555' }}>{q.has('pay') ? 'Loading invoice…' : 'Loading dashboard…'}</p>}><App /></Suspense>}
   </StrictMode>,
 )

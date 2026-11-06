@@ -408,7 +408,7 @@ export function incentive(inv, profile, now = new Date()) {
   const overdue = -daysToDue
   const grace = Math.max(0, delay ?? 0) + 3
   if (c.noLateFee) return none('Your rule for this client: no late fees.')
-  if (overdue <= grace) return none(`${overdue} day(s) overdue, within their usual pattern (+3 days grace): no fee yet.`)
+  if (overdue <= grace) return none(`${overdue} day(s) overdue; they usually pay ~${Math.max(0, delay ?? 0)} day(s) late, so a late fee starts after ${grace} days (${Math.max(0, delay ?? 0)} + 3 grace).`)
   const pct = c.lateFeePct ?? Math.round(1.5 * Math.ceil(overdue / 30) * 10) / 10
   if (!(pct > 0)) return none('Your rule for this client sets the late fee to 0%.')
   return { kind: 'late_fee', pct, newBase: cents(base * (1 + pct / 100)), reason: `${overdue} days overdue, past their usual ${Math.max(0, delay ?? 0)}-day delay + 3 days grace: ${c.lateFeePct != null ? `your stated ${pct}% late fee` : `1.5% per started 30 days (${pct}%)`}.` }

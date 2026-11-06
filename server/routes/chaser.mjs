@@ -334,6 +334,7 @@ router.get('/pay/:id', async (req, res) => {
       paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
       slushPayUrl: sui.slushPayUrl({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
       explorerTx: i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : null,
+      paidOn: i.status === 'paid' ? i.settledAt || null : null,
       receipt: receiptOf(i),
       eInvoice: Boolean(seller()),
       // anti-fraud signal for the payer: the payee's SuiNS name (Tatum NameService, cached 1 h) and how many

@@ -194,7 +194,11 @@ export default function App() {
     setActiveTab(tab);
     const url = `?tab=${tab}${inv ? `&inv=${encodeURIComponent(inv)}` : ''}`;
     if (url !== window.location.search) history.pushState(null, '', url);
+    // keyboard and screen-reader users land on the new view's heading, not back at the top of the page
+    setTimeout(() => { const h = document.querySelector('main h1') as HTMLElement | null; if (h) { h.tabIndex = -1; h.focus({ preventScroll: true }); } }, 60);
   };
+  // on a narrow screen the active tab may sit past the nav's edge: bring it into view when the tab changes
+  useEffect(() => { document.querySelector('nav[aria-label="Main"] [aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [activeTab]);
   const [clientNote, setClientNote] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastTone, setToastTone] = useState<'ok' | 'error'>('ok');
@@ -279,13 +283,13 @@ export default function App() {
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== 'hidden');
   // Back/Forward between ?tab= URLs switches the tab
   useEffect(() => {
-    const on = () => { const t = new URLSearchParams(window.location.search).get('tab') as TabKey | null; setActiveTab(t && ['today', 'clients', 'invoices', 'pay', 'proof'].includes(t) ? t : 'today'); };
+    const on = () => { const q = new URLSearchParams(window.location.search); const t = q.get('tab') as TabKey | null; setActiveTab(t && ['today', 'clients', 'invoices', 'pay', 'proof'].includes(t) ? t : 'today'); const inv = q.get('inv'); if (inv) setSelectedInvoiceId(inv); };
     window.addEventListener('popstate', on);
     return () => window.removeEventListener('popstate', on);
   }, []);
   // a title per page: tabs in history and bookmarks are distinguishable, a pay page names its invoice
   useEffect(() => {
-    document.title = PAY_ONLY ? `Pay invoice ${PAY_ONLY} · Invoice Chaser` : `${activeTab === 'proof' ? '/proof' : activeTab[0].toUpperCase() + activeTab.slice(1)} · Invoice Chaser`;
+    document.title = PAY_ONLY ? (PAY_ONLY === '-' ? 'Pay an invoice · Invoice Chaser' : `Pay invoice ${PAY_ONLY} · Invoice Chaser`) : `${activeTab === 'proof' ? '/proof' : activeTab[0].toUpperCase() + activeTab.slice(1)} · Invoice Chaser`;
   }, [activeTab]);
   useEffect(() => {
     const on = () => setPageVisible(document.visibilityState !== 'hidden');
@@ -456,7 +460,7 @@ export default function App() {
       // never leave the previous invoice's amount on screen under a different invoice id
       if (!res.ok) {
         if (res.status === 404) setInvoiceDetail(null);
-        return setDetailError(res.status === 404 ? 'This invoice does not exist. Check the link you were sent.' : data.error || `Could not load the invoice (HTTP ${res.status}). Try again shortly.`);
+        return setDetailError(res.status === 404 ? 'This invoice does not exist. Check the link you were sent.' : `Could not load the invoice right now (HTTP ${res.status}). Please try again.`);
       }
       setDetailError('');
       setInvoiceDetail(data);
@@ -719,8 +723,8 @@ export default function App() {
       {/* Top Header & Navigation with Tabs recipe */}
       <header className="border-b border-secondary bg-primary sticky top-0 z-20">
         <div className="max-w-7xl mx-auto px-xl min-h-16 py-xs md:py-0 flex flex-wrap md:flex-nowrap items-center justify-between gap-y-xs">
-          <a href="/" aria-label="Invoice Chaser home" className="flex items-center gap-md rounded-lg focus-visible:ring-2 focus-visible:ring-focus-ring">
-            <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs">
+          <a href={PAY_ONLY ? `?pay=${encodeURIComponent(PAY_ONLY)}` : '/'} className="flex items-center gap-md rounded-lg focus-visible:ring-2 focus-visible:ring-focus-ring">
+            <div className="w-8 h-8 rounded-lg bg-brand-solid flex items-center justify-center text-primary-on-brand font-bold text-sm shadow-xs" aria-hidden="true">
               IC
             </div>
             <div>
@@ -799,7 +803,7 @@ export default function App() {
             </section>
 
             {/* Overview Stats (Card Recipe: rounded-xl, border-secondary, bg-primary, p-xl, shadow-xs) */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-lg">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-lg md:auto-rows-[minmax(10rem,auto)]">
               <section className="rounded-xl border border-secondary bg-primary p-xl shadow-xs">
                 <div className="flex items-center justify-between text-tertiary mb-xs">
                   <span className="text-sm">Expected Inflow (Next 7 Days)</span>
@@ -815,7 +819,7 @@ export default function App() {
                 )}
                 <div className="text-xs text-utility-success-700 mt-xs flex items-center gap-xxs font-medium">
                   <TrendingUp className="w-3.5 h-3.5" />
-                  <span>{summary ? summary.upcomingInflows.length : 0} expected payments · {usd(summary?.expectedInflow30Days)} USDC in 30 days</span>
+                  <span>{summary ? summary.upcomingInflows.length : '—'} expected payments · {usd(summary?.expectedInflow30Days)} USDC in 30 days</span>
                 </div>
               </section>
 
@@ -825,10 +829,10 @@ export default function App() {
                   <AlertCircle className="w-4 h-4 text-fg-error-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {summary ? usd(summary.overdueAmount) : '0.00'} <span className="text-xs font-normal text-secondary">USDC</span>
+                  {summary ? usd(summary.overdueAmount) : '—'} <span className="text-xs font-normal text-secondary">USDC</span>
                 </div>
                 <div className="text-xs text-secondary mt-xs flex items-center gap-xxs font-medium">
-                  <span>Tracked across {clientsList.length} clients</span>
+                  <span>Tracked across {clientsList.length || '—'} clients</span>
                 </div>
               </section>
 
@@ -896,7 +900,7 @@ export default function App() {
                       </div>
                     ))
                   ) : (
-                    <div className="text-sm text-secondary p-md">No pending actions for today.</div>
+                    <div className="text-sm text-secondary p-md">{summary ? 'No pending actions for today.' : 'Loading actions from Walrus Memory…'}</div>
                   )}
                 </div>
               </section>
@@ -942,7 +946,7 @@ export default function App() {
                       ) : (
                         <tr>
                           <td colSpan={3} className="px-md py-sm text-sm text-tertiary text-center">
-                            No inflows scheduled this week.
+                            {summary ? 'No inflows scheduled this week.' : 'Loading…'}
                           </td>
                         </tr>
                       )}
@@ -963,7 +967,7 @@ export default function App() {
                 <span className="text-xs text-secondary">{clientsList.length} active clients</span>
               </div>
               <div className="flex gap-sm">
-                <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddClient(); }} placeholder="New client name" className="flex-1 min-w-0 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                <input value={newClientName} onChange={(e) => setNewClientName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAddClient(); }} placeholder="New client name" aria-label="New client name" className="flex-1 min-w-0 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
                 <button onClick={handleAddClient} className="rounded-lg bg-brand-solid px-md py-xs text-xs font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Add</button>
               </div>
 
@@ -1119,6 +1123,7 @@ export default function App() {
                         <input
                           type="text"
                           value={clientNote}
+                          aria-label="Rule for this client"
                           onChange={(e) => setClientNote(e.target.value)}
                           placeholder='e.g. "Never chase before the 10th of the month" or "Prefers formal reminders"'
                           className="flex-1 min-w-0 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
@@ -1270,12 +1275,13 @@ export default function App() {
                   <select
                     id="invoice-select"
                     value={selectedInvoiceId}
-                    onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                    onChange={(e) => { setSelectedInvoiceId(e.target.value); goTab(activeTab, e.target.value); }}
                     className="appearance-none max-w-[calc(100vw-3rem)] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
                   >
-                    {allInvoices.map((inv) => (
+                    {/* real invoices first (test payments under 1 USDC last), open before paid, newest first */}
+                    {[...allInvoices].sort((a: any, b: any) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv: any) => (
                       <option key={inv.id} value={inv.id}>
-                        #{inv.id} ({inv.clientName} - {inv.payAmount} USDC)
+                        #{inv.id} ({inv.clientName} - {inv.payAmount} USDC · {inv.status})
                       </option>
                     ))}
                   </select>
@@ -1605,7 +1611,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 Public Payment Gateway
               </span>
               <h1 className="text-heading-lg font-bold text-primary break-all">
-                Pay Invoice #{selectedInvoiceId}
+                {PAY_ONLY === '-' ? 'No invoice in this link' : `Pay Invoice #${selectedInvoiceId}`}
               </h1>
               <p className="text-xs text-secondary">{invoiceDetail ? `${invoiceDetail.invoice.clientName} · due ${invoiceDetail.invoice.dueDate} · ` : ''}Pay in USDC on {netLabel}</p>
               {invoiceDetail?.invoice.terms && !invoiceDetail.invoice.terms.expired && invoiceDetail.invoice.status !== 'paid' && (
@@ -1617,13 +1623,16 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
               )}
               {invoiceDetail?.invoice.status === 'paid' && (
                 <p className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-sm font-semibold text-utility-success-700">
-                  <Check className="w-4 h-4" /> Paid · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
+                  <Check className="w-4 h-4" /> Paid{(invoiceDetail.invoice as any).paidOn ? ` on ${(invoiceDetail.invoice as any).paidOn}` : ''} · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
                 </p>
               )}
             </div>
 
             {detailError && (
-              <p role="alert" className="rounded-xl border border-utility-error-200 bg-utility-error-50 p-lg text-center text-sm font-medium text-utility-error-700">{detailError}</p>
+              <div role="alert" className="rounded-xl border border-utility-error-200 bg-utility-error-50 p-lg text-center text-sm font-medium text-utility-error-700 space-y-sm">
+                <p>{detailError}</p>
+                {!/does not exist/.test(detailError) && <button onClick={() => fetchInvoiceDetail(selectedInvoiceId)} className="rounded-lg border border-utility-error-300 bg-primary px-lg py-xs text-sm font-semibold text-utility-error-700 focus-visible:ring-2 focus-visible:ring-focus-ring">Retry</button>}
+              </div>
             )}
             {invoiceDetail?.invoice.id === selectedInvoiceId && (
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
@@ -1635,13 +1644,13 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   <span className="text-sm font-normal text-secondary">USDC</span>
                 </div>
                 <p className="text-xs text-tertiary mt-xs">
-                  Paid through the Sui Payment Kit registry with this invoice as the nonce, so the chain itself refuses a second payment. Verified through Tatum, remembered in Walrus Memory.
+                  Payments go through the Sui Payment Kit registry with this invoice as the nonce, so the chain itself refuses a second payment. Verified through Tatum, remembered in Walrus Memory.
                 </p>
                 {qr && invoiceDetail?.invoice.status !== 'paid' && (
                   <div className="mt-md flex flex-col items-center gap-xs">
                     <img src={qr} alt="Scan to pay with a Sui wallet" className="w-44 h-44" />
-                    <a href={invoiceDetail?.invoice.paymentUri} className="text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
-                    {invoiceDetail?.invoice.slushPayUrl && <a href={invoiceDetail.invoice.slushPayUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-utility-brand-700 hover:underline">Pay in Slush (phone or web)</a>}
+                    <a href={invoiceDetail?.invoice.paymentUri} className="inline-block py-sm px-xs text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
+                    {invoiceDetail?.invoice.slushPayUrl && <a href={invoiceDetail.invoice.slushPayUrl} target="_blank" rel="noopener noreferrer" className="inline-block py-sm px-xs text-xs font-semibold text-utility-brand-700 hover:underline">Pay in Slush (phone or web)</a>}
                   </div>
                 )}
                 {invoiceDetail && (
@@ -1653,9 +1662,10 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   <a href={`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(invoiceDetail.invoice.id)}/invoice.xml`} className="mt-sm ml-md inline-flex items-center gap-xxs text-xs font-semibold text-utility-brand-700 hover:underline">E-invoice XML (Factur-X)</a>
                 )}
                 {live.state !== 'off' && (
-                  <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
+                  <p className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
                     <span className={`w-2 h-2 rounded-full ${live.state === 'paid' ? 'bg-utility-success-600' : live.state === 'reconnecting' ? 'bg-utility-warning-600' : live.state.startsWith('paused') ? 'bg-tertiary' : 'bg-brand-solid animate-pulse'}`} />
-                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : live.state === 'paused-replaced' ? 'Live view moved to another tab with this invoice' : live.state === 'paused-refused' ? 'The server refused the live stream right now; payments are still checked every minute' : live.state === 'paused' || live.state === 'paused-hidden' ? 'Live stream paused to save gateway credits' : `Watching ${netLabel} live via ${live.via || 'Tatum gRPC'}${live.checkpoint ? ` · checkpoint ${live.checkpoint}` : ''}`}
+                    {live.state !== 'watching' && live.state !== 'connecting' ? <span role="status" aria-live="polite" className="sr-only">{live.state === 'paid' ? 'Payment seen live, verified' : live.state === 'verifying' ? 'Payment seen on-chain, verifying' : 'Live stream ' + live.state.replace('-', ' ')}</span> : null}
+                    {live.state === 'paid' ? `Payment seen live at checkpoint ${live.checkpoint ?? ''}` : live.state === 'verifying' ? 'Payment seen on-chain, verifying…' : live.state === 'reconnecting' ? 'Reconnecting to the live Sui stream…' : live.state === 'paused-replaced' ? 'Live view moved to another tab with this invoice' : live.state === 'paused-refused' ? 'The server refused the live stream right now; payments are still checked every minute' : live.state === 'paused' || live.state === 'paused-hidden' ? 'Live stream paused to save gateway credits' : <><span role="status" aria-live="polite">{`Watching ${netLabel} live via ${live.via || 'Tatum gRPC'}`}</span>{live.checkpoint && <span aria-hidden="true">{` · checkpoint ${live.checkpoint}`}</span>}</>}
                     {['paused', 'paused-replaced', 'paused-refused'].includes(live.state) && <button onClick={() => setLiveEpoch((n) => n + 1)} className="ml-xs font-semibold text-utility-brand-700 hover:underline">Resume</button>}
                   </p>
                 )}
@@ -1730,9 +1740,10 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
 
               {/* Or paste transaction digest */}
               <div className="space-y-sm border-t border-secondary pt-lg">
-                <span className="text-sm font-semibold text-primary block">Step 2: Paste the transaction digest</span>
+                <label htmlFor="digest-input" className="text-sm font-semibold text-primary block">Step 2: Paste the transaction digest</label>
                 <div className="flex flex-col gap-sm">
                   <input
+                    id="digest-input"
                     type="text"
                     value={digestInput}
                     onChange={(e) => setDigestInput(e.target.value)}
