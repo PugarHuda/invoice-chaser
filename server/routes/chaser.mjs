@@ -900,6 +900,8 @@ router.post('/mcp', mcpHandler((req) => ({
   search: (clientId, q) => mem.search(clientId, q, 5),
   terms: (inv) => paymentTerms(req, inv),
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
+  memories: (clientId) => memsFor(clientId),
+  aggregator: process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space',
   baseUrl: `${req.protocol}://${req.get('host')}`,
 })))
 router.all('/mcp', (_req, res) => res.status(405).set('Allow', 'POST').json({ error: 'MCP endpoint: POST JSON-RPC (Streamable HTTP, stateless)' }))

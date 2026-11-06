@@ -96,7 +96,7 @@ const serverCard = (req) => ({
   name: `${new URL(origin(req)).hostname.split('.').reverse().join('.')}/invoice-chaser`,
   version: '1.0.0',
   title: 'Invoice Chaser',
-  description: 'Read-only tools over what Invoice Chaser learned in Walrus Memory: open invoices, client profiles, reminder plans, semantic memory search, payment terms (MPP, x402), learning summary.',
+  description: 'Read-only tools (with output schemas) over what Invoice Chaser learned in Walrus Memory: open invoices, client profiles, reminder plans, semantic memory search, payment terms (MPP, x402), learning summary. Resources: the Walrus memories of every client (invoice-chaser://clients/{clientId}/memories). Prompt: chase_invoice.',
   websiteUrl: origin(req),
   repository: { url: REPO, source: 'github' },
   remotes: [{ type: 'streamable-http', url: `${origin(req)}/api/chaser/mcp`, supportedProtocolVersions: ['2025-11-25', '2025-06-18', '2025-03-26'] }],
