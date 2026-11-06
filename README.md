@@ -4,7 +4,7 @@
 
 **Live demo: https://invoice-chaser-sigma.vercel.app** (the landing page shows live production numbers; **Open live dashboard** or go straight to [`/?app`](https://invoice-chaser-sigma.vercel.app/?app), then Clients → Acme, Invoices → inv-101, [`/?tab=proof`](https://invoice-chaser-sigma.vercel.app/?tab=proof))
 
-**Demo video (1:51):** [invoice-chaser-demo-v4.mp4](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-demo-v4.mp4) · **Pitch deck:** [PPTX](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-deck.pptx) / [PDF](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-deck.pdf)
+**Demo video (2:17):** [invoice-chaser-demo-v4.mp4](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-demo-v4.mp4) · **Pitch deck:** [PPTX](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-deck.pptx) / [PDF](https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v4/invoice-chaser-deck.pdf)
 
 Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · Track 03 Consumer Finance · started in [Tatum AI Builder](https://ai.tatum.io) (see [`docs/ai-builder/prompts.md`](docs/ai-builder/prompts.md), tag `ai-builder-v0`).
 
