@@ -11,7 +11,7 @@ import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { ciiXml, seller } from '../facturx.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts } from '../engine.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts, promiseDate } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -260,9 +260,25 @@ router.post('/clients/:id/notes', async (req, res) => {
   if (text.length > 4000) return res.status(400).json({ error: 'Keep notes under 4000 characters' })
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
+  // when the email/call happened (YYYY-MM-DD or ISO); defaults to now
+  const occurredAt = req.body?.receivedAt ? new Date(req.body.receivedAt) : new Date()
+  if (Number.isNaN(occurredAt.getTime()) || occurredAt > new Date(Date.now() + DAY)) return res.status(400).json({ error: 'receivedAt must be a past date' })
   try {
-    const facts = await mem.ingestNotes(mem.writeNs(client.id, 40), text)
-    res.json({ success: true, facts, profile: profileOf(client.id) })
+    const ns = mem.writeNs(client.id, 41)
+    const facts = await mem.ingestNotes(ns, text, occurredAt)
+    // a promise to pay ("we'll pay next Friday"): the facts carry it as an absolute date; tie it to the
+    // invoice named in the text, else the client's largest open invoice
+    const date = facts.map(promiseDate).find(Boolean) || promiseDate(text)
+    let promise = null
+    if (date) {
+      const open = state().invoices.filter((i) => i.clientId === client.id && i.status !== 'paid' && !i.seed)
+      const inv = open.find((i) => text.includes(i.id)) || open.sort((a, b) => Number(b.baseAmount) - Number(a.baseAmount))[0]
+      if (inv) {
+        promise = { invoice: inv.id, date }
+        mem.remember(ns, `${client.name} promised to pay ${inv.id} by ${date}.`, { type: 'promise', client: client.id, invoice: inv.id, date, source: 'notes' })
+      }
+    }
+    res.json({ success: true, facts, promise, profile: profileOf(client.id) })
   } catch (e) {
     res.status(502).json({ error: `Walrus Memory analyze: ${e.message}` })
   }
@@ -517,6 +533,20 @@ router.post('/invoices/:id/terms', async (req, res) => {
     : `Invoice ${inv.id} for ${name}: ${rec.pct}% late fee added, now ${payAmount} USDC (was ${inv.payAmount} USDC).`
   const m = mem.remember(mem.writeNs(inv.clientId), sentence, { type: 'invoice_terms', client: inv.clientId, invoice: inv.id, kind: rec.kind, pct: rec.pct, until: rec.until || null, pay_amount: payAmount, was: inv.payAmount })
   res.json({ invoice: { id: inv.id, payAmount }, terms: rec, memory: m })
+})
+
+// Record a promise to pay by a date (owner): the plan holds reminders until then and the profile
+// learns whether this client keeps promises.
+router.post('/invoices/:id/promise', (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (inv.status === 'paid') return res.status(409).json({ error: 'Invoice is already paid' })
+  const date = String(req.body?.date || '')
+  if (isoDay(`${date}T00:00:00Z`) !== date) return res.status(400).json({ error: 'date must be a real calendar day (YYYY-MM-DD)' })
+  const name = clientName(clients, inv.clientId)
+  const m = mem.remember(mem.writeNs(inv.clientId), `${name} promised to pay ${inv.id} by ${date}.`, { type: 'promise', client: inv.clientId, invoice: inv.id, date, source: 'owner' })
+  res.json({ promise: { invoice: inv.id, date }, memory: m })
 })
 
 router.post('/invoices/:id/remind', async (req, res) => {

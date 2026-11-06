@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt } from './engine.mjs'
+import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt, promiseDate } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -290,4 +290,33 @@ test('forecast range comes from the learned delay spread', () => {
   assert.match(v.delayRange.basis, /p10-p90 of 5/)
   // under three paid invoices: median ±2 days
   assert.deepEqual([computeProfile('v', varied.slice(0, 4)).delayRange.low, computeProfile('v', varied.slice(0, 4)).delayRange.high], [7, 11])
+})
+
+test('promises: parsed from text, hold the plan until the date, escalate when broken, learned per client', () => {
+  assert.equal(promiseDate('Acme Corp will pay invoice inv-101 on 2026-11-13.'), '2026-11-13')
+  assert.equal(promiseDate('They promised payment by November 13, 2026'), '2026-11-13')
+  assert.equal(promiseDate('We will transfer the funds on 3rd December 2026'), '2026-12-03')
+  assert.equal(promiseDate('Their office closes on 2026-12-24'), null) // a date, but no payment
+  assert.equal(promiseDate('will pay on 2026-02-30'), null) // not a real day
+  const base = [
+    ...acme,
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'acme', invoice: 'inv-9', base: 300, pay_amount: '300.009999', due: '2026-11-05' }),
+    mem('2026-11-06T00:00:00Z', { type: 'promise', client: 'acme', invoice: 'inv-9', date: '2026-11-12' }),
+  ]
+  const inv = deriveState(new Map([['n', base]])).invoices.find((i) => i.id === 'inv-9')
+  assert.equal(inv.promise.date, '2026-11-12')
+  // before the date: one check-in the day after, prediction = the promise (no broken promises yet)
+  const before = plan(inv, computeProfile('acme', base, new Date('2026-11-08T00:00:00Z')), { now: new Date('2026-11-08T00:00:00Z') })
+  assert.deepEqual(before.steps.map((s) => s.date), ['2026-11-13'])
+  assert.equal(before.predictedPayDate, '2026-11-12')
+  assert.match(before.memoriesUsed[0], /Promise: pay by 2026-11-12/)
+  // after the date, unpaid: follow up today, one tone firmer than planned; the profile counts it broken
+  const prof = computeProfile('acme', base, new Date('2026-11-14T00:00:00Z'))
+  assert.equal(prof.promiseStats.broken, 1)
+  const after = plan(inv, prof, { now: new Date('2026-11-14T00:00:00Z') })
+  assert.equal(after.steps[0].date, '2026-11-14')
+  assert.equal(after.steps[0].tone, 'firm') // acme's best tone is formal -> firm
+  // paid on time: kept
+  const kept = [...base, mem('2026-11-11T00:00:00Z', { type: 'invoice_paid', client: 'acme', invoice: 'inv-9', paid: '2026-11-11', delay_days: 6 })]
+  assert.equal(computeProfile('acme', kept, new Date('2026-11-20T00:00:00Z')).promiseStats.kept, 1)
 })

@@ -88,6 +88,9 @@ export function deriveState(store, now = new Date()) {
         inv.payAmount = t.pay_amount
         inv.quotes.push({ amount: t.pay_amount, at: m.timestamp, kind: t.kind, until: t.until || null })
       }
+    } else if (t.type === 'promise' && invoices.has(t.invoice) && isoDay(`${t.date}T00:00:00Z`) === t.date) {
+      // the client's latest promise to pay this invoice by a date (newest event wins)
+      invoices.get(t.invoice).promise = { date: t.date, at: m.timestamp, source: t.source || 'owner' }
     } else if (t.type === 'payer_expected') {
       if (clients.has(t.client)) clients.get(t.client).expectedPayer = { address: t.payer, name: t.name || null }
     }
@@ -124,7 +127,7 @@ export function invoiceStatus(inv, now = new Date()) {
 
 // ---- Learned profile ------------------------------------------------------------------
 
-export function computeProfile(clientId, memories) {
+export function computeProfile(clientId, memories, now = new Date()) {
   // One entry per invoice: its latest payment event (a partial then a top-up is one invoice, not two),
   // remembering whether any part of it was short-paid.
   const byInvoice = new Map()
@@ -221,8 +224,37 @@ export function computeProfile(clientId, memories) {
     memoryCount: memories.length,
     // overpayments are kept as a credit the client can draw on (exact micro-unit sum)
     creditUsdc: unmicro([...new Map(memories.filter((m) => m.tag?.overpaid).map((m) => [m.tag.digest || m.id || m.timestamp, m])).values()].reduce((a, m) => a + micro(m.tag.overpaid), 0n)),
+    // promises kept vs broken: a promise is judged by the invoice's paid date (or today, if still unpaid)
+    promiseStats: (() => {
+      const latest = new Map()
+      for (const m of memories.filter((x) => x.tag?.type === 'promise').sort((a, b) => a.timestamp.localeCompare(b.timestamp))) latest.set(m.tag.invoice, m.tag.date)
+      const st = { kept: 0, broken: 0, pending: 0 }
+      for (const [invoice, date] of latest) {
+        const paid = pays.find((p) => p.tag.invoice === invoice && finished(p))?.tag.paid
+        if (paid) st[paid <= date ? 'kept' : 'broken']++
+        else st[isoDay(now) > date ? 'broken' : 'pending']++
+      }
+      return st
+    })(),
     revokedRules: [...revokedAt.keys()].filter((r) => !preferences.some((p) => p.tag.note === r) && !notes.some((n) => n.sentence === r)),
   }
+}
+
+// "will pay on 2026-11-13" / "promised payment by November 13, 2026": the promised date, or null.
+// analyze() with occurredAt turns "next Friday" into an absolute date inside the fact, so facts parse too.
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+export function promiseDate(text = '') {
+  const t = String(text).toLowerCase()
+  if (!/\b(pay|paid|payment|settle|transfer|wire|remit)/.test(t) || !/\b(will|promise|by|on|expect|plan|commit|going to|scheduled)\b/.test(t)) return null
+  const iso = t.match(/\b(20\d\d)-(\d\d)-(\d\d)\b/)
+  // a real calendar day only (Date would roll 02-30 over to 03-02)
+  if (iso) return isoDay(`${iso[1]}-${iso[2]}-${iso[3]}T00:00:00Z`) === iso[0] ? iso[0] : null
+  const M = MONTHS.join('|')
+  const md = t.match(new RegExp(`\\b(${M})\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(20\\d\\d)\\b`)) || t.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${M}),?\\s+(20\\d\\d)\\b`))
+  if (!md) return null
+  const [mon, day] = MONTHS.includes(md[1]) ? [md[1], md[2]] : [md[2], md[1]]
+  const d = isoDay(Date.UTC(Number(md[3]), MONTHS.indexOf(mon), Number(day)))
+  return d && Number(d.slice(8)) === Number(day) ? d : null
 }
 
 // ---- Preferences -> hard constraints ------------------------------------------------------
@@ -277,7 +309,29 @@ export function applyConstraints(date, c = {}) {
 
 // ---- Reminder plan ------------------------------------------------------------------------
 
-export function plan(inv, profile, { ignoreMemory = false } = {}) {
+// A promise to pay overrides the timing: no reminder before the promised date; a missed promise
+// escalates one tone at once. How much it moves the prediction depends on whether this client keeps them.
+const NEXT_TONE = { friendly: 'formal', formal: 'firm', firm: 'firm' }
+export function plan(inv, profile, opts = {}) {
+  const p = basePlan(inv, profile, opts)
+  const pr = !opts.ignoreMemory && inv.promise
+  if (!pr || inv.status === 'paid') return p
+  const today = isoDay(opts.now || new Date())
+  const ps = profile?.promiseStats || { kept: 0, broken: 0 }
+  const record = ps.kept + ps.broken ? `they kept ${ps.kept} of ${ps.kept + ps.broken} earlier promise(s)` : 'first promise on record'
+  const forced = profile?.constraints?.forceTone
+  if (pr.date >= today) {
+    const after = isoDay(addDays(`${pr.date}T00:00:00Z`, 1))
+    const trusted = ps.broken <= ps.kept
+    const steps = [{ dayOffset: Math.round((new Date(`${after}T00:00:00Z`) - new Date(`${inv.dueDate}T00:00:00Z`)) / DAY), date: after, tone: forced || (trusted ? 'friendly' : 'formal'), reason: `Promised to pay by ${pr.date}: no reminder before then, one check-in the day after` }]
+    return { ...p, predictedPayDate: trusted ? pr.date : [pr.date, p.predictedPayDate].filter(Boolean).sort().at(-1), steps, memoriesUsed: [`Promise: pay by ${pr.date} (${record}).`, ...p.memoriesUsed] }
+  }
+  const tone = forced || NEXT_TONE[p.steps[0]?.tone || 'friendly']
+  const steps = [{ dayOffset: Math.round((new Date(`${today}T00:00:00Z`) - new Date(`${inv.dueDate}T00:00:00Z`)) / DAY), date: today, tone, reason: `Promised ${pr.date} and not paid: follow up now, one tone firmer` }, ...p.steps.filter((x) => x.date > today)]
+  return { ...p, steps, memoriesUsed: [`Broken promise: said they would pay by ${pr.date} (${record}).`, ...p.memoriesUsed] }
+}
+
+function basePlan(inv, profile, { ignoreMemory = false } = {}) {
   const due = new Date(`${inv.dueDate}T00:00:00Z`)
   if (ignoreMemory || !profile || profile.totalPaidInvoices === 0) {
     // Even with no payment history, the client's stated rules are memories and still apply.

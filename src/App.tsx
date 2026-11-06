@@ -122,6 +122,7 @@ interface InvoiceDetail {
     explorerTx?: string | null;
     receipt?: { blobId: string; url: string; at: string } | null;
     receiptsEnabled?: boolean;
+    promise?: { date: string; at: string; source: string } | null;
     terms?: { kind: 'early_discount' | 'late_fee'; pct: number; until: string | null; original: string; expired?: boolean } | null;
   };
   incentive?: { kind: 'early_discount' | 'late_fee' | null; pct?: number; until?: string; newBase?: number; reason: string };
@@ -224,6 +225,9 @@ export default function App() {
   const [walletBusy, setWalletBusy] = useState<string | null>(null);
   const [qr, setQr] = useState<string>('');
   const [noteText, setNoteText] = useState<string>('');
+  // when the email/call happened: Walrus analyze() resolves "next Friday" against it
+  const [noteDate, setNoteDate] = useState<string>(new Date().toISOString().slice(0, 10));
+  const [promiseInput, setPromiseInput] = useState<string>('');
   const [noteBusy, setNoteBusy] = useState<boolean>(false);
   const [payerInput, setPayerInput] = useState<string>('');
   const handleSetPayer = async () => {
@@ -336,10 +340,10 @@ export default function App() {
     if (noteText.trim().length < 10) return showToast('Paste at least a sentence', 'error');
     setNoteBusy(true);
     try {
-      const res = await fetch(`/api/chaser/clients/${selectedClientId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: noteText }) });
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: noteText, receivedAt: noteDate }) });
       const data = await res.json();
       if (!res.ok) return showToast(data.error || 'Could not analyze notes', 'error');
-      showToast(`Walrus extracted ${data.facts.length} fact(s) from your notes`);
+      showToast(`Walrus extracted ${data.facts.length} fact(s) from your notes${data.promise ? ` · promise to pay ${data.promise.invoice} by ${data.promise.date} recorded` : ''}`);
       setNoteText('');
       fetchClientDetail(selectedClientId);
       if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
@@ -1144,9 +1148,13 @@ export default function App() {
 
                     {/* Free-form notes -> Walrus Memory analyze() */}
                     <div className="flex flex-col gap-sm pt-xs">
-                      <label className="text-sm font-medium text-secondary flex items-center gap-xs">
+                      <label htmlFor="teach-rule" className="text-sm font-medium text-secondary flex items-center gap-xs">
                         <Brain className="w-3.5 h-3.5 text-fg-brand-primary" />
                         <span>Paste an email or call notes from this client</span>
+                      </label>
+                      <label className="text-xs text-tertiary flex items-center gap-xs">Sent or held on
+                        <input type="date" value={noteDate} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setNoteDate(e.target.value)} className="rounded-md bg-primary px-sm py-xxs text-xs text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                        <span>(relative dates like "next Friday" are resolved against this; a promise to pay is tracked)</span>
                       </label>
                       <textarea
                         id="teach-rule"
@@ -1528,6 +1536,35 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                         )}
                       </div>
                     </div>
+
+                    {/* Promise to pay: holds the plan until the date; kept/broken is learned per client */}
+                    {invoiceDetail.invoice.status !== 'paid' && (
+                      <div className="rounded-xl border border-secondary p-xl space-y-xs">
+                        <p className="text-sm font-semibold text-primary">Promise to pay</p>
+                        <p className="text-xs text-tertiary">
+                          {invoiceDetail.invoice.promise
+                            ? `${invoiceDetail.invoice.clientName} promised to pay by ${invoiceDetail.invoice.promise.date}${invoiceDetail.invoice.promise.date < new Date().toISOString().slice(0, 10) ? ' and missed it: the plan follows up now, one tone firmer' : ': no reminder before then'}.`
+                            : 'None recorded. Record one here, or paste the email on the client page ("we will pay next Friday").'}
+                          {(invoiceDetail as any).profile?.promiseStats && ((invoiceDetail as any).profile.promiseStats.kept + (invoiceDetail as any).profile.promiseStats.broken) > 0 && ` Kept ${(invoiceDetail as any).profile.promiseStats.kept} of ${(invoiceDetail as any).profile.promiseStats.kept + (invoiceDetail as any).profile.promiseStats.broken} earlier promises.`}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-sm">
+                          <label className="sr-only" htmlFor="promise-date">Promised pay date</label>
+                          <input id="promise-date" type="date" value={promiseInput} onChange={(e) => setPromiseInput(e.target.value)} className="rounded-md bg-primary px-sm py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
+                          <button
+                            disabled={!promiseInput}
+                            onClick={async () => {
+                              const r = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/promise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: promiseInput }) });
+                              const d = await r.json();
+                              if (!r.ok) return showToast(d.error || 'Could not record the promise', 'error');
+                              showToast(`Promise to pay by ${d.promise.date} saved to Walrus Memory`);
+                              setPromiseInput('');
+                              fetchInvoiceDetail(invoiceDetail.invoice.id);
+                            }}
+                            className="rounded-lg border border-primary bg-primary px-lg py-xs text-sm font-semibold text-secondary shadow-xs hover:bg-primary_hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled"
+                          >Record promise</button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Payment terms learned from memory: early-payment discount or late fee */}
                     {invoiceDetail.incentive && invoiceDetail.invoice.status !== 'paid' && (

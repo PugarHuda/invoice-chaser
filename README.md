@@ -163,6 +163,25 @@ The owner only approves the recommendation. `POST /invoices/:id/terms` recompute
 
 An unpaid discount expires after its date, and the full amount is owed again. Reminders state the terms in server-written text, never in LLM text, and the pay page shows them to the payer.
 
+## Promises to pay, tracked in memory
+
+A client's "we'll pay next Friday" becomes a `promise` memory. It can come from two places:
+- **The owner records it** on the invoice.
+- **It's found in a pasted email.** The note's date is passed to Walrus `analyze()` as `occurredAt`, so the relayer writes "next Friday" as an absolute date inside the fact, and `promiseDate()` reads it.
+
+The plan holds every reminder until the promised date, then checks in the day after. If the date passes unpaid, the plan follows up at once, one tone firmer.
+
+The profile learns `promiseStats` (kept / broken / pending) from each promise against the invoice's paid date. A client who breaks promises gets a formal check-in, and the forecast doesn't take their word for the date.
+
+## Recall depth
+
+- **Ask this memory** has three Walrus ranking modes:
+  - *Closest*: cosine relevance.
+  - *Newest*: `sort: "recent"`. The relayer over-fetches, then orders by write time.
+  - *Weighted*: `scoringWeights` blends meaning with recency, 30-day half-life.
+- **Reminder drafts** add a fresh recall for that client and tone, under a token budget (`maxTokens: 400`, `truncationStrategy: "high-relevance-only"`, `maxDistance: 0.8`). The UI shows how many memories it used and the SDK's token estimate.
+- **The 7-day forecast** is a range taken from each client's learned pay-date spread (p10–p90 of past delays).
+
 ## E-invoice: Factur-X / ZUGFeRD
 
 With the seller identity set (`SELLER_NAME`, `SELLER_COUNTRY`, optional `SELLER_VAT_ID`), every invoice PDF carries a Factur-X CII XML in the **MINIMUM** profile. It is embedded as `factur-x.xml` with AFRelationship `Alternative`, the catalog `/AF` entry and the `fx:` XMP block. The same XML is also served at `/api/chaser/pay/:id/invoice.xml`.

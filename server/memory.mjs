@@ -233,9 +233,11 @@ async function doLoad(only = null, nextCursor = null) {
 }
 
 // analyze(): the relayer extracts facts from free text and stores each as a memory in `ns`.
-export async function ingestNotes(ns, text) {
+// occurredAt: when the email/call happened; the relayer then writes relative dates ("next Friday") as
+// absolute ones inside each fact (MemWal AnalyzeOptions.occurredAt)
+export async function ingestNotes(ns, text, occurredAt = null) {
   // facts are stored as raw text: decode() only trusts signed tags, and no '#' even reaches the extractor
-  const r = await memwal().analyze(text.replace(/#/g, '＃'), ns)
+  const r = await memwal().analyze(text.replace(/#/g, '＃'), occurredAt ? { namespace: ns, occurredAt } : ns)
   if (!store.has(ns)) store.set(ns, [])
   const at = new Date().toISOString()
   const local = r.facts.map((f) => ({ id: f.id, sentence: f.text, tag: { type: 'note', source: 'walrus-analyze', at }, timestamp: at, status: 'pending' }))
