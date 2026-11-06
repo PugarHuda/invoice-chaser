@@ -537,7 +537,8 @@ function reserveDigest(digest, invoiceId) {
   for (const [d, r] of reservedDigests) if (Date.now() - r.at > RESERVE_MS) reservedDigests.delete(d)
   reservedDigests.set(digest, { invoiceId, at: Date.now() })
 }
-async function settleDigest(invoiceId, requested, channel) {
+// extraTag: protocol fields remembered with the payment (e.g. the x402 payment-identifier and its fingerprint)
+async function settleDigest(invoiceId, requested, channel, extraTag = {}) {
   const held = reservedDigests.get(requested)
   if (held && held.invoiceId !== invoiceId && Date.now() - held.at < RESERVE_MS) return [409, { error: 'This payment was built for a different invoice' }]
   const { invoices } = state()
@@ -625,7 +626,7 @@ async function settleDigest(invoiceId, requested, channel) {
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay < 0 ? `${-delay} day(s) before due` : `${delay} day(s) after due`}, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: discountHonored ? quoted : inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
+      { ...extraTag, type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: discountHonored ? quoted : inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
     )
     return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : `the public Sui fullnode (${sui.fallbackReason()})`}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
@@ -746,7 +747,12 @@ const paymentRequiredV2 = (req, inv, error = 'Payment required') => ({
   x402Version: 2, error,
   resource: { url: `${req.protocol}://${req.get('host')}${req.originalUrl}`, description: `Invoice ${inv.id} (${inv.description || 'services'})`, mimeType: 'application/json', serviceName: 'Invoice Chaser' },
   accepts: [requirementsV2(inv)],
-  extensions: { bazaar: bazaarV2(inv) },
+  extensions: {
+    bazaar: bazaarV2(inv),
+    // x402 payment-identifier extension: an agent may send an idempotency id; a retry of the same payment
+    // gets the original result back (looked up in Walrus Memory, so it holds across instances and restarts)
+    'payment-identifier': { info: { required: false }, schema: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object', properties: { required: { type: 'boolean' }, id: { type: 'string', minLength: 16, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' } }, required: ['required'] } },
+  },
 })
 // x402 Bazaar discovery extension (coinbase/x402 specs/extensions/bazaar.md): tells x402 catalogs and
 // agents what this resource takes and returns; routeTemplate keys every invoice to one catalog entry.
@@ -791,10 +797,24 @@ async function x402v2(req, res, inv, header) {
   if (a.scheme !== 'exact') return fail('invalid_scheme')
   if (a.network !== want.network) return fail('invalid_network')
   if (a.asset !== want.asset || a.amount !== want.amount || sui.normAddr(a.payTo) !== sui.normAddr(want.payTo)) return fail('invalid_payment_requirements', 402, 'accepted does not match the current requirements of this invoice')
-  return x402Signed(req, res, inv, want, p.payload, fail, 2)
+  // idempotency: same id + same payment = the original success; same id + anything else = 409
+  const pid = p.extensions?.['payment-identifier']?.info?.id
+  let idem = {}
+  if (pid !== undefined) {
+    if (typeof pid !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(pid)) return fail('invalid_payload', 400, 'payment-identifier id must be 16-128 characters [A-Za-z0-9_-]')
+    const fp = createHash('sha256').update(JSON.stringify([a.scheme, a.network, a.asset, a.amount, sui.normAddr(a.payTo), req.baseUrl + req.path, p.payload?.transaction || ''])).digest('hex').slice(0, 32)
+    const seen = [...mem.store.values()].flat().find((m) => m.tag?.payment_id === pid)
+    if (seen) {
+      if (seen.tag.payment_fp !== fp) return fail('invalid_payload', 409, 'payment-identifier was already used for a different payment')
+      res.set('PAYMENT-RESPONSE', b64json({ success: true, transaction: seen.tag.digest, network: want.network, payer: seen.tag.payer || undefined, amount: want.amount }))
+      return res.status(200).json({ success: true, replayed: true, invoice: seen.tag.invoice, digest: seen.tag.digest, explorer: `${sui.EXPLORER}/tx/${seen.tag.digest}`, protocol: 'x402-v2' })
+    }
+    idem = { payment_id: pid, payment_fp: fp }
+  }
+  return x402Signed(req, res, inv, want, p.payload, fail, 2, idem)
 }
 // Shared facilitator path for v2 and standard v1 signed payloads: verify, simulate, broadcast, settle.
-async function x402Signed(req, res, inv, want, payload, fail, version) {
+async function x402Signed(req, res, inv, want, payload, fail, version, idem = {}) {
   const { signature, transaction } = payload || {}
   if (typeof signature !== 'string' || typeof transaction !== 'string' || transaction.length > 20_000) return fail('invalid_payload', 400, 'payload needs signature and transaction (base64)')
   // one settlement per invoice at a time (per instance), held from inspection through settlement
@@ -802,13 +822,13 @@ async function x402Signed(req, res, inv, want, payload, fail, version) {
   if (mem.loadState.truncated?.length) return fail('unexpected_verify_error', 503, 'memory is not fully loaded; retry shortly')
   x402Inflight.add(inv.id)
   try {
-    return await x402v2Settle(req, res, inv, want, signature, transaction, fail, version)
+    return await x402v2Settle(req, res, inv, want, signature, transaction, fail, version, idem)
   } finally {
     x402Inflight.delete(inv.id)
   }
 }
 const x402Inflight = new Set()
-async function x402v2Settle(req, res, inv, want, signature, transaction, fail, version = 2) {
+async function x402v2Settle(req, res, inv, want, signature, transaction, fail, version = 2, idem = {}) {
   if (state().invoices.find((i) => i.id === inv.id)?.status === 'paid') return fail('invalid_transaction_state', 409, 'invoice is already paid')
   let check
   try {
@@ -827,7 +847,7 @@ async function x402v2Settle(req, res, inv, want, signature, transaction, fail, v
   }
   let code, body
   for (let i = 0; i < 6; i++) {
-    ;[code, body] = await settleDigest(inv.id, digest, version === 2 ? 'x402-v2' : 'x402')
+    ;[code, body] = await settleDigest(inv.id, digest, version === 2 ? 'x402-v2' : 'x402', idem)
     if (!body.retry) break
     await new Promise((r) => setTimeout(r, 2000))
   }
