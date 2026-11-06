@@ -38,6 +38,8 @@ export const llms = (base) => `# Invoice Chaser
 
 ## Receipts and calendar
 - \`GET ${base}/api/chaser/pay/{invoiceId}/invoice.pdf\`: the invoice as a PDF (exact amount, Payment Kit sui:pay QR, pay link, MPP and x402 endpoints; stamped PAID with its transaction once settled).
+- \`GET ${base}/api/chaser/pay/{invoiceId}/invoice.xml\`: the invoice as a Factur-X / ZUGFeRD CII XML (MINIMUM profile, USD settled 1:1 in USDC), also embedded in the PDF; 501 when the seller identity is not configured.
+- \`GET ${base}/api/chaser/pay/{invoiceId}\`: includes \`slushPayUrl\` (Slush universal pay link with the same Payment Kit nonce) and any agreed \`terms\` (early-payment discount with its deadline, or late fee).
 - Paid invoices can carry a PDF receipt stored on Walrus; \`GET ${base}/api/chaser/invoices/{invoiceId}\` returns \`receipt.url\` (Walrus aggregator).
 - [Reminder calendar](${base}/api/chaser/reminders.ics): every open invoice's reminder plan as iCalendar.
 

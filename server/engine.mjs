@@ -31,7 +31,7 @@ const TONES = ['friendly', 'formal', 'firm']
 // ---- State derived from memories --------------------------------------------------------
 
 /** @param {Map<string, any[]>} store */
-export function deriveState(store) {
+export function deriveState(store, now = new Date()) {
   const clients = new Map()
   const invoices = new Map()
   const usedDigests = new Set() // every digest ever settled, even if a later payment replaced it on the invoice
@@ -74,10 +74,23 @@ export function deriveState(store) {
         partialAmount: full ? null : unmicro(inv.receivedMicro),
         remaining: full ? '0.000000' : unmicro(micro(inv.payAmount) - inv.receivedMicro),
       })
+    } else if (t.type === 'invoice_terms' && invoices.has(t.invoice)) {
+      const inv = invoices.get(t.invoice)
+      // terms only change an invoice nobody has paid into yet (the route refuses otherwise)
+      if (inv.status === 'sent') {
+        inv.terms = { kind: t.kind, pct: t.pct, until: t.until || null, original: inv.payAmount, amount: t.pay_amount, at: m.timestamp }
+        inv.payAmount = t.pay_amount
+      }
     } else if (t.type === 'payer_expected') {
       if (clients.has(t.client)) clients.get(t.client).expectedPayer = { address: t.payer, name: t.name || null }
     }
   }
+  // an early-payment discount is an offer with a deadline: unpaid after it, the full amount is owed again
+  for (const inv of invoices.values())
+    if (inv.terms?.kind === 'early_discount' && inv.status === 'sent' && isoDay(now) > inv.terms.until) {
+      inv.payAmount = inv.terms.original
+      inv.terms = { ...inv.terms, expired: true }
+    }
   for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
   return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests }
 }
@@ -116,6 +129,8 @@ export function computeProfile(clientId, memories) {
   // A top-up is also recorded as invoice_partial, so "finished" = everything received covers the
   // invoice (each payment counted once by digest), not the type of the last event.
   const owedMicro = new Map(memories.filter((m) => m.tag?.type === 'invoice_sent').map((m) => [m.tag.invoice, micro(m.tag.pay_amount)]))
+  // agreed new terms (discount / late fee) change what "paid in full" means
+  for (const m of memories.filter((x) => x.tag?.type === 'invoice_terms' && owedMicro.has(x.tag.invoice)).sort((x, y) => x.timestamp.localeCompare(y.timestamp))) owedMicro.set(m.tag.invoice, micro(m.tag.pay_amount))
   const gotMicro = new Map()
   const seenDigest = new Set()
   for (const m of memories) {
@@ -198,6 +213,10 @@ export function parsePreference(text = '') {
   const only = WEEKDAYS.map((d, i) => (new RegExp(`\\bonly\\b[^.,;]{0,40}\\b${d}s?\\b`).test(t) ? i : -1)).filter((i) => i >= 0)
   if (skip.length) c.skipWeekdays = [...new Set([...(c.skipWeekdays || []), ...skip])]
   if (only.length) c.payWeekdays = only
+  const fee = t.match(/late\s*fee[^0-9%.]{0,15}(\d+(?:\.\d+)?)\s*%/)
+  if (fee) c.lateFeePct = Math.min(10, Number(fee[1]))
+  if (/\bno\s+late\s*fees?\b|\bnever\b[^.,;]{0,20}late\s*fee/.test(t)) c.noLateFee = true
+  if (/\bno\s+(?:early[-\s]*payment\s+)?discounts?\b/.test(t)) c.noDiscount = true
   if (/formal/.test(t) && /(always|only|use|prefer)/.test(t)) c.forceTone = 'formal'
   if (/friendly|casual/.test(t) && /(always|only|use|prefer)/.test(t)) c.forceTone = 'friendly'
   return c
@@ -276,6 +295,38 @@ export function plan(inv, profile, { ignoreMemory = false } = {}) {
     steps.push({ dayOffset: Math.round((second - due) / DAY), date: isoDay(second), tone: tone === 'firm' ? 'firm' : 'formal', reason: 'Escalate only if it is later than their usual pattern' })
   }
   return { type: 'adaptive', predictedPayDate: isoDay(predicted), predictedDelayDays: delay, steps, memoriesUsed: used, cites: profile.evidence || [] }
+}
+
+// ---- Payment incentive (learned, not guessed) ---------------------------------------------
+// Code decides; the owner only approves. A client who reliably pays late (EWMA >= 5 days, confidence
+// >= 50%) is offered a small early-payment discount before the due date, sized to their delay
+// (1% per 5 days late, max 3%): cheaper than waiting. Once overdue past their own usual delay + 3 days,
+// a late fee applies: the client's stated rate if a rule names one, else 1.5% per started 30 days.
+// Never both, never on a paid/partial invoice, and a "no late fees" / "no discounts" rule wins.
+export function incentive(inv, profile, now = new Date()) {
+  const none = (reason) => ({ kind: null, reason })
+  if (inv.status === 'paid' || inv.status === 'partial') return none('Only an unpaid invoice gets new terms.')
+  if (inv.terms && !inv.terms.expired) return none(`Terms already applied: ${inv.terms.kind === 'early_discount' ? `${inv.terms.pct}% early-payment discount until ${inv.terms.until}` : `${inv.terms.pct}% late fee`}.`)
+  const c = profile?.constraints || {}
+  const today = isoDay(now)
+  const daysToDue = Math.round((new Date(`${inv.dueDate}T00:00:00Z`) - new Date(`${today}T00:00:00Z`)) / DAY)
+  const delay = profile?.totalPaidInvoices ? Math.round(profile.ewmaDelayDays) : null
+  const base = Number(inv.baseAmount)
+  const cents = (x) => Math.round(x * 100) / 100
+  if (daysToDue >= 1) {
+    if (c.noDiscount) return none('Your rule for this client: no discounts.')
+    if (delay == null || profile.confidence < 0.5) return none('Not enough payment history to justify a discount yet.')
+    if (delay < 5) return none(`Pays within ~${Math.max(0, delay)} day(s) of due: no discount needed.`)
+    if (inv.terms?.expired) return none('An early-payment discount already expired on this invoice.')
+    const pct = Math.min(3, Math.floor(delay / 5))
+    return { kind: 'early_discount', pct, until: inv.dueDate, newBase: cents(base * (1 - pct / 100)), reason: `Usually pays ~${delay} days late (EWMA over ${profile.totalPaidInvoices} invoices): ${pct}% off if paid by ${inv.dueDate} costs less than waiting.` }
+  }
+  const overdue = -daysToDue
+  const grace = Math.max(0, delay ?? 0) + 3
+  if (c.noLateFee) return none('Your rule for this client: no late fees.')
+  if (overdue <= grace) return none(`${overdue} day(s) overdue, within their usual pattern (+3 days grace): no fee yet.`)
+  const pct = c.lateFeePct ?? Math.round(1.5 * Math.ceil(overdue / 30) * 10) / 10
+  return { kind: 'late_fee', pct, newBase: cents(base * (1 + pct / 100)), reason: `${overdue} days overdue, past their usual ${Math.max(0, delay ?? 0)}-day delay + 3 days grace: ${c.lateFeePct != null ? `your stated ${pct}% late fee` : `1.5% per started 30 days (${pct}%)`}.` }
 }
 
 // Unique payable amount: base + random micro-suffix so an on-chain transfer maps to exactly one invoice.

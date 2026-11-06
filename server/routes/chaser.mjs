@@ -1,6 +1,6 @@
 import { Router } from '../async-router.mjs'
 import { Transaction } from '@mysten/sui/transactions'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
 import * as mem from '../memory.mjs'
 import * as sui from '../sui.mjs'
 import { usdRate } from '../rates.mjs'
@@ -9,8 +9,9 @@ import { mcpHandler } from '../mcp.mjs'
 import { draftReminder } from '../drafter.mjs'
 import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
+import { ciiXml, seller } from '../facturx.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs } from '../engine.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -56,7 +57,8 @@ router.use((req, res, next) => {
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
   if (!pass || req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
-  if (req.get('x-passcode') !== pass) return res.status(401).json({ error: 'Owner passcode required' })
+  const got = createHash('sha256').update(req.get('x-passcode') || '').digest()
+  if (!timingSafeEqual(got, createHash('sha256').update(pass).digest())) return res.status(401).json({ error: 'Owner passcode required' })
   next()
 })
 
@@ -285,10 +287,27 @@ router.get('/pay/:id', (req, res) => {
       id: i.id, clientId: i.clientId, clientName: clientName(clients, i.clientId), baseAmount: i.baseAmount, payAmount: owed(i), originalAmount: i.payAmount, remaining: i.remaining ?? null, status: i.status, dueDate: i.dueDate, issuedDate: i.issuedDate, description: i.description, digest: i.digest,
       payeeAddress: PAYEE(), coinType: sui.USDC_COIN_TYPE, network: sui.NETWORK, registry: sui.REGISTRY_NAME,
       paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
+      slushPayUrl: sui.slushPayUrl({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
       explorerTx: i.digest ? `${sui.EXPLORER}/tx/${i.digest}` : null,
       receipt: receiptOf(i),
+      eInvoice: Boolean(seller()),
+      terms: i.terms ? { kind: i.terms.kind, pct: i.terms.pct, until: i.terms.until, original: i.terms.original, expired: Boolean(i.terms.expired) } : null,
     },
   })
+})
+
+// Factur-X CII XML for an invoice, or null when the seller identity (SELLER_NAME / SELLER_COUNTRY) is not set.
+const facturXOf = (i, clients) => {
+  const s = seller()
+  return s && ciiXml({ id: i.id, issuedDate: i.issuedDate || i.createdAt, client: clientName(clients, i.clientId), total: i.payAmount, due: i.status === 'paid' ? 0 : owed(i), seller: s })
+}
+router.get('/pay/:id/invoice.xml', (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const xml = facturXOf(withStatus(inv), clients)
+  if (!xml) return res.status(501).json({ error: 'E-invoice export needs the seller identity: set SELLER_NAME and SELLER_COUNTRY (ISO 3166 alpha-2)' })
+  res.type('application/xml').set({ 'Content-Disposition': `attachment; filename="factur-x-${inv.id}.xml"`, 'Cache-Control': 'no-store' }).send(xml)
 })
 
 // The invoice as a PDF (QR + pay link + agent endpoints), built on request; nothing is stored.
@@ -305,6 +324,7 @@ router.get('/pay/:id/invoice.pdf', async (req, res) => {
     payee: PAYEE(), network: sui.NETWORK, status: i.status, digest: i.digest, explorer: sui.EXPLORER,
     paymentUri: sui.paymentUri({ payee: PAYEE(), micro: sui.toMicro(owed(i)), nonce: i.id, label: 'Invoice Chaser', message: `Invoice ${i.id}` }),
     payUrl: `${base}/?pay=${i.id}`, mppUrl: `${base}/api/chaser/mpp/${i.id}`, x402Url: `${base}/api/chaser/x402/${i.id}`,
+    facturX: facturXOf(i, clients),
     })
   } catch (e) {
     return res.status(500).json({ error: `Could not render the invoice PDF: ${e.message}` })
@@ -432,9 +452,29 @@ router.get('/invoices/:id', (req, res) => {
       receiptsEnabled: receiptsEnabled(),
     },
     adaptivePlan: plan(inv, profile),
+    incentive: incentive(withStatus(inv), profile),
     defaultPlan: plan(inv, profile, { ignoreMemory: true }),
     profile,
   })
+})
+
+// Apply the learned incentive (early-payment discount or late fee). The server recomputes it: the request
+// only says which kind the owner approved, so a caller cannot pick its own percentage.
+router.post('/invoices/:id/terms', (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (inflight.has(inv.id)) return res.status(409).json({ error: 'A payment for this invoice is being verified; try again in a moment' })
+  const rec = incentive(withStatus(inv), profileOf(inv.clientId))
+  if (!rec.kind) return res.status(409).json({ error: rec.reason })
+  if (req.body?.kind !== rec.kind) return res.status(409).json({ error: `The current recommendation is ${rec.kind.replace('_', ' ')}, not ${String(req.body?.kind || 'none').replace('_', ' ')}` })
+  const payAmount = uniquePayAmount(rec.newBase, new Set(invoices.flatMap((i) => [i.payAmount, i.terms?.original].filter(Boolean))))
+  const name = clientName(clients, inv.clientId)
+  const sentence = rec.kind === 'early_discount'
+    ? `Invoice ${inv.id} for ${name}: ${rec.pct}% early-payment discount, ${payAmount} USDC if paid by ${rec.until} (otherwise ${inv.payAmount} USDC).`
+    : `Invoice ${inv.id} for ${name}: ${rec.pct}% late fee added, now ${payAmount} USDC (was ${inv.payAmount} USDC).`
+  const m = mem.remember(mem.writeNs(inv.clientId), sentence, { type: 'invoice_terms', client: inv.clientId, invoice: inv.id, kind: rec.kind, pct: rec.pct, until: rec.until || null, pay_amount: payAmount, was: inv.payAmount })
+  res.json({ invoice: { id: inv.id, payAmount }, terms: rec, memory: m })
 })
 
 router.post('/invoices/:id/remind', async (req, res) => {
@@ -454,7 +494,10 @@ router.post('/invoices/:id/remind', async (req, res) => {
     facts: (p.cites || []).map((c) => c.sentence),
   })
   const m = mem.remember(mem.writeNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean), drafted_by: draft.source === 'llm' ? draft.model : 'template' })
-  res.json({ text: draft.text, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
+  // agreed terms are stated by the server, never left to the model
+  const t = inv.terms && !inv.terms.expired ? inv.terms : null
+  const termsLine = !t ? '' : t.kind === 'early_discount' ? `\nThis includes a ${t.pct}% early-payment discount if paid by ${t.until}; after that the full ${t.original} USDC applies.` : `\nThis includes a ${t.pct}% late fee (the original amount was ${t.original} USDC).`
+  res.json({ text: draft.text + termsLine, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
 })
 
 // ---- Payments ------------------------------------------------------------------------------
@@ -807,6 +850,13 @@ router.post('/pay-tx', async (req, res) => {
   }
   const amount = sui.fromMicro(micro)
   try {
+    // 0) Payer holds SUI, not USDC: one transaction swaps SUI -> USDC (Cetus aggregator) and pays the
+    //    exact amount through Payment Kit. The payer's wallet pays gas; settled by digest like any wallet pay.
+    if (req.body.withSui === true) {
+      const s = await (await import('../swap.mjs')).buildSwapAndPay(sender, PAYEE(), micro, inv.id) // aggregator SDK loads only here
+      const [fee, rate] = await Promise.all([sui.estimateFee(s.bytes).catch(() => null), usdRate('SUI').catch(() => null)])
+      return res.json({ bytes: s.bytes, amount, payee: PAYEE(), network: sui.NETWORK, swap: { suiIn: (Number(s.suiIn) / 1e9).toFixed(4), maxSuiIn: (Number(s.maxSuiIn) / 1e9).toFixed(4), via: s.providers }, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
+    }
     // 1) Native gasless (Sui Address Balances): zero gas for everyone, when the payer's address
     //    balance qualifies. It is a plain transfer (Payment Kit is not allowed gasless), settled by digest.
     if (req.body.gasless !== false && sui.gaslessRelayEnabled()) {
@@ -831,7 +881,7 @@ router.post('/pay-tx', async (req, res) => {
     res.json({ bytes, amount, payee: PAYEE(), network: sui.NETWORK, fee: fee && { ...fee, usd: rate ? Math.round(fee.sui * rate.usd * 1e5) / 1e5 : null } })
   } catch (e) {
     const msg = e.message || ''
-    res.status(400).json({ error: /EDuplicatePayment|duplicate/i.test(msg) ? 'This invoice was already paid on-chain' : /insufficient|balance|coin/i.test(msg) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}… on ${NET}` : `Could not build transaction: ${msg}` })
+    res.status(400).json({ error: /EDuplicatePayment|duplicate/i.test(msg) ? 'This invoice was already paid on-chain' : /insufficient|balance|coin/i.test(msg) && req.body.withSui === true ? `Not enough SUI in ${sender.slice(0, 10)}… to swap for ${amount} USDC plus gas on ${NET}` : /no route/i.test(msg) ? 'No SUI → USDC route available right now; try again or pay in USDC' : /insufficient|balance|coin/i.test(msg) ? `Not enough USDC or SUI for gas in ${sender.slice(0, 10)}… on ${NET}` : `Could not build transaction: ${msg}` })
   }
 })
 

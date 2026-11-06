@@ -6,6 +6,7 @@ import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 import { walrus } from '@mysten/walrus'
 import { NETWORK } from './sui.mjs'
+import { embedFacturX } from './facturx.mjs'
 
 const EPOCHS = 26 // ~1 year on mainnet (14-day epochs)
 const RELAY = { mainnet: 'https://upload-relay.mainnet.walrus.space', testnet: 'https://upload-relay.testnet.walrus.space' }
@@ -117,5 +118,9 @@ export async function invoicePdf(v) {
   }
   y -= 10
   line('Payments are verified on Sui through the Tatum gRPC gateway and remembered in Walrus Memory.', { size: 9, color: grey })
+  if (v.facturX) {
+    line('Amounts in USD, settled 1:1 in USDC. Factur-X (CII MINIMUM) XML embedded for accounting import.', { size: 8, color: grey })
+    await embedFacturX(doc, v.facturX)
+  }
   return doc.save()
 }

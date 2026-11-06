@@ -140,6 +140,33 @@ An open pay page subscribes to `GET /api/chaser/pay/<invoice>/live` (Server-Sent
 
 With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet as a fallback), `/pay-tx` builds the Payment Kit transaction with the payer as sender and the server's wallet as **gas owner**, then MACs the bytes. The payer's wallet only signs (`sui:signTransaction`); `/pay-sponsored` checks the MAC, adds the sponsor signature server-side (it never leaves the server), submits both through Tatum and settles the payment. A client needs USDC and nothing else. Both signatures cover exactly the bytes the server built, so the endpoint can't be used to sponsor anything else. Each payment's gas budget is capped (`SPONSOR_MAX_MIST`, default 0.02 SUI). If sponsorship isn't available, the wallet pays gas as before. **On Mainnet:** `inv-mw1g53lda74512` (0.019753 USDC) was paid by a wallet whose SUI balance didn't move; the gas owner is the server's wallet ([tx](https://suiscan.xyz/mainnet/tx/8UkL1z4KhCrta1zJfvfTsdZmMPss9jrTnNcceLGUgwCq)). [`scripts/sponsored-pay.mjs`](scripts/sponsored-pay.mjs) replays the pay page's wallet flow.
 
+## Only have SUI? Swap and pay in one transaction
+
+*Only have SUI? Swap & pay* on the pay page asks `/pay-tx` with `withSui: true`. The server quotes an exact-out SUI → USDC route on the Cetus aggregator (routes across Sui DEXes) and builds **one** transaction: split the worst-case SUI (quote + 1% slippage) from gas, swap, split exactly the owed USDC, pay it through the Payment Kit registry (nonce = invoice id, so a duplicate still aborts on-chain), and send any USDC surplus back to the payer. Nothing is custodied; the wallet signs and pays gas, and the payment settles by digest like any wallet payment. Checked by mainnet simulation through Tatum: payee +0.010000 USDC, payer pays only SUI.
+
+## Pay links for Slush
+
+Every pay page also carries Slush's universal pay link (`https://my.slush.app/pay?receiver&amount&coinType&nonce&registry`), the same Payment Kit fields as the `sui:pay` QR. It opens the Slush app on a phone or the Slush web app on desktop, so a payer without a browser extension still gets a prefilled, nonce-protected payment that `/sync-payments` finds without a reported digest.
+
+## Payment terms learned from memory (early-payment discount / late fee)
+
+Each open invoice gets a recommendation the engine computes from the client's learned profile (`incentive()` in `server/engine.mjs`):
+- **Early-payment discount.** A client who reliably pays late (EWMA ≥ 5 days, confidence ≥ 50%) is offered 1% per 5 days of usual delay, up to 3%, if they pay by the due date. That costs less than waiting.
+- **Late fee.** Once an invoice is overdue past the client's own usual delay plus 3 days of grace, a fee applies: the rate from the client's rule (for example "late fee 2%"), else 1.5% per started 30 days.
+- **Rules override both.** A "no late fees" or "no discounts" rule turns the matching incentive off.
+
+The owner only approves the recommendation. `POST /invoices/:id/terms` recomputes it server-side, so the request cannot choose a percentage. It then writes an `invoice_terms` memory with a new unique pay amount.
+
+An unpaid discount expires after its date, and the full amount is owed again. Reminders state the terms in server-written text, never in LLM text, and the pay page shows them to the payer.
+
+## E-invoice: Factur-X / ZUGFeRD
+
+With the seller identity set (`SELLER_NAME`, `SELLER_COUNTRY`, optional `SELLER_VAT_ID`), every invoice PDF carries a Factur-X CII XML in the **MINIMUM** profile. It is embedded as `factur-x.xml` with AFRelationship `Alternative`, the catalog `/AF` entry and the `fx:` XMP block. The same XML is also served at `/api/chaser/pay/:id/invoice.xml`.
+
+Amounts are in USD, settled 1:1 in USDC. The XML was checked against the official Factur-X XSD, and was extracted from the PDF with the `factur-x` Python library (level `minimum`).
+
+The PDF does not claim PDF/A-3: standard fonts are not embedded.
+
 ## Revoking what it learned
 
 Walrus is append-only, so "forget this rule" is itself a memory: `rule_revoked` names the rule's text, and the engine ignores any rule written before its revocation (saving it again revives it). The client page lists live rules with a Revoke button and shows revoked ones struck through. The original memory stays on Walrus as history.

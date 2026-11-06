@@ -267,6 +267,11 @@ export async function findInvoicePayment(payee, micro, nonce) {
   }
 }
 
+// Slush's universal pay link (same Payment Kit fields as sui:pay): opens the Slush app on a phone, the web app
+// on desktop, so a payer without a wallet extension still gets a prefilled, nonce-protected payment.
+export const slushPayUrl = ({ payee, micro, nonce, label, message }) =>
+  'https://my.slush.app/pay?' + new URLSearchParams({ receiver: payee, amount: String(micro), coinType: USDC_COIN_TYPE, nonce, registry: REGISTRY_NAME, label, message })
+
 export const paymentUri = ({ payee, micro, nonce, label, message }) =>
   createPaymentTransactionUri({ receiverAddress: payee, amount: BigInt(micro), coinType: USDC_COIN_TYPE, nonce, registryName: REGISTRY_NAME, label, message })
 

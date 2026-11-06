@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary } from './engine.mjs'
+import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -193,4 +193,47 @@ test('ledger tags are signed: a forged or altered tag after the cutoff is not tr
   const altered = encode('Acme paid', t).replace('1.000000', '500.000000')
   assert.equal(decode(altered, after), null)
   assert.ok(after > TAG_MAC_FROM)
+})
+
+test('incentive: learned late payer gets a discount before due, a late fee past their own pattern', () => {
+  const p = computeProfile('acme', acme) // EWMA 5 days late, confidence 75%
+  const inv = { status: 'sent', dueDate: '2026-11-20', baseAmount: 300 }
+  const d = incentive(inv, p, new Date('2026-11-10T12:00:00Z'))
+  assert.equal(d.kind, 'early_discount')
+  assert.equal(d.pct, 1)
+  assert.equal(d.newBase, 297)
+  assert.equal(d.until, '2026-11-20')
+  // overdue but within their usual 5 days + 3 grace: no fee
+  assert.equal(incentive({ ...inv, status: 'overdue' }, p, new Date('2026-11-27T12:00:00Z')).kind, null)
+  const f = incentive({ ...inv, status: 'overdue' }, p, new Date('2026-11-30T12:00:00Z'))
+  assert.equal(f.kind, 'late_fee')
+  assert.equal(f.pct, 1.5)
+  assert.equal(f.newBase, 304.5)
+  // a stated rule wins: rate, or no fee at all
+  assert.equal(parsePreference('Contract says late fee of 2% applies').lateFeePct, 2)
+  assert.equal(incentive({ ...inv, status: 'overdue' }, { ...p, constraints: { lateFeePct: 2 } }, new Date('2026-11-30T12:00:00Z')).pct, 2)
+  assert.equal(incentive({ ...inv, status: 'overdue' }, { ...p, constraints: { noLateFee: true } }, new Date('2026-11-30T12:00:00Z')).kind, null)
+  assert.equal(parsePreference('No late fees for this client').noLateFee, true)
+  // an on-time payer or a new client gets nothing; never on a partial invoice
+  assert.equal(incentive(inv, { ...p, ewmaDelayDays: 1 }, new Date('2026-11-10T12:00:00Z')).kind, null)
+  assert.equal(incentive(inv, { totalPaidInvoices: 0, confidence: 0, constraints: {} }, new Date('2026-11-10T12:00:00Z')).kind, null)
+  assert.equal(incentive({ ...inv, status: 'partial' }, p, new Date('2026-11-30T12:00:00Z')).kind, null)
+})
+
+test('invoice terms change the amount owed; an unpaid discount expires after its date', () => {
+  const s = new Map([['n', [
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i1', base: 300, pay_amount: '300.001234', due: '2026-11-20' }),
+    mem('2026-11-02T00:00:00Z', { type: 'invoice_terms', client: 'g', invoice: 'i1', kind: 'early_discount', pct: 1, until: '2026-11-20', pay_amount: '297.005678' }),
+  ]]])
+  let inv = deriveState(s, new Date('2026-11-15T00:00:00Z')).invoices[0]
+  assert.equal(inv.payAmount, '297.005678')
+  assert.equal(inv.terms.original, '300.001234')
+  inv = deriveState(s, new Date('2026-11-21T00:00:00Z')).invoices[0]
+  assert.equal(inv.payAmount, '300.001234')
+  assert.equal(inv.terms.expired, true)
+  // paid at the discounted amount in time: fully paid, and the profile counts it as settled
+  s.get('n').push(mem('2026-11-18T00:00:00Z', { type: 'invoice_paid', client: 'g', invoice: 'i1', received: '297.005678', digest: 'D', paid: '2026-11-18', delay_days: -2 }))
+  inv = deriveState(s, new Date('2026-11-25T00:00:00Z')).invoices[0]
+  assert.equal(inv.status, 'paid')
+  assert.equal(computeProfile('g', s.get('n')).totalPaidInvoices, 1)
 })

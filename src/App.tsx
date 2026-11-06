@@ -105,11 +105,15 @@ interface InvoiceDetail {
     coinType: string;
     network?: string;
     paymentUri?: string;
+    slushPayUrl?: string;
+    eInvoice?: boolean;
     registry?: string;
     explorerTx?: string | null;
     receipt?: { blobId: string; url: string; at: string } | null;
     receiptsEnabled?: boolean;
+    terms?: { kind: 'early_discount' | 'late_fee'; pct: number; until: string | null; original: string; expired?: boolean } | null;
   };
+  incentive?: { kind: 'early_discount' | 'late_fee' | null; pct?: number; until?: string; newBase?: number; reason: string };
   adaptivePlan: {
     cites?: Array<{ sentence: string; blobId: string | null; status: string; at: string }>;
     type: string;
@@ -545,7 +549,7 @@ export default function App() {
 
   // Pay with any Sui wallet (Wallet Standard). The server builds the exact USDC transfer through Tatum;
   // the wallet signs and executes it; then the digest is verified on Mainnet like any other payment.
-  const handleWalletPay = async () => {
+  const handleWalletPay = async (withSui = false) => {
     const wallets = getWallets().get().filter((w) => 'sui:signAndExecuteTransaction' in w.features && 'standard:connect' in w.features);
     if (!wallets.length) return showToast('No Sui wallet found in this browser. Install Slush, or pay manually below.', 'error');
     const wallet = wallets.find((w) => /slush|sui/i.test(w.name)) || wallets[0];
@@ -555,9 +559,9 @@ export default function App() {
       const chain = `sui:${invoiceDetail?.invoice.network || 'mainnet'}`;
       const account = accounts.find((a: any) => a.chains.includes(chain)) || accounts[0];
       if (!account) throw new Error('No account approved');
-      setWalletBusy('Building transfer via Tatum…');
+      setWalletBusy(withSui ? 'Finding the best SUI → USDC route (Cetus aggregator)…' : 'Building transfer via Tatum…');
       const canSignOnly = 'sui:signTransaction' in wallet.features;
-      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address, sponsored: canSignOnly, gasless: canSignOnly }) });
+      const r = await fetch('/api/chaser/pay-tx', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, sender: account.address, sponsored: canSignOnly && !withSui, gasless: canSignOnly && !withSui, withSui }) });
       const built = await r.json();
       if (!r.ok) throw new Error(built.error);
       // Native gasless (Sui Address Balances): the protocol charges no gas at all for this USDC transfer.
@@ -596,7 +600,9 @@ export default function App() {
       }
       const fee = built.fee;
       setWalletBusy(
-        fee
+        built.swap
+          ? `Approve in your wallet · ≈ ${built.swap.suiIn} SUI (max ${built.swap.maxSuiIn}) swapped via ${built.swap.via.join(', ')} → exactly ${built.amount} USDC, plus network fee`
+          : fee
           ? fee.sui < 0
             ? `Approve in your wallet · you get a ${(-fee.sui).toFixed(4)} SUI storage rebate`
             : `Approve in your wallet · network fee ≈ ${fee.sui.toFixed(4)} SUI${fee.usd != null ? ` ($${fee.usd.toFixed(4)})` : ''}`
@@ -625,6 +631,18 @@ export default function App() {
     } finally {
       setWalletBusy(null);
     }
+  };
+
+  // Apply the learned payment incentive; the server recomputes it, the owner only approves the kind.
+  const handleApplyTerms = async (kind: string) => {
+    if (!invoiceDetail) return;
+    const res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
+    const data = await res.json();
+    if (!res.ok) return showToast(data.error || 'Could not apply terms', 'error');
+    showToast(`New amount ${data.invoice.payAmount} USDC (writing to Walrus Memory)`);
+    fetchInvoiceDetail(invoiceDetail.invoice.id);
+    fetchAllInvoices();
+    fetchSummary();
   };
 
   const handleCreateInvoice = async () => {
@@ -1471,6 +1489,32 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                         )}
                       </div>
                     </div>
+
+                    {/* Payment terms learned from memory: early-payment discount or late fee */}
+                    {invoiceDetail.incentive && invoiceDetail.invoice.status !== 'paid' && (
+                      <div className="rounded-xl border border-secondary p-xl space-y-xs">
+                        <p className="text-sm font-semibold text-primary">Payment terms (learned from memory)</p>
+                        {invoiceDetail.invoice.terms && (
+                          <p className="text-xs text-secondary">
+                            {invoiceDetail.invoice.terms.kind === 'early_discount'
+                              ? `${invoiceDetail.invoice.terms.pct}% early-payment discount until ${invoiceDetail.invoice.terms.until}${invoiceDetail.invoice.terms.expired ? ' (expired: full amount owed again)' : ''}`
+                              : `${invoiceDetail.invoice.terms.pct}% late fee applied`}
+                            {' '}· was {invoiceDetail.invoice.terms.original} USDC
+                          </p>
+                        )}
+                        <p className="text-xs text-tertiary">{invoiceDetail.incentive.reason}</p>
+                        {invoiceDetail.incentive.kind && (
+                          <button
+                            onClick={() => handleApplyTerms(invoiceDetail.incentive!.kind!)}
+                            className="inline-flex items-center gap-xs rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary_hover focus-visible:ring-2 focus-visible:ring-focus-ring"
+                          >
+                            {invoiceDetail.incentive.kind === 'early_discount'
+                              ? `Offer ${invoiceDetail.incentive.pct}% off if paid by ${invoiceDetail.incentive.until} (≈ ${invoiceDetail.incentive.newBase} USDC)`
+                              : `Add ${invoiceDetail.incentive.pct}% late fee (≈ ${invoiceDetail.incentive.newBase} USDC)`}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </section>
                 </div>
               </div>
@@ -1488,6 +1532,13 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 Pay Invoice #{selectedInvoiceId}
               </h1>
               <p className="text-xs text-secondary">{invoiceDetail ? `${invoiceDetail.invoice.clientName} · due ${invoiceDetail.invoice.dueDate} · ` : ''}Pay in USDC on {netLabel}</p>
+              {invoiceDetail?.invoice.terms && !invoiceDetail.invoice.terms.expired && invoiceDetail.invoice.status !== 'paid' && (
+                <p className="text-xs font-medium text-utility-brand-700">
+                  {invoiceDetail.invoice.terms.kind === 'early_discount'
+                    ? `Includes a ${invoiceDetail.invoice.terms.pct}% early-payment discount if paid by ${invoiceDetail.invoice.terms.until} (full amount afterwards: ${invoiceDetail.invoice.terms.original} USDC)`
+                    : `Includes a ${invoiceDetail.invoice.terms.pct}% late fee (original amount ${invoiceDetail.invoice.terms.original} USDC)`}
+                </p>
+              )}
               {invoiceDetail?.invoice.status === 'paid' && (
                 <p className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-sm font-semibold text-utility-success-700">
                   <Check className="w-4 h-4" /> Paid · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
@@ -1514,12 +1565,16 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   <div className="mt-md flex flex-col items-center gap-xs">
                     <img src={qr} alt="Scan to pay with a Sui wallet" className="w-44 h-44" />
                     <a href={invoiceDetail?.invoice.paymentUri} className="text-xs font-semibold text-utility-brand-700 hover:underline">Open in Sui wallet (sui:pay)</a>
+                    {invoiceDetail?.invoice.slushPayUrl && <a href={invoiceDetail.invoice.slushPayUrl} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-utility-brand-700 hover:underline">Pay in Slush (phone or web)</a>}
                   </div>
                 )}
                 {invoiceDetail && (
                   <a href={`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(invoiceDetail.invoice.id)}/invoice.pdf`} target="_blank" rel="noreferrer" className="mt-sm inline-flex items-center gap-xxs text-xs font-semibold text-utility-brand-700 hover:underline">
                     Download invoice (PDF) <ExternalLink className="w-3 h-3" />
                   </a>
+                )}
+                {invoiceDetail?.invoice.eInvoice && (
+                  <a href={`${import.meta.env.VITE_API_BASE || ''}/api/chaser/pay/${encodeURIComponent(invoiceDetail.invoice.id)}/invoice.xml`} className="mt-sm ml-md inline-flex items-center gap-xxs text-xs font-semibold text-utility-brand-700 hover:underline">E-invoice XML (Factur-X)</a>
                 )}
                 {live.state !== 'off' && (
                   <p role="status" aria-live="polite" className="mt-sm flex items-center justify-center gap-xs text-xs text-tertiary">
@@ -1551,12 +1606,19 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
               {/* One-click: connect a Sui wallet and pay */}
               <div className="space-y-sm border-t border-secondary pt-lg">
                 <button
-                  onClick={handleWalletPay}
+                  onClick={() => handleWalletPay()}
                   disabled={!invoiceDetail || invoiceDetail.invoice.status === 'paid' || !!walletBusy}
                   className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring bg-brand-solid text-primary-on-brand hover:bg-brand-solid-hover disabled:bg-disabled-subtle disabled:text-disabled"
                 >
                   <ShieldCheck className="w-4 h-4" />
                   <span>{walletBusy ?? (invoiceDetail?.invoice.status === 'paid' ? 'Invoice already paid' : `Connect Sui wallet & pay ${invoiceDetail?.invoice.payAmount ?? ''} USDC`)}</span>
+                </button>
+                <button
+                  onClick={() => handleWalletPay(true)}
+                  disabled={!invoiceDetail || invoiceDetail.invoice.status === 'paid' || !!walletBusy || invoiceDetail.invoice.network !== 'mainnet'}
+                  className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-primary px-lg py-md text-sm font-semibold shadow-xs focus-visible:ring-2 focus-visible:ring-focus-ring bg-primary text-secondary hover:bg-primary_hover disabled:text-disabled"
+                >
+                  <span>Only have SUI? Swap &amp; pay in one transaction</span>
                 </button>
                 <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The transaction is built through Tatum and verified on {netLabel}. USDC alone is enough: if your USDC sits in your Sui address balance the transfer is natively gasless (no fee for anyone); otherwise the app sponsors the network fee for a Payment Kit payment, and if the sponsor runs dry your wallet pays the gas.</p>
               </div>
