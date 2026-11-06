@@ -74,6 +74,9 @@ const newId = (prefix) => `${prefix}-${Date.now().toString(36)}${randomBytes(3).
 const takenAmounts = (invoices) => new Set(invoices.flatMap((i) => [i.payAmount, ...quotedAmounts(i)]))
 const owed = (inv) => (inv.status === 'partial' && inv.remaining ? inv.remaining : inv.payAmount)
 
+// API root: the api-catalog anchor (RFC 9727) resolves to an index of the machine-readable descriptions
+router.get('/', (_req, res) => res.json({ name: 'Invoice Chaser API', openapi: '/openapi.json', apiCatalog: '/.well-known/api-catalog', llms: '/llms.txt', mcp: '/api/chaser/mcp', mcpServerCard: '/api/chaser/mcp/server-card', proof: '/api/chaser/proof' }))
+
 router.get('/summary', (_req, res) => {
   const now = new Date()
   const horizon = isoDay(now.getTime() + 7 * DAY)

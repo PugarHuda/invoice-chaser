@@ -16,7 +16,7 @@ export const llms = (base) => `# Invoice Chaser
 
 ## For paying agents (x402)
 - \`GET ${base}/api/chaser/x402/{invoiceId}\` returns \`402 Payment Required\` with x402 terms: scheme \`exact\`, network \`sui:mainnet\`, USDC asset, \`maxAmountRequired\` (base units), \`payTo\`, and \`extra.paymentKit\` (Sui Payment Kit registry + nonce).
-- Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT: <Sui transaction digest>\` to receive a receipt.
+- Pay through the Payment Kit registry (nonce = invoice id) or with a USDC transfer of the exact amount, then repeat the request with header \`X-PAYMENT\`: the standard base64 PaymentPayload \`{ x402Version: 1, scheme: 'exact', network, payload: { signature, transaction } }\` (the server simulates and broadcasts it), or the digest of a payment you already executed. Failures return a standard \`errorReason\`.
 - x402 v2: the same 402 also carries a base64 \`PAYMENT-REQUIRED\` header; send \`PAYMENT-SIGNATURE\` (base64 \`{ x402Version: 2, accepted, payload: { signature, transaction } }\`) with a signed, unexecuted Payment Kit transaction (nonce = invoice id) and the server simulates and broadcasts it through Tatum, answering with \`PAYMENT-RESPONSE\`.
 - [Reference x402 agent](https://github.com/PugarHuda/invoice-chaser/blob/main/scripts/ap-agent.mjs): reads the 402 terms, enforces a budget, pays through Payment Kit, retries with X-PAYMENT
 
@@ -61,7 +61,7 @@ description: Pay an Invoice Chaser USDC invoice on Sui from an agent, over MPP o
 2. Pick a protocol (both are listed in \`${base}/openapi.json\` under \`x-payment-info\`):
    - **MPP**: \`GET ${base}/api/chaser/mpp/{invoiceId}\` answers 402 with \`WWW-Authenticate: Payment method="sui", intent="charge"\`. Pay the USDC, then retry with \`Authorization: Payment <credential>\`. A 200 carries \`Payment-Receipt\`.
    - **x402 v2**: \`GET ${base}/api/chaser/x402/{invoiceId}\` answers 402 with a base64 \`PAYMENT-REQUIRED\` header. Build a Sui Payment Kit \`process_registry_payment\` transaction (nonce = invoice id, exact amount, payee from the terms), sign it without executing, and retry with \`PAYMENT-SIGNATURE\`. The server simulates it through Tatum, broadcasts it and answers with \`PAYMENT-RESPONSE\`.
-   - **x402 v1**: pay first, then retry with \`X-PAYMENT: <transaction digest>\`.
+   - **x402 v1**: retry with \`X-PAYMENT\` = base64 PaymentPayload with your signed, unexecuted transaction (or the digest of one you executed).
 3. Optional: watch \`${base}/api/chaser/pay/{invoiceId}/live\` (Server-Sent Events) for \`paid\` the moment the payment lands in a checkpoint.
 
 Rules: enforce your own budget before paying. A 409 means the invoice is already paid or the digest was already used, so do not pay again. Reference agents: ${REPO}/blob/main/scripts/mpp-agent.mjs and ${REPO}/blob/main/scripts/ap-agent.mjs
