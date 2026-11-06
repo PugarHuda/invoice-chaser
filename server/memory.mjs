@@ -103,7 +103,8 @@ async function drainBulk() {
   writeStats.bulkCalls++
   writeStats.lastBatch = { at: new Date().toISOString(), items: batch.length, succeeded: done.succeeded, failed: done.failed }
   done.results.forEach((r, i) => {
-    if (r.status !== 'done') return
+    // not done: count the attempt, so the next pass writes it singly (with backoff and the 5-try cap)
+    if (r.status !== 'done') return void Object.assign(batch[i].m, { attempts: (batch[i].m.attempts || 0) + 1, error: r.error || r.status })
     const { m } = batch[i]
     Object.assign(m, { blobId: r.blob_id, status: 'saved' })
     delete m.error
