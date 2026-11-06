@@ -247,8 +247,14 @@ export default function App() {
   const [noteBusy, setNoteBusy] = useState<boolean>(false);
   const [payerInput, setPayerInput] = useState<string>('');
   const handleSetPayer = async () => {
-    const r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: payerInput }) });
-    const d = await r.json();
+    const v = payerInput.trim().toLowerCase();
+    // same shapes the server accepts: a full Sui address, a name.sui, or an @name
+    if (!/^0x[0-9a-f]{64}$/.test(v) && !/^[a-z0-9-]+(\.[a-z0-9-]+)*\.sui$/.test(v) && !/^@[a-z0-9-]+$/.test(v)) return showToast('Enter a full Sui address (0x + 64 hex characters) or a SuiNS name like alice.sui', 'error');
+    let r: Response, d: any;
+    try {
+      r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: v }) });
+      d = await r.json();
+    } catch (_e) { return showToast('Network error: payer not saved', 'error'); }
     if (!r.ok) return showToast(d.error || 'Could not set payer', 'error');
     showToast(`Payer set: ${d.name ? `${d.name} → ` : ''}${d.address.slice(0, 10)}… · Tatum screening: ${d.screen?.verdict ?? 'unavailable'}`);
     setPayerInput('');
@@ -363,6 +369,8 @@ export default function App() {
       setNoteText('');
       fetchClientDetail(selectedClientId);
       if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
+    } catch (_e) {
+      showToast('Network error: notes not analyzed', 'error');
     } finally {
       setNoteBusy(false);
     }
@@ -508,7 +516,7 @@ export default function App() {
         fetchClientDetail(selectedClientId);
         fetchSummary();
         if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
-      }
+      } else showToast((await res.json().catch(() => ({}))).error || 'Could not save the preference', 'error');
     } catch (_err) {
       showToast('Failed to record memory', 'error');
     }
@@ -544,7 +552,7 @@ export default function App() {
         fetchClients();
         fetchAllInvoices();
         fetchSummary();
-      }
+      } else showToast((await res.json().catch(() => ({}))).error || 'Rebuild failed', 'error');
     } catch (_err) {
       showToast('Rebuild failed', 'error');
     }
@@ -555,6 +563,13 @@ export default function App() {
       showToast('Please enter a transaction digest', 'error');
       return;
     }
+    // a pasted explorer link (suiscan, suivision, …/tx/<digest>) works too: take the digest out of it
+    const raw = digestInput.trim();
+    const digest = (raw.match(/(?:^|\/tx(?:block)?\/)([1-9A-HJ-NP-Za-km-z]{43,44})(?:$|[/?#])/) || [])[1];
+    if (!digest) {
+      showToast("That isn't a Sui transaction digest: paste the 43-44 character digest or the explorer link of the transfer", 'error');
+      return;
+    }
     setIsVerifying(true);
     try {
       const res = await fetch('/api/chaser/verify-payment', {
@@ -562,7 +577,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           invoiceId: selectedInvoiceId,
-          digest: digestInput.trim(),
+          digest,
         }),
       });
       const data = await res.json();
@@ -584,8 +599,11 @@ export default function App() {
 
   const handleAddClient = async () => {
     if (!newClientName.trim()) return;
-    const res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
-    const data = await res.json();
+    let res: Response, data: any;
+    try {
+      res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
+      data = await res.json();
+    } catch (_e) { return showToast('Network error: client not added', 'error'); }
     if (!res.ok) return showToast(data.error || 'Could not add client', 'error');
     showToast(`${data.client.name} added (writing to Walrus Memory)`);
     setNewClientName('');
@@ -682,8 +700,11 @@ export default function App() {
   // Apply the learned payment incentive; the server recomputes it, the owner only approves the kind.
   const handleApplyTerms = async (kind: string) => {
     if (!invoiceDetail) return;
-    const res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
-    const data = await res.json();
+    let res: Response, data: any;
+    try {
+      res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
+      data = await res.json();
+    } catch (_e) { return showToast('Network error: terms not applied', 'error'); }
     if (!res.ok) return showToast(data.error || 'Could not apply terms', 'error');
     showToast(`New amount ${data.invoice.payAmount} USDC (writing to Walrus Memory)`);
     fetchInvoiceDetail(invoiceDetail.invoice.id);
@@ -692,6 +713,9 @@ export default function App() {
   };
 
   const handleCreateInvoice = async () => {
+    const amt = Number(newInvoice.amount);
+    if (!/^\d+(\.\d{1,2})?$/.test(String(newInvoice.amount).trim()) || !(amt >= 0.01 && amt <= 1_000_000)) return showToast('Enter an amount from 0.01 to 1,000,000 USDC, at most 2 decimals (the app adds the unique micro-suffix)', 'error');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newInvoice.dueDate)) return showToast('Pick a due date', 'error');
     try {
       const res = await fetch('/api/chaser/invoices', {
         method: 'POST',
@@ -1611,8 +1635,11 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                           <button
                             disabled={!promiseInput}
                             onClick={async () => {
-                              const r = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/promise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: promiseInput }) });
-                              const d = await r.json();
+                              let r: Response, d: any;
+                              try {
+                                r = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/promise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: promiseInput }) });
+                                d = await r.json();
+                              } catch (_e) { return showToast('Network error: promise not saved', 'error'); }
                               if (!r.ok) return showToast(d.error || 'Could not record the promise', 'error');
                               showToast(`Promise to pay by ${d.promise.date} saved to Walrus Memory`);
                               setPromiseInput('');
@@ -1834,7 +1861,8 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                     type="text"
                     value={digestInput}
                     onChange={(e) => setDigestInput(e.target.value)}
-                    placeholder="Paste Sui transaction digest (e.g. 8bX4...v9Z)"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !isVerifying) handleVerifyDigest(); }}
+                    placeholder="Paste the transaction digest or its explorer link"
                     className="rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
                   />
                   <button
