@@ -12,7 +12,8 @@ export const seller = () => {
   return name && /^[A-Z]{2}$/.test(country || '') ? { name, country, vat: process.env.SELLER_VAT_ID?.trim() || null } : null
 }
 
-const x = (s) => String(s ?? '').replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c])
+// XML 1.0 forbids C0 controls: drop them, then escape markup
+const x = (s) => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c])
 const ymd = (iso) => String(iso).slice(0, 10).replaceAll('-', '')
 const cents = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2)
 

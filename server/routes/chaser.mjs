@@ -11,7 +11,7 @@ import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { ciiXml, seller } from '../facturx.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive } from '../engine.mjs'
+import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -69,6 +69,7 @@ const clientName = (clients, id) => clients.find((c) => c.id === id)?.name || 'U
 const withStatus = (inv) => ({ ...inv, status: invoiceStatus(inv) })
 // time-ordered and collision-free even for concurrent requests
 const newId = (prefix) => `${prefix}-${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
+const takenAmounts = (invoices) => new Set(invoices.flatMap((i) => [i.payAmount, ...quotedAmounts(i)]))
 const owed = (inv) => (inv.status === 'partial' && inv.remaining ? inv.remaining : inv.payAmount)
 
 router.get('/summary', (_req, res) => {
@@ -85,10 +86,12 @@ router.get('/summary', (_req, res) => {
   for (const raw of invoices) {
     const inv = withStatus(raw)
     if (inv.status !== 'sent' && inv.status !== 'overdue' && !(inv.status === 'partial' && !inv.seed)) continue
-    const left = inv.status === 'partial' ? Number(owed(inv)) : inv.baseAmount // what is still owed
     const profile = profileOf(inv.clientId)
     const p = plan(inv, profile)
     const predicted = p.predictedPayDate || inv.dueDate
+    const t = inv.terms
+    // what is still owed, terms included; a discount they are predicted to miss is forecast at full price
+    const left = Number(t?.kind === 'early_discount' && !t.expired && inv.status !== 'partial' && predicted > t.until ? t.original : owed(inv))
     if (predicted <= horizon30) expected30 += left
     if (predicted <= horizon) {
       expected += left
@@ -271,7 +274,7 @@ router.post('/invoices', (req, res) => {
   if (description != null && typeof description !== 'string') return res.status(400).json({ error: 'description must be text' })
   if (description && description.length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
   const id = newId('inv')
-  const payAmount = uniquePayAmount(amount, new Set(invoices.map((i) => i.payAmount)))
+  const payAmount = uniquePayAmount(amount, takenAmounts(invoices))
   const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
   res.json({ invoice: { id, payAmount }, memory: m })
 })
@@ -377,7 +380,7 @@ data: ${JSON.stringify(data)}
   mine.set(inv.id, finish)
   const timer = setTimeout(() => (send('timeout', { after: LIVE_MS / 1000 }), finish()), LIVE_MS)
   try {
-    stop = live.watch(PAYEE(), sui.toMicro(owed(inv)), async (digest, seq) => {
+    stop = live.watch(PAYEE(), [...new Set([owed(inv), ...(inv.status === 'sent' || inv.status === 'overdue' ? quotedAmounts(inv) : [])])].map((a) => sui.toMicro(a)), async (digest, seq) => {
       send('seen', { digest, checkpoint: seq })
       const [code, body] = await settleDigest(inv.id, digest, 'live-stream')
       if (closed) return
@@ -460,15 +463,22 @@ router.get('/invoices/:id', (req, res) => {
 
 // Apply the learned incentive (early-payment discount or late fee). The server recomputes it: the request
 // only says which kind the owner approved, so a caller cannot pick its own percentage.
-router.post('/invoices/:id/terms', (req, res) => {
+router.post('/invoices/:id/terms', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
-  if (inflight.has(inv.id)) return res.status(409).json({ error: 'A payment for this invoice is being verified; try again in a moment' })
+  if (inflight.has(inv.id) || x402Inflight.has(inv.id) || [...reservedDigests.values()].some((r) => r.invoiceId === inv.id && Date.now() - r.at < RESERVE_MS))
+    return res.status(409).json({ error: 'A payment for this invoice is in progress; try again in a moment' })
+  // a payment already on-chain under the current or an earlier amount must settle first, not be repriced
+  for (const a of quotedAmounts(inv)) {
+    const paid = await sui.findInvoicePayment(PAYEE(), sui.toMicro(a), inv.id).catch(() => undefined)
+    if (paid === undefined) return res.status(502).json({ error: 'Payment Kit registry lookup failed; try again in a few seconds' })
+    if (paid) return res.status(409).json({ error: `This invoice already has an on-chain payment (${paid}); run Sync payments first` })
+  }
   const rec = incentive(withStatus(inv), profileOf(inv.clientId))
   if (!rec.kind) return res.status(409).json({ error: rec.reason })
   if (req.body?.kind !== rec.kind) return res.status(409).json({ error: `The current recommendation is ${rec.kind.replace('_', ' ')}, not ${String(req.body?.kind || 'none').replace('_', ' ')}` })
-  const payAmount = uniquePayAmount(rec.newBase, new Set(invoices.flatMap((i) => [i.payAmount, i.terms?.original].filter(Boolean))))
+  const payAmount = uniquePayAmount(rec.newBase, takenAmounts(invoices))
   const name = clientName(clients, inv.clientId)
   const sentence = rec.kind === 'early_discount'
     ? `Invoice ${inv.id} for ${name}: ${rec.pct}% early-payment discount, ${payAmount} USDC if paid by ${rec.until} (otherwise ${inv.payAmount} USDC).`
@@ -551,9 +561,10 @@ async function settleDigest(invoiceId, requested, channel) {
     if (tx.timestamp && tx.timestamp < inv.createdAt) return [400, { error: 'Transaction is older than the invoice' }]
     // The discount deadline is judged by when the chain says it was paid, not when we verify it: an
     // on-time payment of the discounted amount that is only seen after the deadline still settles in full.
-    const t = inv.terms
-    const discountHonored = t?.kind === 'early_discount' && t.expired && tx.timestamp && isoDay(tx.timestamp) <= t.until && tx.received === sui.toMicro(t.amount)
-    const expected = discountHonored ? sui.toMicro(t.amount) : sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
+    // (and an amount quoted before a late fee was added pays it in full if it was paid before that)
+    const quoted = inv.status === 'sent' && tx.timestamp ? quoteAt(inv, new Date(tx.timestamp).toISOString()) : null
+    const discountHonored = Boolean(quoted && quoted !== inv.payAmount && tx.received === sui.toMicro(quoted))
+    const expected = discountHonored ? sui.toMicro(quoted) : sui.toMicro(owed(inv)) // the full amount, or what's left after a partial payment
     // A transfer that exactly matches another open invoice's unique amount belongs to that one.
     // A Payment Kit payment names its invoice (nonce): it must be THIS invoice's registry record.
     if (tx.paymentKit) {
@@ -599,7 +610,7 @@ async function settleDigest(invoiceId, requested, channel) {
       full
         ? `${name} paid ${inv.id} in full (${received} USDC) on ${paid}, ${delay < 0 ? `${-delay} day(s) before due` : `${delay} day(s) after due`}, after ${inv.reminders} reminder(s)${last ? `; last tone ${last.tag.tone}` : ''}${who}${over ? `; overpaid by ${over} USDC (credit)` : ''}.`
         : `${name} underpaid ${inv.id}: ${received} of ${owed(inv)} USDC on ${paid}; ${sui.fromMicro(expected - tx.received)} still owed${who}.`,
-      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: discountHonored ? t.amount : inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
+      { type: full ? 'invoice_paid' : 'invoice_partial', client: inv.clientId, invoice: inv.id, due: inv.dueDate, paid, delay_days: delay, reminders: inv.reminders, last_tone: last?.tag.tone || null, expected: discountHonored ? quoted : inv.payAmount, received, digest, checkpoint: tx.checkpoint, channel, network: sui.NETWORK, payer, payer_name: payerName, new_payer: newPayer, unexpected_payer: unexpectedPayer, payer_screen: screen?.verdict || null, total_received: sui.fromMicro(totalReceived), overpaid: over, verified_via: sui.provider() },
     )
     return [200, { success: true, verifiedOnChain: true, received, full, payer, payerName, newPayer, unexpectedPayer, payerScreen: screen, memory: m, explorer: `${sui.EXPLORER}/tx/${digest}`, invoice: { ...inv, status: full ? 'paid' : 'partial', digest }, overpaid: over, message: `Verified on ${NET} via ${sui.provider() === 'tatum' ? 'Tatum' : `the public Sui fullnode (${sui.fallbackReason()})`}: ${received} USDC received${over ? ` (${over} more than owed, kept as a credit)` : ''}${unexpectedPayer ? ' from an UNEXPECTED payer wallet' : newPayer ? ' from a NEW payer wallet' : ''}.` }]
   } finally {
@@ -625,7 +636,7 @@ async function syncPayments() {
   const settled = []
   for (const inv of open) {
     // a payment made under terms that later changed (expired discount) is keyed by the amount it was made for
-    const amounts = [...new Set([owed(inv), inv.terms?.expired && inv.terms.amount].filter(Boolean))]
+    const amounts = [...new Set([owed(inv), ...(inv.status === 'sent' ? quotedAmounts(inv) : [])])]
     let digest = null
     for (const a of amounts) if ((digest = await sui.findInvoicePayment(PAYEE(), sui.toMicro(a), inv.id))) break
     if (!digest) continue
@@ -647,8 +658,8 @@ async function syncPayments() {
     const incoming = await sui.recentIncoming(PAYEE(), { since })
     scanned = incoming.scanned
     for (const inv of unpaid) {
-      const want = sui.toMicro(owed(inv))
-      const hit = incoming.find((t) => t.received === want && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
+      const want = new Set(quotedAmounts(inv).map((a) => sui.toMicro(a)))
+      const hit = incoming.find((t) => want.has(t.received) && !usedDigests.has(t.digest) && (!t.timestamp || !inv.createdAt || t.timestamp >= inv.createdAt))
       if (!hit) continue
       const [code, body] = await settleDigest(inv.id, hit.digest, 'reconcile')
       if (code === 200) reconciled++

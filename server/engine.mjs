@@ -55,6 +55,7 @@ export function deriveState(store, now = new Date()) {
         reminders: 0,
         createdAt: m.timestamp,
         seed: Boolean(t.seed), // demo history: a seeded short payment is closed history, not an open debt
+        quotes: [{ amount: t.pay_amount, at: m.timestamp }], // every amount this invoice was ever quoted at
       })
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
       invoices.get(t.invoice).reminders++
@@ -85,20 +86,36 @@ export function deriveState(store, now = new Date()) {
       if (inv.status === 'sent') {
         inv.terms = { kind: t.kind, pct: t.pct, until: t.until || null, original: inv.payAmount, amount: t.pay_amount, at: m.timestamp }
         inv.payAmount = t.pay_amount
+        inv.quotes.push({ amount: t.pay_amount, at: m.timestamp, kind: t.kind, until: t.until || null })
       }
     } else if (t.type === 'payer_expected') {
       if (clients.has(t.client)) clients.get(t.client).expectedPayer = { address: t.payer, name: t.name || null }
     }
   }
   // an early-payment discount is an offer with a deadline: unpaid after it, the full amount is owed again
+  // (a partly paid one too: the rest is then owed against the full amount)
   for (const inv of invoices.values())
-    if (inv.terms?.kind === 'early_discount' && inv.status === 'sent' && isoDay(now) > inv.terms.until) {
+    if (inv.terms?.kind === 'early_discount' && !inv.terms.expired && (inv.status === 'sent' || inv.status === 'partial') && isoDay(now) > inv.terms.until) {
       inv.payAmount = inv.terms.original
       inv.terms = { ...inv.terms, expired: true }
+      if (inv.status === 'partial') {
+        const left = micro(inv.payAmount) - (inv.receivedMicro || 0n)
+        inv.remaining = unmicro(left > 0n ? left : 0n)
+      }
     }
   for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
   return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests }
 }
+
+// The amount this invoice asked for at chain time `ts`: the newest quote issued by then, skipping a
+// discount whose deadline had passed. A payment of exactly that amount pays the invoice in full, even
+// if the terms changed before anyone verified it.
+export function quoteAt(inv, ts) {
+  const qs = (inv.quotes || []).filter((q) => q.at <= ts)
+  for (let i = qs.length - 1; i >= 0; i--) if (!(qs[i].kind === 'early_discount' && isoDay(ts) > qs[i].until)) return qs[i].amount
+  return null
+}
+export const quotedAmounts = (inv) => [...new Set((inv.quotes || []).map((q) => q.amount))]
 
 export function invoiceStatus(inv, now = new Date()) {
   if (inv.status === 'sent' && isoDay(now) > inv.dueDate) return 'overdue'
@@ -332,6 +349,7 @@ export function incentive(inv, profile, now = new Date()) {
   if (c.noLateFee) return none('Your rule for this client: no late fees.')
   if (overdue <= grace) return none(`${overdue} day(s) overdue, within their usual pattern (+3 days grace): no fee yet.`)
   const pct = c.lateFeePct ?? Math.round(1.5 * Math.ceil(overdue / 30) * 10) / 10
+  if (!(pct > 0)) return none('Your rule for this client sets the late fee to 0%.')
   return { kind: 'late_fee', pct, newBase: cents(base * (1 + pct / 100)), reason: `${overdue} days overdue, past their usual ${Math.max(0, delay ?? 0)}-day delay + 3 days grace: ${c.lateFeePct != null ? `your stated ${pct}% late fee` : `1.5% per started 30 days (${pct}%)`}.` }
 }
 

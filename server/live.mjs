@@ -11,9 +11,10 @@ export let lastSeq = null
 
 const MAX_WATCHERS = 50 // ponytail: per-instance cap; shard by payee if pay-page traffic ever grows
 
+// micro: one amount or a list (an invoice may still be payable at an amount quoted before its terms changed)
 export function watch(payee, micro, onHit, onCheckpoint) {
   if (watchers.size >= MAX_WATCHERS) throw new Error('too many live watchers on this instance')
-  const w = { payee: sui.normAddr(payee), micro: BigInt(micro), onHit, onCheckpoint, hit: false }
+  const w = { payee: sui.normAddr(payee), micro: new Set([].concat(micro).map(BigInt)), onHit, onCheckpoint, hit: false }
   watchers.add(w)
   // the stream is filtered to the payees being watched: a new payee needs a fresh subscription
   if (call && !call.payees.has(w.payee)) { call.abort?.(); call = null }
@@ -78,7 +79,7 @@ export function matches(cp, ws, coinType) {
       if (norm(b.coinType) !== norm(coinType)) continue
       const addr = sui.normAddr(b.address)
       const amt = BigInt(b.amount)
-      for (const w of ws) if (!w.hit && w.payee === addr && w.micro === amt && !out.some(([x]) => x === w)) out.push([w, tx.digest])
+      for (const w of ws) if (!w.hit && w.payee === addr && (w.micro instanceof Set ? w.micro.has(amt) : w.micro === amt) && !out.some(([x]) => x === w)) out.push([w, tx.digest])
     }
   return out
 }

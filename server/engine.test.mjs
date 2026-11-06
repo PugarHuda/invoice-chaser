@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive } from './engine.mjs'
+import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -253,4 +253,29 @@ test('a late fee raises what counts as paid in full; a discount paid late stays 
   ]
   assert.equal(deriveState(new Map([['n', disc]]), new Date('2026-11-26T00:00:00Z')).invoices[0].status, 'partial')
   assert.equal(computeProfile('g', disc).totalPaidInvoices, 0)
+})
+
+test('quoteAt: an amount quoted earlier pays in full if paid before the terms changed', () => {
+  const s = new Map([['n', [
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i4', base: 100, pay_amount: '100.001000', due: '2026-11-05' }),
+    mem('2026-11-20T00:00:00Z', { type: 'invoice_terms', client: 'g', invoice: 'i4', kind: 'late_fee', pct: 1.5, pay_amount: '101.502000' }),
+  ]]])
+  const inv = deriveState(s, new Date('2026-11-21T00:00:00Z')).invoices[0]
+  assert.equal(quoteAt(inv, '2026-11-15T10:00:00.000Z'), '100.001000') // paid before the fee: original
+  assert.equal(quoteAt(inv, '2026-11-20T10:00:00.000Z'), '101.502000')
+  assert.deepEqual(inv.quotes.map((q) => q.amount), ['100.001000', '101.502000'])
+  // a discount quote stops counting after its deadline; the earlier quote applies again
+  const d = new Map([['n', [
+    mem('2026-11-01T00:00:00Z', { type: 'invoice_sent', client: 'g', invoice: 'i5', base: 300, pay_amount: '300.001234', due: '2026-11-20' }),
+    mem('2026-11-02T00:00:00Z', { type: 'invoice_terms', client: 'g', invoice: 'i5', kind: 'early_discount', pct: 1, until: '2026-11-20', pay_amount: '297.005678' }),
+  ]]])
+  const di = deriveState(d, new Date('2026-11-25T00:00:00Z')).invoices[0]
+  assert.equal(quoteAt(di, '2026-11-20T23:00:00.000Z'), '297.005678')
+  assert.equal(quoteAt(di, '2026-11-21T01:00:00.000Z'), '300.001234')
+  // half paid in time, the rest after the deadline: the rest is owed against the full amount
+  d.get('n').push(mem('2026-11-10T00:00:00Z', { type: 'invoice_partial', client: 'g', invoice: 'i5', received: '150.000000', digest: 'H', paid: '2026-11-10' }))
+  const half = deriveState(d, new Date('2026-11-25T00:00:00Z')).invoices[0]
+  assert.equal(half.remaining, '150.001234')
+  assert.equal(parsePreference('late fee 0%').lateFeePct, 0)
+  assert.equal(incentive({ status: 'overdue', dueDate: '2026-11-01', baseAmount: 100 }, { totalPaidInvoices: 3, ewmaDelayDays: 0, confidence: 1, constraints: { lateFeePct: 0 } }, new Date('2026-11-30T00:00:00Z')).kind, null)
 })
