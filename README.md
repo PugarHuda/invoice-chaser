@@ -44,6 +44,14 @@ Walrus Memory is the **system of record**, not a log on the side.
 - **`restore()`**: the Total Recall button first asks the relayer to re-index every blob it holds per namespace, then recalls everything.
 - Writes are queued in the background (a mainnet write takes ~25 s) with retries; the UI shows *writing to Walrus…* until the relayer confirms, then links the blob on Walruscan. Nothing is shown as saved before it is.
 
+## Memory you can audit: Walrus checked by the chain, through Tatum
+
+Walrus Memory is this app's ledger, so it should be checkable, not just trusted. Every payment memory claims three things: a transaction digest, a USDC amount and a checkpoint. The **memory-chain audit** re-checks all of those claims against Sui through Tatum's `LedgerService.BatchGetTransactions`, one gateway call per 50 payments. It confirms each transaction exists, succeeded, moved exactly that much USDC to the payee, and landed in that checkpoint. A memory the chain doesn't back is listed by invoice, digest and Walrus blob, never hidden.
+
+- **Live result:** 7 of 7 payment memories that carry a transaction match the chain, checked in **one** Tatum call. The 10 seeded history memories have no transaction and are counted separately as demo data.
+- **Where to see it:** `/proof` (`walrusMemory.chainAudit`), the /proof tab, `GET /api/chaser/audit` for details, and the MCP tool `memory_chain_audit`. An agent can check the memory is true before it relies on it.
+- **How the pieces fit:** Tatum verifies a payment once, when it settles. Walrus remembers it permanently. The audit closes the loop by making the remembered history re-provable at any time.
+
 ## How it uses Tatum
 
 All invoice verification and chain reads go through **Tatum's Sui Mainnet gRPC gateway** (`sui-mainnet-grpc.gateway.tatum.io:443`, `x-api-key`), using `SuiGrpcClient` from `@mysten/sui` over native gRPC ([`server/sui.mjs`](server/sui.mjs)):

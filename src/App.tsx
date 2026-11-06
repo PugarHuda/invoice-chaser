@@ -1887,6 +1887,24 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   );
                 })()}
 
+                {/* Memory <-> chain audit: every payment memory re-checked on Sui through Tatum */}
+                {(() => {
+                  const a = (proofData?.walrusMemory as any)?.chainAudit;
+                  if (!a) return null;
+                  const ok = !a.error && a.mismatched === 0;
+                  return (
+                    <div className={`p-sm rounded-lg border text-xs space-y-xxs ${ok ? 'border-utility-success-200 bg-utility-success-50 text-utility-success-700' : 'border-utility-error-200 bg-utility-error-50 text-utility-error-700'}`}>
+                      <span className="block font-semibold">Memory audited against Sui {ok ? '· every payment memory matches the chain' : '· needs attention'}</span>
+                      {a.error ? <p>{a.error}</p> : (
+                        <>
+                          <p>{a.verified}/{a.withTransaction} payment memories re-checked on-chain (digest, USDC amount, checkpoint) in {a.gatewayCalls} Tatum {a.service?.split(' ')[0]} call{a.gatewayCalls === 1 ? '' : 's'}{a.mismatched ? ` · ${a.mismatched} mismatch(es): see /api/chaser/audit` : ''}</p>
+                          <p>{a.demoHistoryWithoutTransaction} seeded history memories carry no transaction (labelled demo data)</p>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <div className="p-sm bg-secondary rounded-lg border border-secondary">
                   <span className="text-xs text-tertiary block mb-xxs font-medium">Sample Memories Across Namespaces</span>
                   <div className="space-y-xxs text-xs font-mono text-secondary">

@@ -97,6 +97,9 @@ function build(deps) {
     ].join('\n') } }] }
   })
 
+  // an agent can check the memory it reads is true before relying on it: every payment memory re-checked on Sui
+  s.registerTool('memory_chain_audit', { title: 'Audit memory against the chain', description: 'Re-check every payment memory in Walrus (digest, USDC amount, checkpoint) against Sui through Tatum BatchGetTransactions; lists any memory the chain does not back.', inputSchema: {}, outputSchema: { verified: z.number(), withTransaction: z.number(), mismatched: z.array(z.object({}).passthrough()), service: z.string() }, annotations: RO_OPEN }, async () => text(await deps.audit()))
+
   s.registerTool('learning_summary', { title: 'Is it learning?', description: "Mean prediction error on each client's first invoice vs their latest, across the whole book.", inputSchema: {}, annotations: RO }, async () => text(deps.learning() || { note: 'needs a client with 2+ paid invoices' }))
   return s
 }

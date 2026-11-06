@@ -783,13 +783,15 @@ async function syncPayments() {
   lastSync = Date.now()
   return { checked: open.length, settled, reconciled, scannedTransactions: scanned, skippedByBalance, at: new Date(lastSync).toISOString() }
 }
-router.post('/sync-payments', async (_req, res) => {
+router.post('/sync-payments', async (req, res) => {
   // ponytail: one sync per instance per 60 s whoever asks; each open invoice costs one gRPC lookup
   // (at 10 s, a few open pay pages alone burned through the Tatum plan's credits)
   if (Date.now() - lastSync < 60_000 && !syncing) return res.json({ checked: 0, settled: [], cached: true })
   try {
     syncing ??= syncPayments().finally(() => (syncing = null))
-    res.json(await syncing)
+    const r = await syncing
+    // private mode, not the owner: counts only (no invoice ids, digests or messages naming clients)
+    res.json(ownerView(req) ? r : { checked: r.checked, settled: r.settled.filter((x) => x.code === 200).length, at: r.at })
   } catch (e) {
     res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }
@@ -1019,6 +1021,7 @@ router.post('/mcp', mcpHandler((req) => ({
   terms: (inv) => paymentTerms(req, inv),
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
   memories: (clientId) => memsFor(clientId),
+  audit: () => auditMemories(),
   aggregator: process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space',
   baseUrl: `${req.protocol}://${req.get('host')}`,
 })))
@@ -1144,6 +1147,33 @@ router.post('/pay-gasless', async (req, res) => {
   }
 })
 
+// Memory <-> chain audit ("Total Recall" both ways): every payment memory in Walrus claims a digest, an
+// amount and a checkpoint. All claims are re-checked against Sui through Tatum in batches; a memory that
+// the chain doesn't back (wrong amount, failed or missing tx, other checkpoint) is listed, never hidden.
+let auditCache = null
+async function auditMemories() {
+  if (auditCache && Date.now() - auditCache.at < 600_000) return auditCache.value
+  const pays = [...mem.store.values()].flat().filter((m) => (m.tag?.type === 'invoice_paid' || m.tag?.type === 'invoice_partial'))
+  const claims = pays.filter((m) => m.tag.digest && m.tag.received)
+  const facts = await sui.transactionsFacts([...new Set(claims.map((m) => m.tag.digest))], PAYEE())
+  const mismatched = []
+  for (const m of claims) {
+    const f = facts.get(m.tag.digest)
+    const why = !f?.found ? 'transaction not found on chain' : !f.ok ? 'transaction failed on chain' : f.received !== sui.toMicro(m.tag.received) ? `chain moved ${sui.fromMicro(f.received)} USDC, memory says ${m.tag.received}` : m.tag.checkpoint && String(m.tag.checkpoint) !== String(f.checkpoint) ? `checkpoint ${f.checkpoint}, memory says ${m.tag.checkpoint}` : null
+    if (why) mismatched.push({ invoice: m.tag.invoice, digest: m.tag.digest, blobId: m.blobId || null, why })
+  }
+  const value = { checkedAt: new Date().toISOString(), paymentMemories: pays.length, withTransaction: claims.length, verified: claims.length - mismatched.length, mismatched, demoHistoryWithoutTransaction: pays.length - claims.length, gatewayCalls: Math.ceil(new Set(claims.map((m) => m.tag.digest)).size / 50), service: 'LedgerService.BatchGetTransactions (Tatum)' }
+  auditCache = { at: Date.now(), value }
+  return value
+}
+router.get('/audit', async (_req, res) => {
+  try {
+    res.json(await auditMemories())
+  } catch (e) {
+    res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
+  }
+})
+
 let proofCache = null
 router.get('/proof', async (req, res, next) => {
   res.set('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=60')
@@ -1153,7 +1183,7 @@ router.get('/proof', async (req, res, next) => {
   next()
 })
 router.get('/proof', async (_req, res) => {
-  const [cp, bal, h, nss, rSui, rUsdc, dur, chain] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability(), sui.chainFacts()])
+  const [cp, bal, h, nss, rSui, rUsdc, dur, chain, audit] = await Promise.allSettled([sui.latestCheckpoint(), sui.usdcBalance(PAYEE()), mem.health(), mem.namespaceCounts(), usdRate('SUI'), usdRate('USDC'), mem.durability(), sui.chainFacts(), auditMemories()])
   const counts = nss.status === 'fulfilled' ? nss.value : []
   res.json({
     tatumSuiGrpc: {
@@ -1192,6 +1222,8 @@ router.get('/proof', async (_req, res) => {
       lastSync: mem.loadState.lastSync || null,
       // writes this instance made: batched rememberBulk calls (items per call) vs single remember calls
       writes: mem.writeStats,
+      // every payment memory re-checked against Sui through Tatum (counts; details at /api/chaser/audit)
+      chainAudit: audit.status === 'fulfilled' ? { ...audit.value, mismatched: audit.value.mismatched.length } : { error: audit.reason?.message || 'unavailable' },
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       // private mode: none, even for the owner -- /proof is CDN-cached for everyone (s-maxage)
       sampleMemories: privateReads() ? [] : [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),

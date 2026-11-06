@@ -358,6 +358,25 @@ export async function walletBalances(owner) {
   return value
 }
 
+// Re-read many transactions at once (LedgerService.BatchGetTransactions, chunks of 50): what each one
+// actually moved to `payee` in the settlement coin, whether it succeeded, and its checkpoint.
+export async function transactionsFacts(digests, payee) {
+  const out = new Map()
+  for (let i = 0; i < digests.length; i += 50) {
+    const chunk = digests.slice(i, i + 50)
+    await throttle()
+    const { response } = await once(() => sui().ledgerService.batchGetTransactions({ digests: chunk, readMask: { paths: ['digest', 'effects.status', 'balance_changes', 'checkpoint'] } }))
+    if (response.transactions.length !== chunk.length) throw new Error('BatchGetTransactions returned a different number of results')
+    response.transactions.forEach((r, k) => {
+      if (r.result.oneofKind !== 'transaction') return out.set(chunk[k], { found: false, error: r.result.error?.message || 'not found' })
+      const t = json(r.result.transaction)
+      const received = (t.balanceChanges || []).filter((c) => normAddr(c.address) === normAddr(payee) && isSettlementCoin(c.coinType)).reduce((s, c) => s + BigInt(c.amount), 0n)
+      out.set(chunk[k], { found: true, ok: t.effects?.status?.success === true, received, checkpoint: t.checkpoint ?? null })
+    })
+  }
+  return out
+}
+
 export const paymentUri = ({ payee, micro, nonce, label, message }) =>
   createPaymentTransactionUri({ receiverAddress: payee, amount: BigInt(micro), coinType: USDC_COIN_TYPE, nonce, registryName: REGISTRY_NAME, label, message })
 
