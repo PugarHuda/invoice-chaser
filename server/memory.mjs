@@ -264,14 +264,40 @@ export async function restoreAll() {
 }
 
 // Semantic search over one client's memories (Walrus recall: embeddings + cosine distance).
-export async function search(clientId, query, limit = 5) {
+// mode: 'relevance' = cosine order; 'recent' = newest among the matches (relayer over-fetches, then
+// orders by write time); 'weighted' = semantic blended with recency (30-day half-life) by the ranker.
+export const SEARCH_MODES = {
+  relevance: { sort: 'relevance' },
+  recent: { sort: 'recent' },
+  weighted: { scoringWeights: { semantic: 1, recency: 0.6, recencyHalfLifeDays: 30 } },
+}
+export async function search(clientId, query, limit = 5, mode = 'relevance') {
+  const opts = SEARCH_MODES[mode] || SEARCH_MODES.relevance
   const shards = clientShards(clientId)
-  const hits = (await Promise.all((shards.length ? shards : [clientNs(clientId)]).map((namespace) => memwal().recall({ query, namespace, limit }))))
-    .flatMap((r) => r.results).sort((a, b) => a.distance - b.distance).slice(0, limit)
+  const results = (await Promise.all((shards.length ? shards : [clientNs(clientId)]).map((namespace) => memwal().recall({ query, namespace, limit, ...opts }))))
+    .flatMap((r) => r.results)
+  // across shards: keep the relayer's order rule (newest first for 'recent', closest first otherwise)
+  const hits = results.sort((a, b) => (mode === 'recent' ? String(b.created_at).localeCompare(String(a.created_at)) : a.distance - b.distance)).slice(0, limit)
   return hits.map((h) => {
     const d = decode(h.text, h.created_at) || { sentence: h.text.trim(), tag: { type: 'note' } }
     return { sentence: d.sentence, type: d.tag?.type, distance: Math.round(h.distance * 1000) / 1000, blobId: h.blob_id, at: d.tag?.at || h.created_at }
   })
+}
+
+// Context for the reminder drafter: a fresh recall over the client's Walrus memories under a token
+// budget (the SDK trims with 'high-relevance-only' and reports its estimate), far hits dropped.
+export async function contextFor(clientId, query, maxTokens = 400) {
+  const shards = clientShards(clientId)
+  const rs = await Promise.all((shards.length ? shards : [clientNs(clientId)]).map((namespace) =>
+    memwal().recall({ query, namespace, limit: 8, maxDistance: 0.8, maxTokens, truncationStrategy: 'high-relevance-only' })))
+  const hits = rs.flatMap((r) => r.results).sort((a, b) => a.distance - b.distance)
+  return {
+    sentences: hits.map((h) => (decode(h.text, h.created_at) || { sentence: h.text.trim() }).sentence),
+    hits: hits.length,
+    tokenEstimate: rs.reduce((s, r) => s + (r.meta?.tokenEstimate || 0), 0),
+    truncated: rs.some((r) => r.meta?.truncated),
+    dropped: rs.reduce((s, r) => s + (r.dropped_count || 0), 0),
+  }
 }
 
 export async function health() {

@@ -234,11 +234,14 @@ export default function App() {
   const [memQuery, setMemQuery] = useState<string>('');
   const [memHits, setMemHits] = useState<any[] | null>(null);
   const [memBusy, setMemBusy] = useState<boolean>(false);
-  const handleMemorySearch = async () => {
+  // Walrus recall ranking: closest by meaning, newest among matches, or meaning blended with recency
+  const [memMode, setMemMode] = useState<'relevance' | 'recent' | 'weighted'>('relevance');
+  const handleMemorySearch = async (mode = memMode) => {
     if (memQuery.trim().length < 2) return;
+    setMemMode(mode);
     setMemBusy(true);
     try {
-      const r = await fetch(`/api/chaser/clients/${selectedClientId}/search?q=${encodeURIComponent(memQuery.trim())}`);
+      const r = await fetch(`/api/chaser/clients/${selectedClientId}/search?q=${encodeURIComponent(memQuery.trim())}&mode=${mode}`);
       const d = await r.json();
       if (!r.ok) { setMemHits(null); return showToast(d.error || 'Search failed', 'error'); }
       setMemHits(d.results);
@@ -691,6 +694,9 @@ export default function App() {
       if (!res.ok) return showToast(data.error || 'Could not log reminder', 'error');
       setReminderText(data.text);
       setReminderSource(data.draftedBy === 'llm' ? `Drafted by ${data.model} via Vercel AI Gateway from this client's memories` : `Template (AI drafting unavailable${data.fallbackReason ? `: ${String(data.fallbackReason).replace(/\[[0-9;]*m/g, '').split('.')[0]}` : ''})`);
+      // what the fresh Walrus recall fed the drafter: hits, the SDK's token estimate, whether the budget trimmed it
+      const mc = data.memoryContext;
+      if (mc && !mc.error && mc.hits) setReminderSource((src) => `${src} · Walrus recall: ${mc.hits} memories, ~${mc.tokenEstimate} tokens${mc.truncated ? ' (trimmed to a 400-token budget)' : ''}`);
       navigator.clipboard?.writeText(data.text);
       showToast('Reminder copied and saved to Walrus Memory');
       fetchInvoiceDetail(selectedInvoiceId);
@@ -1168,13 +1174,18 @@ export default function App() {
                           aria-label="Search this client's memory"
                           className="flex-1 min-w-0 rounded-md bg-primary px-md py-xs text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
                         />
-                        <button onClick={handleMemorySearch} disabled={memBusy} className="rounded-lg border border-primary bg-primary px-md py-xs text-xs font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled">
+                        <button onClick={() => handleMemorySearch()} disabled={memBusy} className="rounded-lg border border-primary bg-primary px-md py-xs text-xs font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:text-disabled">
                           {memBusy ? 'Recalling…' : 'Recall'}
                         </button>
                       </div>
                       {memHits && (
                         <div className="rounded-lg border border-utility-brand-200 bg-utility-brand-50 p-md space-y-xs">
-                          <p className="text-xs font-semibold text-utility-brand-700">Walrus recall: closest memories by meaning</p>
+                          <div className="flex flex-wrap items-center gap-xs">
+                            <p className="text-xs font-semibold text-utility-brand-700 mr-auto">Walrus recall: {memMode === 'recent' ? 'newest among the matches' : memMode === 'weighted' ? 'meaning blended with recency' : 'closest memories by meaning'}</p>
+                            {(['relevance', 'recent', 'weighted'] as const).map((m) => (
+                              <button key={m} onClick={() => handleMemorySearch(m)} disabled={memBusy} aria-pressed={memMode === m} className={`rounded-full border px-sm py-xxs text-xs font-medium focus-visible:ring-2 focus-visible:ring-focus-ring ${memMode === m ? 'border-utility-brand-600 bg-utility-brand-600 text-white' : 'border-utility-brand-200 bg-primary text-utility-brand-700'}`}>{m === 'relevance' ? 'Closest' : m === 'recent' ? 'Newest' : 'Weighted'}</button>
+                            ))}
+                          </div>
                           {memHits.length === 0 && <p className="text-xs text-tertiary">Nothing relevant remembered yet.</p>}
                           {memHits.map((h, i) => (
                             <div key={i} className="text-xs text-secondary flex gap-xs">

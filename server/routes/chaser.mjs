@@ -230,7 +230,8 @@ router.get('/clients/:id/search', async (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   try {
-    res.json({ query: q, results: await mem.search(client.id, q, 5) })
+    const mode = mem.SEARCH_MODES[req.query.mode] ? String(req.query.mode) : 'relevance'
+    res.json({ query: q, mode, results: await mem.search(client.id, q, 5, mode) })
   } catch (e) {
     res.status(502).json({ error: `Walrus Memory recall: ${e.message}` })
   }
@@ -505,19 +506,21 @@ router.post('/invoices/:id/remind', async (req, res) => {
   const tone = ['friendly', 'formal', 'firm'].includes(req.body?.tone) ? req.body.tone : p.steps[0].tone
   const name = clientName(clients, inv.clientId)
   const offset = Math.round((Date.now() - new Date(`${inv.dueDate}T00:00:00Z`)) / DAY)
+  // a fresh Walrus recall for this client and tone, under a token budget, joins the plan's own citations
+  const ctx = await mem.contextFor(inv.clientId, `how ${name} responds to ${tone} payment reminders and when they pay`, 400).catch((e) => ({ sentences: [], error: e.message }))
   // the LLM writes the words; tone, amount, dates and the facts it may use come from the engine + Walrus
   const draft = await draftReminder({
     client: name,
     tone,
     invoice: { id: inv.id, owed: owed(inv), dueDate: inv.dueDate, description: inv.description },
     payLink: `${req.protocol}://${req.get('host')}/?pay=${inv.id}`,
-    facts: (p.cites || []).map((c) => c.sentence),
+    facts: [...new Set([...(p.cites || []).map((c) => c.sentence), ...ctx.sentences])],
   })
   const m = mem.remember(mem.writeNs(inv.clientId), `Sent a ${tone} reminder to ${name} for ${inv.id} (due ${offset >= 0 ? '+' : ''}${offset}d).`, { type: 'reminder_sent', client: inv.clientId, invoice: inv.id, tone, day_offset: offset, planned_tone: p.steps[0].tone, cites: (p.cites || []).map((c) => c.blobId).filter(Boolean), drafted_by: draft.source === 'llm' ? draft.model : 'template' })
   // agreed terms are stated by the server, never left to the model
   const t = inv.terms && !inv.terms.expired ? inv.terms : null
   const termsLine = !t ? '' : t.kind === 'early_discount' ? `\nThis includes a ${t.pct}% early-payment discount if paid by ${t.until}; after that the full ${t.original} USDC applies.` : `\nThis includes a ${t.pct}% late fee (the original amount was ${t.original} USDC).`
-  res.json({ text: draft.text + termsLine, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
+  res.json({ memoryContext: { hits: ctx.hits ?? 0, tokenEstimate: ctx.tokenEstimate ?? 0, truncated: Boolean(ctx.truncated), dropped: ctx.dropped ?? 0, error: ctx.error || null }, text: draft.text + termsLine, draftedBy: draft.source, model: draft.model || null, fallbackReason: draft.reason || null, memory: m })
 })
 
 // ---- Payments ------------------------------------------------------------------------------
@@ -927,7 +930,7 @@ router.post('/mcp', mcpHandler((req) => ({
   plan,
   owed,
   statusOf: (i) => invoiceStatus(i),
-  search: (clientId, q) => mem.search(clientId, q, 5),
+  search: (clientId, q, mode) => mem.search(clientId, q, 5, mode),
   terms: (inv) => paymentTerms(req, inv),
   learning: () => learningSummary(state().clients.map((c) => profileOf(c.id))),
   memories: (clientId) => memsFor(clientId),

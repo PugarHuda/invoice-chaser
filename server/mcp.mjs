@@ -47,9 +47,9 @@ function build(deps) {
     return text(deps.plan(i, deps.profileOf(i.clientId), { ignoreMemory: Boolean(ignoreMemory) }))
   })
 
-  s.registerTool('search_client_memory', { title: 'Search client memory', description: "Semantic search (Walrus Memory recall) over one client's memories, e.g. 'when do they usually pay?'.", inputSchema: { clientId: z.string(), query: z.string().min(2).max(200) }, outputSchema: OUT.search, annotations: RO_OPEN }, async ({ clientId, query }) => {
+  s.registerTool('search_client_memory', { title: 'Search client memory', description: "Semantic search (Walrus Memory recall) over one client's memories, e.g. 'when do they usually pay?'.", inputSchema: { clientId: z.string(), query: z.string().min(2).max(200), mode: z.enum(['relevance', 'recent', 'weighted']).optional().describe('relevance = closest by meaning (default), recent = newest among matches, weighted = meaning blended with recency') }, outputSchema: OUT.search, annotations: RO_OPEN }, async ({ clientId, query, mode }) => {
     if (!findClient(clientId)) return { ...text({ error: `unknown client ${clientId}` }), isError: true }
-    return text(await deps.search(clientId, query))
+    return text(await deps.search(clientId, query, mode))
   })
 
   s.registerTool('payment_terms', { title: 'How to pay an invoice', description: 'Payment terms (Sui USDC, Payment Kit registry + nonce), the sui:pay URI, the human pay link, and the agent endpoints: x402 v1/v2, MPP and the live payment stream.', inputSchema: { invoiceId: z.string() }, outputSchema: OUT.terms, annotations: RO }, async ({ invoiceId }) => {
