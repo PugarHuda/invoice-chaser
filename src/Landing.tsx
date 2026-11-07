@@ -124,6 +124,26 @@ function Skyline() {
   );
 }
 
+// What only this app does, each with the number that proves it live (no number until the API answers).
+const DIFFERENTIATORS = (l: Summary['learning'] | undefined, a: { verified?: number; withTransaction?: number } | undefined) => [
+  { title: 'Learning you can check', proof: l ? `Pay-date error ${l.firstError} → ${l.latestError} days; every reminder plan cites the Walrus memories it used.` : 'Every reminder plan cites the Walrus memories it used.' },
+  { title: 'Memory proven by the chain', proof: a?.withTransaction ? `${a.verified}/${a.withTransaction} remembered payments re-proven on Sui through Tatum, live.` : 'Every remembered payment is re-proven on Sui through Tatum.' },
+  { title: 'Chases the wallet, not the calendar', proof: "Before a reminder it reads the payer's USDC and recent activity on Sui: chase the one who can pay." },
+];
+const COMPETITORS = ['Invoice Chaser', 'Chaser', 'Kolleno', 'Request Finance', 'Coinbase Business'];
+// yes = documented capability; no = not in the vendor's public docs; free text = a qualified answer
+const COMPARISON: string[][] = [
+  ['Predicts when each client will pay', 'yes', 'yes (ML predictor)', 'yes (AI forecast)', 'no', 'no'],
+  ['Shows the evidence behind each prediction', 'yes (cited memories)', 'no', 'no', 'no', 'no'],
+  ['Picks reminder tone per client', 'yes', 'no', 'yes', 'no', 'no'],
+  ['Payment verified on a public chain', 'yes (Sui)', 'no (bank / ledger)', 'no (bank / ledger)', 'yes (EVM)', 'yes (Base)'],
+  ['Learned data re-checked against the chain', 'yes', 'no', 'no', 'no', 'no'],
+  ["Reads the payer's live balance before chasing", 'yes', 'no', 'no', 'no', 'no'],
+  ['AI agents can pay the invoice (x402 / MPP)', 'yes', 'no', 'no', 'no', 'no'],
+  ['Recurring invoices', 'yes', 'no', 'no', 'yes', 'yes'],
+  ['Memory owned by the user (Walrus), not the vendor', 'yes', 'no', 'no', 'no', 'no'],
+];
+
 export default function Landing() {
   const [proof, setProof] = useState<Proof | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -184,6 +204,14 @@ export default function Landing() {
               </a>
               <a href="/?pay=inv-101" className={`px-md py-sm text-sm text-[#d8d5ee] underline-offset-4 hover:text-white hover:underline ${link}`}>See a client's pay page</a>
             </div>
+            <ul aria-label="What makes it different" className="mt-2xl grid w-full max-w-4xl grid-cols-1 gap-sm text-left sm:grid-cols-3">
+              {DIFFERENTIATORS(l, a).map((d) => (
+                <li key={d.title} className="rounded-xl border border-white/15 bg-[#0a0628]/70 px-lg py-md backdrop-blur">
+                  <span className="block text-xs font-semibold text-white">{d.title}</span>
+                  <span className="mt-xxs block text-xs text-[#d8d5ee]">{d.proof}</span>
+                </li>
+              ))}
+            </ul>
           </div>
 
           <Skyline />
@@ -207,6 +235,35 @@ export default function Landing() {
           </dl>
           <p className="mt-md text-xs text-[#9b99b8]">
             {w?.durability?.daysToEarliestExpiry != null ? `Every memory is stored on Walrus mainnet; the earliest expires in ${w.durability.daysToEarliestExpiry} days.` : 'Memories are stored on Walrus mainnet.'}
+          </p>
+        </section>
+
+        <section id="different" aria-labelledby="diff-h" className="mx-auto max-w-7xl scroll-mt-xl px-xl pb-5xl lg:px-6xl">
+          <h2 id="diff-h" className="ic-display text-xl font-extrabold uppercase tracking-wide">Why it is different</h2>
+          <p className="mt-xs max-w-3xl text-sm text-[#d8d5ee]">
+            Collections tools predict late payers from your ledger; crypto invoicing tools take payment. None of them shows you why a prediction was made, checks what it learned against the chain, or looks at the payer's wallet before chasing.
+          </p>
+          <div role="region" aria-label="Comparison table (scrolls sideways on small screens)" tabIndex={0} className="mt-xl overflow-x-auto rounded-2xl border border-[#2b0e94] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#f08ae6]">
+            <table className="w-full min-w-[640px] text-left text-xs">
+              <caption className="sr-only">Invoice Chaser compared with collections and crypto invoicing tools</caption>
+              <thead className="bg-[#120a45] text-[#d8d5ee]">
+                <tr>
+                  <th scope="col" className="px-md py-sm font-semibold">Capability</th>
+                  {COMPETITORS.map((c) => <th key={c} scope="col" className={`px-md py-sm font-semibold ${c === 'Invoice Chaser' ? 'text-white' : ''}`}>{c}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {COMPARISON.map(([cap, ...cells]) => (
+                  <tr key={cap} className="border-t border-[#2b0e94]">
+                    <th scope="row" className="px-md py-sm font-medium text-white">{cap}</th>
+                    {cells.map((c, i) => <td key={i} className={`px-md py-sm ${c.startsWith('yes') ? 'text-[#7ef0c0]' : 'text-[#9b99b8]'}`}>{c === 'no' ? 'Not in public docs' : c[0].toUpperCase() + c.slice(1)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-sm text-xs text-[#9b99b8]">
+            Competitor columns reflect each vendor's public product pages as of November 2026 (Chaser, Kolleno, Request Finance, Coinbase Business); "not in public docs" means we found no claim, not that it is impossible. Sources are listed in the README.
           </p>
         </section>
 
