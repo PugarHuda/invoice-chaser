@@ -11,7 +11,7 @@ import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { ciiXml, seller } from '../facturx.mjs'
 import { mpp, mppEnabled, credentialDigest } from '../mpp.mjs'
-import { deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts, promiseDate, chaseAction } from '../engine.mjs'
+import { REPEATS, recurringDue, nextDue, deriveState, computeProfile, plan, invoiceStatus, uniquePayAmount, isoDay, learningSummary, foldIcs, incentive, quoteAt, quotedAmounts, promiseDate, chaseAction } from '../engine.mjs'
 
 const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
@@ -360,7 +360,8 @@ router.get('/invoices', (_req, res) => {
 })
 
 router.post('/invoices', (req, res) => {
-  const { clientId, amount, dueDate, description } = req.body || {}
+  const { clientId, amount, dueDate, description, repeat } = req.body || {}
+  if (repeat != null && !REPEATS.includes(repeat)) return res.status(400).json({ error: `repeat must be one of ${REPEATS.join(', ')}` })
   const { clients, invoices } = state()
   const client = clients.find((c) => c.id === clientId)
   if (!client) return res.status(400).json({ error: 'unknown clientId' })
@@ -372,15 +373,14 @@ router.post('/invoices', (req, res) => {
   if (description && description.length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
   const id = newId('inv')
   const payAmount = uniquePayAmount(amount, takenAmounts(invoices))
-  const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '' })
+  const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}${repeat ? `, repeating ${repeat}` : ''}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '', ...(repeat ? { repeat, series: id } : {}) })
   res.json({ invoice: { id, payAmount }, memory: m })
 })
 
-// Public, payer-facing view: only what a client needs to pay. Never the learned profile or plan.
-// Proven payer. The client signs a short message with the wallet it will pay from; the server checks the
-// signature (zkLogin through Tatum's SignatureVerificationService, other schemes locally), remembers the wallet
-// in Walrus Memory (payer_proven), and reads it live on Sui through Tatum ListBalances: "can they pay now?"
-// works before the first payment, and a later payment from it is recognised as theirs.
+// Pay-link wallet claim. The pay-link holder signs a short message with the wallet it will pay from; the server checks
+// the signature (zkLogin through Tatum's SignatureVerificationService, other schemes locally), remembers the wallet
+// in Walrus Memory (payer_proven) and reads it live on Sui through Tatum ListBalances. A claim, not identity:
+// it ranks below the owner's rule and any wallet that actually paid (see payerLiquidityOf).
 const PROOFS_PER_INVOICE = 3
 router.get('/pay/:id/payer-message', (req, res) => {
   const { clients, invoices } = state()
@@ -416,6 +416,7 @@ router.post('/pay/:id/prove-payer', async (req, res) => {
   })
 })
 
+// Public, payer-facing view: only what a client needs to pay. Never the learned profile or plan.
 router.get('/pay/:id', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
@@ -593,6 +594,8 @@ router.get('/invoices/:id', async (req, res) => {
   res.json({
     invoice: {
       ...withStatus(inv),
+      repeatStopped: inv.series ? state().stoppedSeries.has(inv.series) : false,
+      nextDue: inv.repeat ? nextDue(inv.dueDate, inv.repeat) : null,
       // same contract as /pay/:id: payAmount is what is still owed (a partial asks only for the rest)
       payAmount: owed(withStatus(inv)),
       originalAmount: inv.payAmount,
@@ -877,11 +880,35 @@ router.post('/sync-payments', async (req, res) => {
 })
 
 // Vercel Cron (daily): settle Payment Kit payments nobody reported. Vercel sends "Bearer $CRON_SECRET".
+// Recurring invoices: the next one in a series is written to Walrus Memory a few days before it falls due
+// (engine.recurringDue), with a fresh unique micro-amount; a successor already in memory is never written twice.
+function issueRecurring(now = new Date()) {
+  const st = state()
+  const taken = takenAmounts(st.invoices)
+  return recurringDue(st, now).map(({ from, due }) => {
+    const id = newId('inv')
+    const payAmount = uniquePayAmount(from.baseAmount, taken)
+    taken.add(payAmount)
+    const name = clientName(st.clients, from.clientId)
+    mem.remember(mem.writeNs(from.clientId), `Invoice ${id} sent to ${name}: ${payAmount} USDC due ${due}, repeating ${from.repeat} (follows ${from.id}).`, { type: 'invoice_sent', client: from.clientId, invoice: id, base: from.baseAmount, pay_amount: payAmount, due, description: from.description || undefined, repeat: from.repeat, series: from.series, prev: from.id })
+    return { invoice: id, follows: from.id, client: name, payAmount, due }
+  })
+}
+router.post('/invoices/:id/stop-repeat', (req, res) => {
+  const inv = state().invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (!inv.repeat) return res.status(400).json({ error: 'This invoice does not repeat' })
+  if (state().stoppedSeries.has(inv.series)) return res.json({ success: true, alreadyStopped: true })
+  const memory = mem.remember(mem.writeNs(inv.clientId), `Recurring invoices for series ${inv.series} stopped.`, { type: 'repeat_stopped', client: inv.clientId, series: inv.series })
+  res.json({ success: true, memory })
+})
+
 router.get('/cron/sync', async (req, res) => {
   if (!process.env.CRON_SECRET || req.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'cron only' })
   try {
+    const recurring = issueRecurring()
     syncing ??= syncPayments().finally(() => (syncing = null))
-    res.json(await syncing)
+    res.json({ ...(await syncing), recurring })
   } catch (e) {
     res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }

@@ -31,10 +31,33 @@ const TONES = ['friendly', 'formal', 'firm']
 // ---- State derived from memories --------------------------------------------------------
 
 /** @param {Map<string, any[]>} store */
+// Recurring invoices. The next one in a series is issued this many days before it falls due.
+export const REPEATS = ['monthly', 'weekly']
+const ISSUE_LEAD_DAYS = { monthly: 7, weekly: 2 }
+// next due date: same day next month (clamped: Jan 31 -> Feb 28/29) or 7 days later
+export function nextDue(due, repeat) {
+  const d = new Date(`${due}T00:00:00Z`)
+  if (repeat === 'weekly') return isoDay(new Date(d.getTime() + 7 * 86_400_000))
+  const y = d.getUTCFullYear(), mo = d.getUTCMonth() + 1
+  const last = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate()
+  return isoDay(new Date(Date.UTC(y, mo, Math.min(d.getUTCDate(), last))))
+}
+// Which series need their next invoice now: the latest invoice of each live series, once today reaches
+// (next due - lead). One step per call; a cron that missed several periods catches up one per run.
+export function recurringDue({ invoices, stoppedSeries = new Set() }, now = new Date()) {
+  const today = isoDay(now)
+  const hasNext = new Set(invoices.map((i) => i.prev).filter(Boolean))
+  return invoices
+    .filter((i) => i.repeat && !stoppedSeries.has(i.series) && !hasNext.has(i.id))
+    .map((i) => ({ from: i, due: nextDue(i.dueDate, i.repeat) }))
+    .filter(({ from, due }) => isoDay(new Date(Date.parse(`${due}T00:00:00Z`) - ISSUE_LEAD_DAYS[from.repeat] * 86_400_000)) <= today)
+}
+
 export function deriveState(store, now = new Date()) {
   const clients = new Map()
   const invoices = new Map()
   const usedDigests = new Set() // every digest ever settled, even if a later payment replaced it on the invoice
+  const stoppedSeries = new Set()
   const all = [...store.values()].flat().sort((a, b) => a.timestamp.localeCompare(b.timestamp))
   for (const m of all) {
     const t = m.tag || {}
@@ -56,7 +79,13 @@ export function deriveState(store, now = new Date()) {
         createdAt: m.timestamp,
         seed: Boolean(t.seed), // demo history: a seeded short payment is closed history, not an open debt
         quotes: [{ amount: t.pay_amount, at: m.timestamp }], // every amount this invoice was ever quoted at
+        // recurring series: the first invoice's id names the series; each next one points at its predecessor
+        repeat: REPEATS.includes(t.repeat) ? t.repeat : null,
+        series: REPEATS.includes(t.repeat) ? t.series || t.invoice : null,
+        prev: t.prev || null,
       })
+    } else if (t.type === 'repeat_stopped' && t.series) {
+      stoppedSeries.add(t.series)
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
       invoices.get(t.invoice).reminders++
     } else if ((t.type === 'invoice_paid' || t.type === 'invoice_partial') && invoices.has(t.invoice)) {
@@ -112,7 +141,7 @@ export function deriveState(store, now = new Date()) {
       }
     }
   for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
-  return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests }
+  return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests, stoppedSeries }
 }
 
 // The amount this invoice asked for at chain time `ts`: the newest quote issued by then, skipping a

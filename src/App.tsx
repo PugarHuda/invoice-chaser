@@ -146,6 +146,11 @@ interface InvoiceDetail {
     terms?: { kind: 'early_discount' | 'late_fee'; pct: number; until: string | null; original: string; expired?: boolean } | null;
     paidOn?: string | null;
     originalAmount?: string;
+    repeat?: 'monthly' | 'weekly' | null;
+    series?: string | null;
+    prev?: string | null;
+    repeatStopped?: boolean;
+    nextDue?: string | null;
   };
   profile?: { promiseStats?: { kept: number; broken: number } };
   payerLiquidity?: { owner: string; usdc: string; sui: number; covers: boolean; source: string; name: string | null; at: string } | null;
@@ -261,7 +266,9 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
   // state updates are async: a second click in the same tick would send the digest twice
   const verifyingRef = useRef(false);
-  const [newInvoice, setNewInvoice] = useState({ clientId: 'c4', amount: '0.05', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '' });
+  // no preset client or amount: the client defaults to the first real one once the list loads
+  const [newInvoice, setNewInvoice] = useState({ clientId: '', amount: '', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '', repeat: '' as '' | 'monthly' | 'weekly' });
+  useEffect(() => { if (!newInvoice.clientId && clientsList[0]) setNewInvoice((n) => ({ ...n, clientId: clientsList[0].id })); }, [clientsList, newInvoice.clientId]);
   const [reminderText, setReminderText] = useState<string>('');
   const [reminderSource, setReminderSource] = useState<string>('');
   const [newClientName, setNewClientName] = useState<string>('');
@@ -781,19 +788,32 @@ export default function App() {
     fetchSummary();
   };
 
+  const handleStopRepeat = async () => {
+    if (!invoiceDetail) return;
+    let res: Response, data: ApiBody;
+    try {
+      res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/stop-repeat`, { method: 'POST' });
+      data = await res.json();
+    } catch { return showToast('Network error: the series was not stopped', 'error'); }
+    if (!res.ok) return showToast(data.error || 'Could not stop the series', 'error');
+    showToast('Series stopped: no further invoices will be issued (writing to Walrus Memory)');
+    fetchInvoiceDetail(invoiceDetail.invoice.id);
+  };
   const handleCreateInvoice = async () => {
     const amt = Number(newInvoice.amount);
     if (!/^\d+(\.\d{1,2})?$/.test(String(newInvoice.amount).trim()) || !(amt >= 0.01 && amt <= 1_000_000)) return showToast('Enter an amount from 0.01 to 1,000,000 USDC, at most 2 decimals (the app adds the unique micro-suffix)', 'error');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(newInvoice.dueDate)) return showToast('Pick a due date', 'error');
+    if (!newInvoice.clientId) return showToast('Pick a client', 'error');
     try {
+      const { repeat, ...rest } = newInvoice;
       const res = await fetch('/api/chaser/invoices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newInvoice),
+        body: JSON.stringify(repeat ? { ...rest, repeat } : rest),
       });
       const data = await res.json();
       if (!res.ok) return showToast(data.error || 'Could not create invoice', 'error');
-      showToast(`Invoice ${data.invoice.id} created: pay exactly ${data.invoice.payAmount} USDC`);
+      showToast(`Invoice ${data.invoice.id} created: pay exactly ${data.invoice.payAmount} USDC${repeat ? ` · repeats ${repeat}, the next one is issued before it falls due` : ''}`);
       await fetchAllInvoices();
       setSelectedInvoiceId(data.invoice.id);
       fetchSummary();
@@ -1456,6 +1476,14 @@ export default function App() {
                 <label htmlFor="ni-desc" className="text-xs text-tertiary">Description</label>
                 <input id="ni-desc" type="text" value={newInvoice.description} onChange={(e) => setNewInvoice({ ...newInvoice, description: e.target.value })} placeholder="What is this invoice for?" className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
               </div>
+              <div className="flex flex-col gap-xxs">
+                <label htmlFor="ni-repeat" className="text-xs text-tertiary">Repeat</label>
+                <select id="ni-repeat" value={newInvoice.repeat} onChange={(e) => setNewInvoice({ ...newInvoice, repeat: e.target.value as '' | 'monthly' | 'weekly' })} className="rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring">
+                  <option value="">Once</option>
+                  <option value="monthly">Monthly</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </div>
               <button onClick={handleCreateInvoice} className="inline-flex items-center gap-sm rounded-lg bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring">
                 <DollarSign className="w-4 h-4" /> New invoice
               </button>
@@ -1500,6 +1528,20 @@ export default function App() {
                         <span className="text-secondary">Due Date:</span>
                         <span className="font-medium text-primary">{invoiceDetail.invoice.dueDate}</span>
                       </div>
+                      {invoiceDetail.invoice.repeat && (
+                        <div className="flex flex-wrap items-center justify-between gap-xs text-xs">
+                          <span className="text-secondary">Repeats:</span>
+                          <span className="font-medium text-primary">
+                            {invoiceDetail.invoice.repeatStopped
+                              ? `${invoiceDetail.invoice.repeat}, stopped`
+                              : `${invoiceDetail.invoice.repeat} · next due ${invoiceDetail.invoice.nextDue}`}
+                            {invoiceDetail.invoice.prev && ` · follows ${invoiceDetail.invoice.prev}`}
+                          </span>
+                          {!invoiceDetail.invoice.repeatStopped && (
+                            <button onClick={handleStopRepeat} className="font-semibold text-utility-error-700 hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring rounded">Stop repeating</button>
+                          )}
+                        </div>
+                      )}
                       <div className="flex justify-between text-xs">
                         <span className="text-secondary">Payee Address:</span>
                         <span className="font-mono text-xs text-secondary truncate max-w-[150px]">

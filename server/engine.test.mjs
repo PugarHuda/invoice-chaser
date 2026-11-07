@@ -1,7 +1,7 @@
 // node --test server/
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt, promiseDate, chaseAction } from './engine.mjs'
+import { nextDue, recurringDue, deriveState, computeProfile, plan, parsePreference, applyConstraints, uniquePayAmount, isoDay, learningSummary, incentive, quoteAt, promiseDate, chaseAction } from './engine.mjs'
 import { encode, decode } from './memory.mjs'
 import { toMicro, fromMicro } from './sui.mjs'
 
@@ -349,4 +349,32 @@ test('a pay-link wallet claim is listed as a claim, never as the expected payer 
   assert.deepEqual(c.provenPayers.map((p) => p.address), ['0xa', '0xb']) // newest first, one entry per wallet
   assert.equal(c.expectedPayer, undefined)
   assert.ok(store.get('ic:c9').every((m) => m.tag.payer === undefined))
+})
+
+test('recurring: next due date keeps the day of month, clamped at month end; weekly is +7 days', () => {
+  assert.equal(nextDue('2026-01-31', 'monthly'), '2026-02-28')
+  assert.equal(nextDue('2028-01-31', 'monthly'), '2028-02-29')
+  assert.equal(nextDue('2026-12-15', 'monthly'), '2027-01-15')
+  assert.equal(nextDue('2026-11-30', 'weekly'), '2026-12-07')
+})
+
+test('recurring: the next invoice is due for issue from 7 days before it falls due, once, unless stopped', () => {
+  const store = new Map([['ic:r', [
+    { timestamp: '2026-10-01T00:00:00Z', tag: { type: 'client_created', client: 'r', name: 'Retainer Co' } },
+    { timestamp: '2026-10-01T00:00:01Z', tag: { type: 'invoice_sent', client: 'r', invoice: 'inv-a', base: 500, pay_amount: '500.001234', due: '2026-10-15', repeat: 'monthly' } },
+    { timestamp: '2026-10-01T00:00:02Z', tag: { type: 'invoice_sent', client: 'r', invoice: 'inv-x', base: 9, pay_amount: '9.000001', due: '2026-10-15' } },
+  ]]])
+  const st = deriveState(store)
+  assert.deepEqual(st.invoices.find((i) => i.id === 'inv-a').series, 'inv-a')
+  assert.equal(recurringDue(st, new Date('2026-11-07T12:00:00Z')).length, 0) // next due 11-15, lead starts 11-08
+  const due = recurringDue(st, new Date('2026-11-08T00:00:00Z'))
+  assert.deepEqual(due.map((d) => [d.from.id, d.due]), [['inv-a', '2026-11-15']]) // a one-off invoice never repeats
+  // once the successor exists, nothing more is due for that step
+  store.get('ic:r').push({ timestamp: '2026-11-08T06:00:00Z', tag: { type: 'invoice_sent', client: 'r', invoice: 'inv-b', base: 500, pay_amount: '500.004321', due: '2026-11-15', repeat: 'monthly', series: 'inv-a', prev: 'inv-a' } })
+  const st2 = deriveState(store)
+  assert.equal(recurringDue(st2, new Date('2026-11-09T00:00:00Z')).length, 0)
+  assert.deepEqual(recurringDue(st2, new Date('2026-12-08T00:00:00Z')).map((d) => [d.from.id, d.due]), [['inv-b', '2026-12-15']])
+  // stopping the series ends it
+  store.get('ic:r').push({ timestamp: '2026-11-20T00:00:00Z', tag: { type: 'repeat_stopped', client: 'r', series: 'inv-a' } })
+  assert.equal(recurringDue(deriveState(store), new Date('2026-12-08T00:00:00Z')).length, 0)
 })
