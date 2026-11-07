@@ -158,6 +158,8 @@ test('owner writes fail closed on Vercel without a passcode; wrong passcodes are
     assert.equal((await post('/clients')).status, 503)
     delete process.env.VERCEL
     process.env.APP_PASSCODE = 'right-one'
+    // requests without a passcode are refused but never lock the owner out
+    for (let i = 0; i < 15; i++) assert.equal((await post('/clients')).status, 401)
     const codes = []
     for (let i = 0; i < 12; i++) codes.push((await post('/clients', { 'x-passcode': 'wrong' })).status)
     assert.deepEqual([codes[0], codes[9], codes[10]], [401, 401, 429])

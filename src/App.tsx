@@ -257,6 +257,8 @@ export default function App() {
   // Payment Form States
   const [digestInput, setDigestInput] = useState<string>('');
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
+  // state updates are async: a second click in the same tick would send the digest twice
+  const verifyingRef = useRef(false);
   const [newInvoice, setNewInvoice] = useState({ clientId: 'c4', amount: '0.05', dueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10), description: '' });
   const [reminderText, setReminderText] = useState<string>('');
   const [reminderSource, setReminderSource] = useState<string>('');
@@ -604,6 +606,8 @@ export default function App() {
       showToast("That isn't a Sui transaction digest: paste the 43-44 character digest or the explorer link of the transfer", 'error');
       return;
     }
+    if (verifyingRef.current) return;
+    verifyingRef.current = true;
     setIsVerifying(true);
     try {
       const res = await fetch('/api/chaser/verify-payment', {
@@ -627,6 +631,7 @@ export default function App() {
     } catch {
       showToast('Network error during verification', 'error');
     } finally {
+      verifyingRef.current = false;
       setIsVerifying(false);
     }
   };

@@ -18,3 +18,5 @@ public/
 .env*
 .env.testagent
 .tmp/
+test-results/
+playwright-report/

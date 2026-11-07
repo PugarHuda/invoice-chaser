@@ -153,7 +153,7 @@ export default function Landing() {
       {/* full-bleed hero: one screen tall, edge to edge */}
         <section className="relative flex min-h-[100svh] w-full flex-col overflow-hidden bg-[linear-gradient(180deg,#0f0b4d_0%,#1c0f6e_45%,#3a1590_100%)] [min-height:max(100svh,720px)]">
           <header className="relative z-10 mx-auto flex w-full max-w-7xl items-center justify-between gap-md px-xl py-xl lg:px-6xl">
-            <a href="/" className={`flex items-center gap-sm ${link}`} aria-label="Invoice Chaser home">
+            <a href="/" className={`flex items-center gap-sm ${link}`}>
               <LogoMark size={30} tile="#5820ad" />
               <Wordmark />
             </a>

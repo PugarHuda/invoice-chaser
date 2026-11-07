@@ -32,7 +32,9 @@ router.use((req, res, next) => {
   const expensive = isExpensiveRead(req)
   if (req.method === 'GET' && !isPayment && !expensive) return next()
   const kind = isSync ? 'sync' : isPayment ? 'payment' : expensive ? 'expensive' : 'write'
-  const [max, windowMs] = LIMITS[kind]
+  const [base, windowMs] = LIMITS[kind]
+  // RATE_LIMIT_SCALE (default 1) lets the local E2E server take a whole browser matrix from one IP
+  const max = base * Math.max(1, Number(process.env.RATE_LIMIT_SCALE) || 1)
   // On Vercel the edge sets x-vercel-forwarded-for (clients can't spoof it). Elsewhere use req.ip,
   // which honours only the configured proxy hop ('trust proxy' = 1), never the client-supplied leftmost XFF.
   const ip = clientIp(req)
@@ -74,6 +76,8 @@ const lockedOut = (req, res) => {
   return f && f.n >= AUTH_MAX_FAILS ? tooManyFails(res, f) : null
 }
 const denyOwner = (req, res, body = { error: 'Owner passcode required' }) => {
+  // no passcode sent is not a guess: only a supplied wrong one counts toward the lockout
+  if (!req.get('x-passcode')) return res.status(401).json(body)
   const now = Date.now()
   if (authFails.size > 10_000) for (const [k, v] of authFails) if (v.reset <= now) authFails.delete(k)
   const f = authFail(req) || { n: 0, reset: now + 10 * 60_000 }
