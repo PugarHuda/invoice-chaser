@@ -34,7 +34,7 @@ export const llms = (base) => `# Invoice Chaser
 - \`GET ${base}/api/chaser/pay/{invoiceId}/live\`: Server-Sent Events (\`watching\`, \`checkpoint\`, \`seen\`, \`paid\`) fed by Tatum's Sui gRPC \`SubscribeCheckpoints\` stream.
 
 ## MCP
-- [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, memory_chain_audit, verify_payment, payer_readiness, chase_queue, chain_facts, learning_summary), a resource template and a chase_invoice prompt
+- [MCP server](${base}/api/chaser/mcp): Streamable HTTP, read-only tools over the learned memory (list_open_invoices, client_profile, plan_reminder, search_client_memory, payment_terms, memory_chain_audit, verify_payment, payer_readiness, chase_queue, client_statement, chain_facts, learning_summary), a resource template and a chase_invoice prompt
 
 ## Receipts and calendar
 - \`GET ${base}/api/chaser/pay/{invoiceId}/invoice.pdf\`: the invoice as a PDF (exact amount, Payment Kit sui:pay QR, pay link, MPP and x402 endpoints; stamped PAID with its transaction once settled).

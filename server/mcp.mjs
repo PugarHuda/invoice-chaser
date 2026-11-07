@@ -113,6 +113,11 @@ function build(deps) {
 
   s.registerTool('chase_queue', { title: 'Who to chase today', description: "Every open invoice ranked chase_now / nudge / wait / scheduled, joining what Walrus Memory learned about the client (delay spread, promises kept, underpayment) with the payer wallet live on Sui through Tatum (USDC on hand vs owed, last activity, USDC sent to others this week). Each line lists its reasons from both sides.", inputSchema: {}, outputSchema: loose({ counts: z.object({}).passthrough(), items: z.array(loose({ invoiceId: z.string(), action: z.string(), why: z.array(z.string()) })) }), annotations: RO_OPEN }, async () => text(await deps.chaseQueue()))
 
+  s.registerTool('client_statement', { title: 'Statement of account', description: "One client's statement: every invoice and payment from Walrus Memory, each payment re-proven on Sui through Tatum BatchGetTransactions (verified / not found / amount mismatch), with explorer and Walrus blob links and invoiced/paid/outstanding totals.", inputSchema: { clientId: z.string() }, annotations: RO_OPEN }, async ({ clientId }) => {
+    const st = await deps.statement(clientId)
+    return st ? text(st) : fail({ error: `unknown client ${clientId}` })
+  })
+
   s.registerTool('chain_facts', { title: 'Sui facts via Tatum', description: 'What the app checked on Sui through Tatum gRPC before trusting it: chain id, epoch, gas price, the USDC coin metadata, the Payment Kit Move function and package versions, plus how many gRPC calls this instance made per service.', inputSchema: {}, annotations: RO_OPEN }, async () => text(await deps.chain()))
 
   s.registerTool('learning_summary', { title: 'Is it learning?', description: "Mean prediction error on each client's first invoice vs their latest, across the whole book.", inputSchema: {}, annotations: RO }, async () => text(deps.learning() || { note: 'needs a client with 2+ paid invoices' }))

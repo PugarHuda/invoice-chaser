@@ -1091,6 +1091,7 @@ export default function App() {
                         <p className="text-xs text-secondary">
                           Walrus Namespace: <code className="text-brand-primary font-mono">{clientDetail.namespace}</code>
                         </p>
+                        <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`} onClick={(e) => ownerDownload(e, `/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`, `statement-${clientDetail.client.id}.csv`)} className="text-xs font-semibold text-utility-brand-700 hover:underline">Statement of account (CSV, verified on Sui)</a>
                       </div>
                       <button
                         onClick={handleRebuildFromMemory}

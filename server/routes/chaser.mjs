@@ -32,7 +32,7 @@ const buckets = new Map()
 // sync has its own bucket: pages trigger it on load, and that must never use up a payer's payment budget
 const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive: [40, 10 * 60_000], sync: [120, 10 * 60_000] }
 // GETs that call an external service on every request
-const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/chase-queue'
+const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/chase-queue' || /^\/clients\/[^/]+\/statement$/.test(req.path)
 router.use((req, res, next) => {
   const isSync = req.path === '/sync-payments'
   const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
@@ -1013,6 +1013,7 @@ router.post('/mcp', mcpHandler((req) => ({
   audit: () => auditMemories(),
   verifyPayment: (d) => verifyPayment(d),
   chaseQueue: () => chaseQueue(),
+  statement: (id) => clientStatement(id),
   payerReadiness: (inv) => payerLiquidityOf(inv),
   chain: async () => ({ facts: await sui.chainFacts(), provider: sui.providerStatus(), callsThisInstance: sui.grpcCalls }),
   aggregator: process.env.WALRUS_AGGREGATOR || 'https://aggregator.walrus-mainnet.walrus.space',
@@ -1137,6 +1138,51 @@ router.post('/pay-gasless', async (req, res) => {
     res.status(code).json({ ...body, digest, gasless: true })
   } catch (e) {
     res.status(400).json({ error: `Gasless execution failed: ${e.message}` })
+  }
+})
+
+// Statement of account for one client: every invoice and payment from Walrus Memory, and every payment line
+// that names a transaction re-proven on Sui (Tatum BatchGetTransactions, one call per 50). Something a freelancer
+// can send to the client's AP team: each paid line links to the chain and to the Walrus blob that remembers it.
+async function clientStatement(clientId) {
+  const client = state().clients.find((c) => c.id === clientId)
+  if (!client) return null
+  const invs = state().invoices.filter((i) => i.clientId === clientId).map(withStatus).sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+  const pays = invs.flatMap((i) => (i.payments || []).map((p) => ({ invoice: i.id, ...p })))
+  const digests = [...new Set(pays.map((p) => p.digest).filter(Boolean))]
+  const facts = digests.length ? await sui.transactionsFacts(digests, PAYEE()) : new Map()
+  const blobOf = (d) => memsFor(clientId).find((m) => m.tag?.digest === d)?.blobId || null
+  const payments = pays.map((p) => {
+    const f = p.digest ? facts.get(p.digest) : null
+    const claimed = p.received != null ? sui.toMicro(p.received) : null
+    const verified = !p.digest ? 'no transaction (seeded history)' : !f?.found ? 'not found on chain' : !f.ok ? 'failed on chain' : claimed != null && f.received !== claimed ? `chain moved ${sui.fromMicro(f.received)} USDC` : 'verified on Sui'
+    return { date: p.paid || null, invoice: p.invoice, usdc: p.received ?? null, digest: p.digest, verified, checkpoint: f?.checkpoint != null ? String(f.checkpoint) : null, explorer: p.digest ? `${sui.EXPLORER}/tx/${p.digest}` : null, walrusBlob: p.digest ? blobOf(p.digest) : null }
+  })
+  const sum = (xs) => xs.reduce((a, b) => a + sui.toMicro(b || '0'), 0n)
+  const invoiced = sum(invs.map((i) => i.payAmount))
+  const paid = sum(payments.map((p) => p.usdc))
+  const open = invs.filter((i) => i.status !== 'paid')
+  return {
+    client: { id: client.id, name: client.name }, generatedAt: new Date().toISOString(), network: sui.NETWORK, payee: PAYEE(),
+    totals: { invoicedUsdc: sui.fromMicro(invoiced), paidUsdc: sui.fromMicro(paid), outstandingUsdc: sui.fromMicro(sum(open.map((i) => owed(i)))), invoices: invs.length, open: open.length, paymentsVerifiedOnChain: payments.filter((p) => p.verified === 'verified on Sui').length, paymentsWithTransaction: payments.filter((p) => p.digest).length },
+    invoices: invs.map((i) => ({ id: i.id, description: i.description || '', due: i.dueDate, amountUsdc: i.payAmount, status: i.status, owedUsdc: i.status === 'paid' ? '0.000000' : owed(i) })),
+    payments,
+    services: ['Walrus Memory (invoices, payments)', 'LedgerService.BatchGetTransactions (Tatum)'],
+  }
+}
+router.get('/clients/:id/statement', async (req, res) => {
+  try {
+    const st = await clientStatement(req.params.id)
+    if (!st) return res.status(404).json({ error: 'Client not found' })
+    if (req.query.format !== 'csv') return res.json(st)
+    const esc = (v) => `"${String(v ?? '').replace(/^[=+\-@\t\r]/, (c) => `'${c}`).replace(/"/g, '""')}"`
+    const rows = [['type', 'date', 'invoice', 'description', 'usdc', 'status', 'transaction', 'checkpoint', 'walrus_blob'].join(',')]
+    for (const i of st.invoices) rows.push(['invoice', i.due, i.id, i.description, i.amountUsdc, i.status, '', '', ''].map(esc).join(','))
+    for (const p of st.payments) rows.push(['payment', p.date, p.invoice, '', p.usdc, p.verified, p.explorer, p.checkpoint, p.walrusBlob].map(esc).join(','))
+    rows.push(['total', '', '', 'invoiced / paid / outstanding', `${st.totals.invoicedUsdc} / ${st.totals.paidUsdc} / ${st.totals.outstandingUsdc}`, `${st.totals.paymentsVerifiedOnChain}/${st.totals.paymentsWithTransaction} payments verified on Sui`, '', '', ''].map(esc).join(','))
+    res.set('Content-Disposition', `attachment; filename="statement-${st.client.name.replace(/[^A-Za-z0-9-]+/g, '-')}.csv"`).type('text/csv').send(rows.join('\n'))
+  } catch (e) {
+    res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}` })
   }
 })
 
