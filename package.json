@@ -6,7 +6,9 @@
     "dev": "node --env-file-if-exists=.env.local server/index.mjs",
     "test": "node --test server/engine.test.mjs server/drafter.test.mjs server/live.test.mjs",
     "seed": "node --env-file=.env.local scripts/seed.mjs",
-    "build": "vite build"
+    "build": "vite build",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p ."
   },
   "dependencies": {
     "@cetusprotocol/aggregator-sdk": "^1.7.5",

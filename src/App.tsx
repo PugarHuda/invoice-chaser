@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LogoMark } from './Logo';
-import { getWallets } from '@mysten/wallet-standard';
+import { getWallets, type StandardConnectFeature, type SuiSignTransactionFeature, type SuiSignAndExecuteTransactionFeature } from '@mysten/wallet-standard';
 import { Transaction } from '@mysten/sui/transactions';
 import QRCode from 'qrcode';
 
@@ -22,7 +22,11 @@ const delayLabel = (p: { ewmaDelayDays?: number; medianDelayDays: number }) => {
 // ?inv=<id> deep-links an invoice on the owner tabs
 const START_INV = new URLSearchParams(window.location.search).get('inv');
 // Default selection: the largest invoice still fully open, then any unpaid one, then the first.
-const pickDefaultInvoice = (list: any[]) =>
+type InvoiceListItem = { id: string; clientId: string; clientName: string; baseAmount: number; payAmount: string; status: string; dueDate: string };
+type ClientListItem = { id: string; name: string; contact?: string; email?: string; profile: ClientProfile };
+// error bodies from the API: { error } plus whatever the route adds
+type ApiBody = { error?: string } & Record<string, unknown>;
+const pickDefaultInvoice = (list: InvoiceListItem[]) =>
   [...list].filter((i) => i.status === 'sent' || i.status === 'overdue').sort((a, b) => Number(b.baseAmount) - Number(a.baseAmount))[0] || list.find((i) => i.status !== 'paid') || list[0];
 import {
   Clock,
@@ -45,6 +49,8 @@ import {
 type TabKey = 'today' | 'clients' | 'invoices' | 'pay' | 'proof';
 
 interface SummaryData {
+  network?: string;
+  learning?: { firstError: number; latestError: number; clients: number; predictions: number } | null;
   expectedInflow7Days: string;
   expectedInflow30Days?: string;
   expectedInflow7DaysRange?: { low: string; high: string };
@@ -89,6 +95,7 @@ interface ClientProfile {
   creditUsdc?: string;
   memoryCount: number;
   history?: Array<{ invoice: string; n: number; predicted: number; actual: number; error: number }>;
+  promiseStats?: { kept: number; broken: number };
 }
 
 interface ClientDetail {
@@ -97,12 +104,14 @@ interface ClientDetail {
     name: string;
     email: string;
     address: string;
+    expectedPayer?: { address: string; name?: string | null } | null;
   };
   profile: ClientProfile;
   memories: Array<{
     id: string;
     sentence: string;
-    tag: Record<string, any>;
+    tag: { type?: string; seed?: boolean } & Record<string, unknown>;
+    blobId?: string;
     timestamp: string;
     status: string;
   }>;
@@ -134,7 +143,10 @@ interface InvoiceDetail {
     receiptsEnabled?: boolean;
     promise?: { date: string; at: string; source: string } | null;
     terms?: { kind: 'early_discount' | 'late_fee'; pct: number; until: string | null; original: string; expired?: boolean } | null;
+    paidOn?: string | null;
+    originalAmount?: string;
   };
+  profile?: { promiseStats?: { kept: number; broken: number } };
   payerLiquidity?: { owner: string; usdc: string; sui: number; covers: boolean; source: string; name: string | null; at: string } | null;
   incentive?: { kind: 'early_discount' | 'late_fee' | null; pct?: number; until?: string; newBase?: number; reason: string };
   adaptivePlan: {
@@ -165,6 +177,7 @@ interface ProofData {
     payeeBalance: string;
     usdcCoinType: string;
     errorDetail: string | null;
+    rates?: { SUI?: { usd: number }; USDC?: { usd: number } };
   };
   walrusMemory: {
     relayerUrl: string;
@@ -185,6 +198,16 @@ interface ProofData {
       daysToEarliestExpiry?: number | null;
       endEpochRange?: [number, number] | null;
       spotCheck?: Array<{ blobId: string; onWalrus: boolean; bytes: number | null; ms: number }>;
+    };
+    chainAudit?: {
+      error?: string;
+      verified: number;
+      withTransaction: number;
+      mismatched: number;
+      gatewayCalls: number;
+      service?: string;
+      demoHistoryWithoutTransaction?: number;
+      chainToMemory?: { error?: string; windowDays: number; incomingTransfers: number; recordedInMemory: number; unrecorded: number; scannedTransactions: number };
     };
     sampleMemories: Array<{
       namespace: string;
@@ -222,14 +245,14 @@ export default function App() {
   const [proofError, setProofError] = useState(false);
   const failed = async (res: Response | null, what: string) => {
     const d = res ? await res.json().catch(() => ({})) : {};
-    setApiError(`Could not load ${what}${res ? ` (HTTP ${res.status})` : ' (network error)'}${(d as any).error ? `: ${(d as any).error}` : ''}`);
+    setApiError(`Could not load ${what}${res ? ` (HTTP ${res.status})` : ' (network error)'}${(d as ApiBody).error ? `: ${(d as ApiBody).error}` : ''}`);
   };
-  const [clientsList, setClientsList] = useState<any[]>([]);
+  const [clientsList, setClientsList] = useState<ClientListItem[]>([]);
   const [clientDetail, setClientDetail] = useState<ClientDetail | null>(null);
   const [invoiceDetail, setInvoiceDetail] = useState<InvoiceDetail | null>(null);
   const [detailError, setDetailError] = useState('');
   const [proofData, setProofData] = useState<ProofData | null>(null);
-  const [allInvoices, setAllInvoices] = useState<any[]>([]);
+  const [allInvoices, setAllInvoices] = useState<InvoiceListItem[]>([]);
 
   // Payment Form States
   const [digestInput, setDigestInput] = useState<string>('');
@@ -250,7 +273,7 @@ export default function App() {
     const v = payerInput.trim().toLowerCase();
     // same shapes the server accepts: a full Sui address, a name.sui, or an @name
     if (!/^0x[0-9a-f]{64}$/.test(v) && !/^[a-z0-9-]+(\.[a-z0-9-]+)*\.sui$/.test(v) && !/^@[a-z0-9-]+$/.test(v)) return showToast('Enter a full Sui address (0x + 64 hex characters) or a SuiNS name like alice.sui', 'error');
-    let r: Response, d: any;
+    let r: Response, d: ApiBody & { address: string; name?: string | null; screen?: { verdict?: string } };
     try {
       r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: v }) });
       d = await r.json();
@@ -262,7 +285,7 @@ export default function App() {
     fetchClients();
   };
   const [memQuery, setMemQuery] = useState<string>('');
-  const [memHits, setMemHits] = useState<any[] | null>(null);
+  const [memHits, setMemHits] = useState<Array<{ sentence: string; blobId?: string | null; distance: number }> | null>(null);
   const [memBusy, setMemBusy] = useState<boolean>(false);
   // Walrus recall ranking: closest by meaning, newest among matches, or meaning blended with recency
   const [memMode, setMemMode] = useState<'relevance' | 'recent' | 'weighted'>('relevance');
@@ -282,7 +305,7 @@ export default function App() {
   // Tour targets: the largest fully open invoice (a real-sized one, not a 0.01 USDC mainnet proof) and its client.
   const tourInvoice = pickDefaultInvoice(allInvoices);
   const tourClient = clientsList.find((c) => c.id === tourInvoice?.clientId) || clientsList[0];
-  const netLabel = (invoiceDetail?.invoice.network || (summary as any)?.network) === 'testnet' ? 'Sui Testnet' : 'Sui Mainnet';
+  const netLabel = (invoiceDetail?.invoice.network || summary?.network) === 'testnet' ? 'Sui Testnet' : 'Sui Mainnet';
 
   // Real QR: the Sui Payment Kit URI (sui:pay?...) for this invoice, scannable by Sui wallets.
   useEffect(() => {
@@ -345,7 +368,7 @@ export default function App() {
       const r = await fetch('/api/chaser/sync-payments', { method: 'POST' });
       const d = await r.json();
       if (d.settled?.length) {
-        showToast(d.settled.map((x: any) => `${x.invoice}: ${x.message}`).join(' · '));
+        showToast(d.settled.map((x: { invoice: string; message: string }) => `${x.invoice}: ${x.message}`).join(' · '));
         fetchSummary();
         fetchAllInvoices();
         if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
@@ -435,7 +458,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setClientsList(data);
-        if (data.length && !data.some((c: any) => c.id === selectedClientId)) setSelectedClientId(data[0].id);
+        if (data.length && !data.some((c: ClientListItem) => c.id === selectedClientId)) setSelectedClientId(data[0].id);
       } else await failed(res, 'clients');
     } catch { await failed(null, 'clients'); }
   };
@@ -446,7 +469,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAllInvoices(data);
-        if (!PAY_ONLY && data.length && !data.some((i: any) => i.id === selectedInvoiceId)) setSelectedInvoiceId(pickDefaultInvoice(data).id);
+        if (!PAY_ONLY && data.length && !data.some((i: InvoiceListItem) => i.id === selectedInvoiceId)) setSelectedInvoiceId(pickDefaultInvoice(data).id);
       } else await failed(res, 'invoices');
     } catch { await failed(null, 'invoices'); }
   };
@@ -545,8 +568,8 @@ export default function App() {
       fetchClientDetail(selectedClientId);
       fetchSummary();
       if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
-    } catch (err: any) {
-      showToast(`Failed to revoke: ${err?.message || err}`, 'error');
+    } catch (err) {
+      showToast(`Failed to revoke: ${err instanceof Error ? err.message : err}`, 'error');
     }
   };
 
@@ -610,7 +633,7 @@ export default function App() {
 
   const handleAddClient = async () => {
     if (!newClientName.trim()) return;
-    let res: Response, data: any;
+    let res: Response, data: ApiBody & { client: { id: string; name: string } };
     try {
       res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
       data = await res.json();
@@ -630,9 +653,9 @@ export default function App() {
     const wallet = wallets.find((w) => /slush|sui/i.test(w.name)) || wallets[0];
     try {
       setWalletBusy(`Connecting ${wallet.name}…`);
-      const { accounts } = await (wallet.features['standard:connect'] as any).connect();
-      const chain = `sui:${invoiceDetail?.invoice.network || 'mainnet'}`;
-      const account = accounts.find((a: any) => a.chains.includes(chain)) || accounts[0];
+      const { accounts } = await (wallet.features['standard:connect'] as StandardConnectFeature['standard:connect']).connect();
+      const chain: `${string}:${string}` = `sui:${invoiceDetail?.invoice.network || 'mainnet'}`;
+      const account = accounts.find((a) => a.chains.includes(chain)) || accounts[0];
       if (!account) throw new Error('No account approved');
       setWalletBusy(withSui ? 'Finding the best SUI → USDC route (Cetus aggregator)…' : 'Building transfer via Tatum…');
       const canSignOnly = 'sui:signTransaction' in wallet.features;
@@ -642,7 +665,7 @@ export default function App() {
       // Native gasless (Sui Address Balances): the protocol charges no gas at all for this USDC transfer.
       if (built.gasless) {
         setWalletBusy('Approve in your wallet · gasless USDC transfer, no network fee at all');
-        const signed = await (wallet.features['sui:signTransaction'] as any).signTransaction({
+        const signed = await (wallet.features['sui:signTransaction'] as SuiSignTransactionFeature['sui:signTransaction']).signTransaction({
           transaction: { toJSON: async () => Transaction.from(built.bytes).toJSON() },
           account,
           chain,
@@ -659,7 +682,7 @@ export default function App() {
       // Sponsored: the server's gas wallet pays the network fee; the payer only signs the USDC payment.
       if (built.sponsored) {
         setWalletBusy('Approve in your wallet · network fee sponsored, you pay only USDC');
-        const signed = await (wallet.features['sui:signTransaction'] as any).signTransaction({
+        const signed = await (wallet.features['sui:signTransaction'] as SuiSignTransactionFeature['sui:signTransaction']).signTransaction({
           transaction: { toJSON: async () => Transaction.from(built.bytes).toJSON() },
           account,
           chain,
@@ -684,13 +707,13 @@ export default function App() {
           : 'Approve in your wallet…',
       );
       const tx = Transaction.from(built.bytes);
-      const out = await (wallet.features['sui:signAndExecuteTransaction'] as any).signAndExecuteTransaction({
+      const out = await (wallet.features['sui:signAndExecuteTransaction'] as SuiSignAndExecuteTransactionFeature['sui:signAndExecuteTransaction']).signAndExecuteTransaction({
         transaction: { toJSON: async () => tx.toJSON() },
         account,
         chain,
       });
       setWalletBusy(`Verifying on ${netLabel}…`);
-      let data: any = null;
+      let data: ApiBody & { message?: string } = {};
       for (let i = 0; i < 6; i++) {
         const v = await fetch('/api/chaser/verify-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invoiceId: selectedInvoiceId, digest: out.digest, channel: 'wallet' }) });
         data = await v.json();
@@ -701,8 +724,8 @@ export default function App() {
       fetchInvoiceDetail(selectedInvoiceId);
       fetchSummary();
       fetchAllInvoices();
-    } catch (e: any) {
-      showToast(e?.message || 'Wallet payment failed', 'error');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Wallet payment failed', 'error');
     } finally {
       setWalletBusy(null);
     }
@@ -711,7 +734,7 @@ export default function App() {
   // Apply the learned payment incentive; the server recomputes it, the owner only approves the kind.
   const handleApplyTerms = async (kind: string) => {
     if (!invoiceDetail) return;
-    let res: Response, data: any;
+    let res: Response, data: ApiBody & { invoice: { payAmount: string } };
     try {
       res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
       data = await res.json();
@@ -889,10 +912,10 @@ export default function App() {
                   <Brain className="w-4 h-4 text-fg-brand-primary" />
                 </div>
                 <div className="mt-md text-heading-md font-semibold text-primary">
-                  {(summary as any)?.learning ? <>{(summary as any).learning.firstError}d → {(summary as any).learning.latestError}d</> : '—'}
+                  {summary?.learning ? <>{summary.learning.firstError}d → {summary.learning.latestError}d</> : '—'}
                 </div>
                 <div className="text-xs text-secondary mt-xs flex items-center gap-xxs">
-                  <span>{(summary as any)?.learning ? `first invoice vs latest, ${(summary as any).learning.clients} client(s), ${(summary as any).learning.predictions} predictions` : 'appears once a client has 2 paid invoices'}</span>
+                  <span>{summary?.learning ? `first invoice vs latest, ${summary.learning.clients} client(s), ${summary.learning.predictions} predictions` : 'appears once a client has 2 paid invoices'}</span>
                 </div>
               </section>
             </div>
@@ -1225,7 +1248,7 @@ export default function App() {
                     <div className="flex flex-col gap-sm pt-xs">
                       <label className="text-sm font-medium text-secondary flex items-center gap-xs">
                         <ShieldCheck className="w-3.5 h-3.5 text-fg-brand-primary" />
-                        <span>Wallet this client pays from {(clientDetail.client as any).expectedPayer ? <span className="font-mono text-xs text-tertiary">({(clientDetail.client as any).expectedPayer.name || (clientDetail.client as any).expectedPayer.address.slice(0, 12) + '…'})</span> : null}</span>
+                        <span>Wallet this client pays from {clientDetail.client.expectedPayer ? <span className="font-mono text-xs text-tertiary">({clientDetail.client.expectedPayer.name || clientDetail.client.expectedPayer.address.slice(0, 12) + '…'})</span> : null}</span>
                       </label>
                       <div className="flex gap-sm">
                         <input value={payerInput} onChange={(e) => setPayerInput(e.target.value)} placeholder="0x… or name.sui" aria-label="Expected payer wallet" className="flex-1 min-w-0 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
@@ -1315,8 +1338,8 @@ export default function App() {
                             <p className="text-xs text-secondary mt-xxs">{mem.sentence}</p>
                             <div className="flex items-center gap-sm mt-xxs text-xs">
                               <span className="text-tertiary">{mem.timestamp?.slice(0, 10)}</span>
-                              {mem.status === 'saved' && (mem as any).blobId ? (
-                                <a href={`https://walruscan.com/mainnet/blob/${(mem as any).blobId}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xxs text-utility-brand-700 hover:underline">
+                              {mem.status === 'saved' && mem.blobId ? (
+                                <a href={`https://walruscan.com/mainnet/blob/${mem.blobId}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-xxs text-utility-brand-700 hover:underline">
                                   On Walrus <ExternalLink className="w-3 h-3" />
                                 </a>
                               ) : (
@@ -1362,7 +1385,7 @@ export default function App() {
                     className="appearance-none max-w-[calc(100vw-3rem)] md:max-w-none truncate flex items-center justify-between gap-sm rounded-md bg-primary px-lg py-sm pr-10 text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring cursor-pointer"
                   >
                     {/* real invoices first (test payments under 1 USDC last), open before paid, newest first */}
-                    {[...allInvoices].sort((a: any, b: any) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv: any) => (
+                    {[...allInvoices].sort((a, b) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv) => (
                       <option key={inv.id} value={inv.id}>
                         #{inv.id} ({inv.clientName} - {inv.payAmount} USDC · {inv.status})
                       </option>
@@ -1639,7 +1662,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                           {invoiceDetail.invoice.promise
                             ? `${invoiceDetail.invoice.clientName} promised to pay by ${invoiceDetail.invoice.promise.date}${invoiceDetail.invoice.promise.date < new Date().toISOString().slice(0, 10) ? ' and missed it: the plan follows up now, one tone firmer' : ': no reminder before then'}.`
                             : 'None recorded. Record one here, or paste the email on the client page ("we will pay next Friday").'}
-                          {(invoiceDetail as any).profile?.promiseStats && ((invoiceDetail as any).profile.promiseStats.kept + (invoiceDetail as any).profile.promiseStats.broken) > 0 && ` Kept ${(invoiceDetail as any).profile.promiseStats.kept} of ${(invoiceDetail as any).profile.promiseStats.kept + (invoiceDetail as any).profile.promiseStats.broken} earlier promises.`}
+                          {invoiceDetail.profile?.promiseStats && (invoiceDetail.profile.promiseStats.kept + invoiceDetail.profile.promiseStats.broken) > 0 && ` Kept ${invoiceDetail.profile.promiseStats.kept} of ${invoiceDetail.profile.promiseStats.kept + invoiceDetail.profile.promiseStats.broken} earlier promises.`}
                         </p>
                         <div className="flex flex-wrap items-center gap-sm">
                           <label className="sr-only" htmlFor="promise-date">Promised pay date</label>
@@ -1647,7 +1670,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                           <button
                             disabled={!promiseInput}
                             onClick={async () => {
-                              let r: Response, d: any;
+                              let r: Response, d: ApiBody & { promise: { date: string } };
                               try {
                                 r = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/promise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: promiseInput }) });
                                 d = await r.json();
@@ -1712,7 +1735,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                       onChange={(e) => { setSelectedInvoiceId(e.target.value); goTab('pay', e.target.value); }}
                       className="max-w-full truncate rounded-md bg-primary px-md py-xs text-sm text-primary border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring"
                     >
-                      {[...allInvoices].sort((a: any, b: any) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv: any) => (
+                      {[...allInvoices].sort((a, b) => Number(b.baseAmount >= 1) - Number(a.baseAmount >= 1) || Number(a.status === 'paid') - Number(b.status === 'paid') || String(b.id).localeCompare(String(a.id))).map((inv) => (
                         <option key={inv.id} value={inv.id}>#{inv.id} · {inv.clientName} · {inv.payAmount} USDC · {inv.status}</option>
                       ))}
                     </select>
@@ -1749,7 +1772,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
               )}
               {invoiceDetail?.invoice.status === 'paid' && (
                 <p className="inline-flex items-center gap-xs rounded-full border border-utility-success-200 bg-utility-success-50 px-md py-xxs text-sm font-semibold text-utility-success-700">
-                  <Check className="w-4 h-4" /> Paid{(invoiceDetail.invoice as any).paidOn ? ` on ${(invoiceDetail.invoice as any).paidOn}` : ''} · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
+                  <Check className="w-4 h-4" /> Paid{invoiceDetail.invoice.paidOn ? ` on ${invoiceDetail.invoice.paidOn}` : ''} · thank you{invoiceDetail.invoice.explorerTx && <a className="underline ml-xs" href={invoiceDetail.invoice.explorerTx} target="_blank" rel="noreferrer">transaction</a>}{invoiceDetail.invoice.receipt && <a className="underline ml-xs" href={invoiceDetail.invoice.receipt.url} target="_blank" rel="noreferrer">PDF receipt (Walrus)</a>}
                 </p>
               )}
             </div>
@@ -1764,7 +1787,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
             <section className="rounded-xl border border-secondary bg-primary p-2xl shadow-xs space-y-xl">
               {/* Amount Display */}
               <div className="text-center p-xl bg-secondary rounded-xl border border-secondary">
-                <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${(invoiceDetail.invoice as any).originalAmount} USDC)` : invoiceDetail?.invoice.status === 'paid' ? 'Amount paid' : 'Payable Amount (Unique Micro-Suffix)'}</span>
+                <span className="text-xs text-tertiary font-medium">{invoiceDetail?.invoice.status === 'partial' ? `Remaining after a partial payment (invoice total ${invoiceDetail.invoice.originalAmount} USDC)` : invoiceDetail?.invoice.status === 'paid' ? 'Amount paid' : 'Payable Amount (Unique Micro-Suffix)'}</span>
                 <div className="mt-xs text-heading-md sm:text-heading-xl font-semibold text-primary break-all tabular-nums">
                   {invoiceDetail?.invoice.payAmount ?? '—'}{' '}
                   <span className="text-sm font-normal text-secondary">USDC</span>
@@ -1928,7 +1951,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   <div className="flex justify-between py-xxs">
                     <span className="text-secondary">SUI / USDC in USD (Tatum Data API):</span>
                     <span className="font-semibold text-primary">
-                      {(proofData as any)?.tatumSuiGrpc.rates?.SUI ? `$${(proofData as any).tatumSuiGrpc.rates.SUI.usd.toFixed(4)} / $${(proofData as any).tatumSuiGrpc.rates.USDC?.usd.toFixed(4)}` : 'loading…'}
+                      {proofData?.tatumSuiGrpc.rates?.SUI ? `$${proofData.tatumSuiGrpc.rates.SUI.usd.toFixed(4)} / $${proofData.tatumSuiGrpc.rates.USDC?.usd.toFixed(4)}` : 'loading…'}
                     </span>
                   </div>
                   <div className="flex justify-between py-xxs">
@@ -2001,7 +2024,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
 
                 {/* Memory <-> chain audit: every payment memory re-checked on Sui through Tatum */}
                 {(() => {
-                  const a = (proofData?.walrusMemory as any)?.chainAudit;
+                  const a = proofData?.walrusMemory.chainAudit;
                   if (!a) return null;
                   const ok = !a.error && a.mismatched === 0;
                   return (
