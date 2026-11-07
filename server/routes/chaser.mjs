@@ -48,12 +48,14 @@ router.use((req, res, next) => {
   if (buckets.size > 10_000) for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k)
   next()
 })
-const isOwner = (req) => {
+const passcodeMatches = (req) => {
   const pass = process.env.APP_PASSCODE
   if (!pass) return false
   const got = createHash('sha256').update(req.get('x-passcode') || '').digest()
   return timingSafeEqual(got, createHash('sha256').update(pass).digest())
 }
+// set once by the passcode gate below; every other owner check reads this flag, so no route can act as an un-throttled oracle
+const isOwner = (req) => req.owner === true
 // PRIVATE_READS=1 (with APP_PASSCODE set) also puts the owner's data behind the passcode: clients,
 // invoices, memories, plans, exports and MCP. Payers and agents keep what they need: the pay page and its
 // PDF/XML/live stream, x402, MPP, and aggregate-only /summary and /proof (the landing page's live stats).
@@ -79,13 +81,21 @@ const denyOwner = (req, res, body = { error: 'Owner passcode required' }) => {
   authFails.set(clientIp(req), f)
   return f.n > AUTH_MAX_FAILS ? tooManyFails(res, f) : res.status(401).json(body)
 }
+// The one place a supplied passcode is checked: locked out -> 429, wrong -> counted failure, on every route
+// (public reads included, since /summary etc. answer differently for the owner). No/empty header = not the owner.
+router.use((req, res, next) => {
+  req.owner = false
+  if (!req.get('x-passcode')) return next()
+  if (lockedOut(req, res)) return
+  if (!passcodeMatches(req)) return denyOwner(req, res)
+  req.owner = true
+  next()
+})
 const privateReads = () => process.env.PRIVATE_READS === '1' && Boolean(process.env.APP_PASSCODE)
 const PUBLIC_READS = [/^\/$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
 const ownerView = (req) => !privateReads() || isOwner(req)
 router.use((req, res, next) => {
-  if (!privateReads()) return next()
-  if (lockedOut(req, res)) return
-  if (isOwner(req)) return next()
+  if (!privateReads() || isOwner(req)) return next()
   if ((req.method === 'GET' || req.method === 'HEAD') && !PUBLIC_READS.some((r) => r.test(req.path))) return denyOwner(req, res)
   if (req.path === '/mcp') return denyOwner(req, res, { jsonrpc: '2.0', error: { code: -32001, message: 'Owner passcode required (x-passcode header)' }, id: null })
   next()
@@ -96,7 +106,6 @@ router.use((req, res, next) => {
   if (req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
   // fail closed on a deploy that lost its passcode: Walrus memories can't be deleted, so open writes are permanent damage
   if (!pass) return process.env.VERCEL && process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set on this deployment' }) : next()
-  if (lockedOut(req, res)) return
   if (!isOwner(req)) return denyOwner(req, res)
   next()
 })

@@ -41,7 +41,6 @@ function scrub(body) {
 }
 
 export function credentialGuard(_req, res, next) {
-  const json = res.json.bind(res)
   res.json = (payload) => {
     res.type('application/json')
     return send(scrub(JSON.stringify(payload)))

@@ -163,6 +163,8 @@ test('owner writes fail closed on Vercel without a passcode; wrong passcodes are
     assert.deepEqual([codes[0], codes[9], codes[10]], [401, 401, 429])
     // locked out: even the right passcode is refused until the window resets
     assert.equal((await post('/clients', { 'x-passcode': 'right-one' })).status, 429)
+    // a public read can't be used to keep guessing either
+    assert.equal((await fetch(base + '/summary', { headers: { 'x-passcode': 'right-one' } })).status, 429)
   } finally {
     srv.close()
     for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v)

@@ -254,7 +254,7 @@ export default function App() {
     try {
       r = await fetch(`/api/chaser/clients/${selectedClientId}/payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payer: v }) });
       d = await r.json();
-    } catch (_e) { return showToast('Network error: payer not saved', 'error'); }
+    } catch { return showToast('Network error: payer not saved', 'error'); }
     if (!r.ok) return showToast(d.error || 'Could not set payer', 'error');
     showToast(`Payer set: ${d.name ? `${d.name} → ` : ''}${d.address.slice(0, 10)}… · Tatum screening: ${d.screen?.verdict ?? 'unavailable'}`);
     setPayerInput('');
@@ -350,7 +350,7 @@ export default function App() {
         fetchAllInvoices();
         if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
       }
-    } catch (_e) {}
+    } catch { /* background poll: the next tick retries */ }
   };
   useEffect(() => {
     // the live stream already settles payments the moment they land; poll only as a fallback
@@ -370,7 +370,7 @@ export default function App() {
       setNoteText('');
       fetchClientDetail(selectedClientId);
       if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
-    } catch (_e) {
+    } catch {
       showToast('Network error: notes not analyzed', 'error');
     } finally {
       setNoteBusy(false);
@@ -426,7 +426,7 @@ export default function App() {
         setSummary(data);
         setApiError(null);
       } else await failed(res, 'the cash-flow summary');
-    } catch (_err) { await failed(null, 'the cash-flow summary'); }
+    } catch { await failed(null, 'the cash-flow summary'); }
   };
 
   const fetchClients = async () => {
@@ -437,7 +437,7 @@ export default function App() {
         setClientsList(data);
         if (data.length && !data.some((c: any) => c.id === selectedClientId)) setSelectedClientId(data[0].id);
       } else await failed(res, 'clients');
-    } catch (_err) { await failed(null, 'clients'); }
+    } catch { await failed(null, 'clients'); }
   };
 
   const fetchAllInvoices = async () => {
@@ -448,7 +448,7 @@ export default function App() {
         setAllInvoices(data);
         if (!PAY_ONLY && data.length && !data.some((i: any) => i.id === selectedInvoiceId)) setSelectedInvoiceId(pickDefaultInvoice(data).id);
       } else await failed(res, 'invoices');
-    } catch (_err) { await failed(null, 'invoices'); }
+    } catch { await failed(null, 'invoices'); }
   };
 
   // latest id asked for: a slower response for a previously selected client/invoice must not overwrite it
@@ -464,7 +464,7 @@ export default function App() {
       if (!res.ok) return showToast(`Could not load this client (HTTP ${res.status}). Please retry.`, 'error');
       const data = await res.json();
       if (clientReq.current === id) setClientDetail(data);
-    } catch (_err) {
+    } catch {
       if (clientReq.current === id) showToast('Network error while loading the client. Check your connection and retry.', 'error');
     }
   };
@@ -497,7 +497,7 @@ export default function App() {
       }
       setDetailError('');
       setInvoiceDetail(data);
-    } catch (_err) {
+    } catch {
       if (invoiceReq.current === id) setDetailError('Network error while loading the invoice. Check your connection and retry.');
     }
   };
@@ -510,7 +510,7 @@ export default function App() {
         setProofData(data);
         setProofError(false);
       } else { setProofError(true); await failed(res, 'the live proof'); }
-    } catch (_err) { setProofError(true); await failed(null, 'the live proof'); }
+    } catch { setProofError(true); await failed(null, 'the live proof'); }
   };
 
   const handleSavePreference = async () => {
@@ -528,7 +528,7 @@ export default function App() {
         fetchSummary();
         if (selectedInvoiceId) fetchInvoiceDetail(selectedInvoiceId);
       } else showToast((await res.json().catch(() => ({}))).error || 'Could not save the preference', 'error');
-    } catch (_err) {
+    } catch {
       showToast('Failed to record memory', 'error');
     }
   };
@@ -564,7 +564,7 @@ export default function App() {
         fetchAllInvoices();
         fetchSummary();
       } else showToast((await res.json().catch(() => ({}))).error || 'Rebuild failed', 'error');
-    } catch (_err) {
+    } catch {
       showToast('Rebuild failed', 'error');
     }
   };
@@ -601,7 +601,7 @@ export default function App() {
       } else {
         showToast(data.error || 'Verification failed', 'error');
       }
-    } catch (_err) {
+    } catch {
       showToast('Network error during verification', 'error');
     } finally {
       setIsVerifying(false);
@@ -614,7 +614,7 @@ export default function App() {
     try {
       res = await fetch('/api/chaser/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newClientName.trim() }) });
       data = await res.json();
-    } catch (_e) { return showToast('Network error: client not added', 'error'); }
+    } catch { return showToast('Network error: client not added', 'error'); }
     if (!res.ok) return showToast(data.error || 'Could not add client', 'error');
     showToast(`${data.client.name} added (writing to Walrus Memory)`);
     setNewClientName('');
@@ -715,7 +715,7 @@ export default function App() {
     try {
       res = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/terms`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind }) });
       data = await res.json();
-    } catch (_e) { return showToast('Network error: terms not applied', 'error'); }
+    } catch { return showToast('Network error: terms not applied', 'error'); }
     if (!res.ok) return showToast(data.error || 'Could not apply terms', 'error');
     showToast(`New amount ${data.invoice.payAmount} USDC (writing to Walrus Memory)`);
     fetchInvoiceDetail(invoiceDetail.invoice.id);
@@ -739,7 +739,7 @@ export default function App() {
       await fetchAllInvoices();
       setSelectedInvoiceId(data.invoice.id);
       fetchSummary();
-    } catch (_e) {
+    } catch {
       showToast('Could not create invoice', 'error');
     }
   };
@@ -762,7 +762,7 @@ export default function App() {
       showToast('Reminder copied and saved to Walrus Memory');
       fetchInvoiceDetail(selectedInvoiceId);
       fetchSummary();
-    } catch (_e) {
+    } catch {
       showToast('Could not log reminder', 'error');
     }
   };
@@ -1651,7 +1651,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                               try {
                                 r = await fetch(`/api/chaser/invoices/${encodeURIComponent(invoiceDetail.invoice.id)}/promise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: promiseInput }) });
                                 d = await r.json();
-                              } catch (_e) { return showToast('Network error: promise not saved', 'error'); }
+                              } catch { return showToast('Network error: promise not saved', 'error'); }
                               if (!r.ok) return showToast(d.error || 'Could not record the promise', 'error');
                               showToast(`Promise to pay by ${d.promise.date} saved to Walrus Memory`);
                               setPromiseInput('');

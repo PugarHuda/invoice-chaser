@@ -13,6 +13,7 @@ export const seller = () => {
 }
 
 // XML 1.0 forbids C0 controls: drop them, then escape markup
+// eslint-disable-next-line no-control-regex -- stripping C0 controls is the point (XML 1.0 forbids them)
 const x = (s) => String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c])
 const ymd = (iso) => String(iso).slice(0, 10).replaceAll('-', '')
 const cents = (n) => (Math.round(Number(n) * 100) / 100).toFixed(2)
@@ -51,6 +52,7 @@ export async function embedFacturX(doc, xml) {
   // pdf-lib embeds attachments on save; the ref is allocated now, so /AF can point at it already
   const file = doc.embeddedFiles.at(-1)
   doc.catalog.set(PDFName.of('AF'), doc.context.obj([file.ref]))
+  // eslint-disable-next-line no-irregular-whitespace -- the XMP packet header must contain a literal BOM
   const xmp = `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
 <rdf:Description rdf:about="" xmlns:fx="urn:factur-x:pdfa:CrossIndustryDocument:invoice:1p0#"><fx:DocumentType>INVOICE</fx:DocumentType><fx:DocumentFileName>factur-x.xml</fx:DocumentFileName><fx:Version>1.0</fx:Version><fx:ConformanceLevel>MINIMUM</fx:ConformanceLevel></rdf:Description>

@@ -491,7 +491,7 @@ export async function gaslessMin() {
       const list = JSON.parse(pc.attributes?.gasless_allowed_token_types || '[]')
       const hit = list.find(([t]) => normalizeStructTag(t) === normalizeStructTag(USDC_COIN_TYPE))
       if (on && hit) min = BigInt(hit[1])
-    } catch {}
+    } catch { /* malformed protocol config: keep the default minimum */ }
     gaslessCfg = { t: Date.now(), min }
   }
   return gaslessCfg.min
