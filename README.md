@@ -73,7 +73,8 @@ All invoice verification and chain reads go through **Tatum's Sui Mainnet gRPC g
 | SUI → USDC for an agent short on USDC | Cetus aggregator route, transaction built and executed through the gateway (`server/swap.mjs`) |
 | USD prices | **Tatum Data API** `GET /v4/data/rate/symbol` (SUI, USDC) on /proof and fee display |
 | Verify chain facts instead of trusting config (/proof) | `LedgerService.GetServiceInfo` (chain id, epoch, height, oldest available checkpoint, node version), `LedgerService.GetEpoch` (reference gas price), `StateService.GetCoinInfo` (USDC decimals/symbol must match the amounts we compute), `MovePackageService.GetFunction` + `ListPackageVersions` (Payment Kit's `process_registry_payment` exists with the shape we build against) |
-| Can the payer pay right now? | `StateService.ListBalances` on the client's stated or last-used payer wallet (from Walrus Memory), shown in the plan's *Why* panel |
+| Can the payer pay right now? | `StateService.ListBalances` on the client's stated, proven or last-used payer wallet (from Walrus Memory), shown in the plan's *Why* panel |
+| A wallet claimed before the first payment | The pay-link holder signs one personal message; zkLogin signatures are checked through `SignatureVerificationService` (current JWKs and epoch), then `ListBalances` on that wallet |
 | x402 facilitator binding | `SimulateTransaction` must **create** the registry's `PaymentKey(nonce, amount, payee)` object (derived id), not just emit an event |
 | Which Tatum services did this instance really use? | A protobuf-ts interceptor counts every gRPC call per `service.method` and provider; `/proof` → `tatumSuiGrpc.callsThisInstance` |
 
@@ -166,6 +167,16 @@ With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet 
 ## Pay links for Slush
 
 Every pay page also carries Slush's universal pay link (`https://my.slush.app/pay?receiver&amount&coinType&nonce&registry`), the same Payment Kit fields as the `sui:pay` QR. It opens the Slush app on a phone or the Slush web app on desktop, so a payer without a browser extension still gets a prefilled, nonce-protected payment that `/sync-payments` finds without a reported digest.
+
+## Proven payer wallet
+
+A client opening its pay link can prove, before paying, which wallet it will pay from: **Prove the wallet you will pay from** asks the wallet to sign one message (no transaction, no fee). The text names the invoice, the client and the time it was issued, so a signature can't be reused for another client or kept for later (10-minute window).
+
+- The server checks the signature: zkLogin wallets (Slush with Google/Apple) through Tatum's `SignatureVerificationService`, Ed25519/Secp256k1/Secp256r1/MultiSig locally.
+- The wallet is remembered in Walrus Memory (`payer_proven`, own tag key). Before the client's first payment, payer readiness, the chase queue and the MCP `payer_readiness` tool read that wallet live on Sui (`ListBalances`), so "can they pay now?" has an answer.
+- It is a **claim**, not proof of identity: invoice ids are guessable, so anyone with the link can sign. It is labelled "claimed via the pay link (signature-verified)", the owner's rule and the wallet that actually paid both outrank it, and it never feeds the new-payer fraud signal (a payment from a claimed wallet is still flagged as a new payer until it is confirmed).
+- Guards: open invoices only, at most 3 proven wallets per invoice, proving the same wallet again writes nothing, and the payment rate limit applies.
+- API: `GET /api/chaser/pay/:id/payer-message`, `POST /api/chaser/pay/:id/prove-payer` (in [`/openapi.json`](https://invoice-chaser-sigma.vercel.app/openapi.json)).
 
 ## Payment terms learned from memory (early-payment discount / late fee)
 
@@ -271,6 +282,12 @@ SUI_NETWORK=testnet node --env-file=.env.local --env-file=.env.testagent scripts
 
 - Per-IP write / payment / search budgets (429 + `Retry-After`); on Vercel the IP comes from the edge header, never the client-supplied `X-Forwarded-For`.
 - Input validation (real calendar dates, amounts 0.01–1,000,000 with ≤2 decimals, length caps), JSON errors for malformed bodies.
+- The owner passcode is checked once per request and the result reused everywhere, so no route can act as a guessing oracle. Ten wrong passcodes from an IP lock it out for 10 minutes, checked *before* the passcode, so even the right one is refused while locked; requests without a passcode never count.
+- A deployment without `APP_PASSCODE` refuses owner writes (503) instead of opening them, since Walrus memories can't be deleted (`ALLOW_OPEN_WRITES=1` opts out for local demos).
+- Rate limiting and auth run before the Walrus load, so a refused request never triggers one.
+- A transaction that fails on-chain (`FailedTransaction`) is reported as such on the x402, sponsored and gasless paths, never settled.
+- The live checkpoint stream retries a transient settle miss (ledger lag, lock held, gateway error) instead of giving up after one checkpoint; the memory-chain audit serves the last good result, marked stale, when Tatum rate-limits.
+- `npm audit`: 0 high/critical. The 2 remaining moderate advisories are in `mppx` (via `@suimpp/mpp`, which pins `mppx@0.4`); both concern EVM access-list/padding gas draining, a path the Sui charge flow doesn't use.
 - `robots.txt` and an [`llms.txt`](https://invoice-chaser-sigma.vercel.app/llms.txt) that tells AI agents how to pay an invoice over x402. Lighthouse: Accessibility 100, SEO 100.
 
 ## For judges
@@ -306,14 +323,35 @@ flowchart LR
 ## Run it
 
 ```bash
-cp .env.example .env.local   # TATUM_API_KEY, MEMWAL_PRIVATE_KEY, MEMWAL_ACCOUNT_ID, SUI_PAYEE_ADDRESS
+cp .env.example .env.local   # required: TATUM_API_KEY, MEMWAL_PRIVATE_KEY, MEMWAL_ACCOUNT_ID, SUI_PAYEE_ADDRESS
 npm install
-npm test                     # engine tests
-npm run seed -- --dry        # preview demo history (run without --dry once, on a fresh namespace prefix)
+npm run build                # the server serves the built SPA from public/
 npm run dev                  # http://localhost:3000
+npm run seed -- --dry        # preview demo history (run without --dry once, on a fresh namespace prefix)
 ```
 
-Node 22+. Set `MEMWAL_NS_PREFIX` to use a different namespace prefix.
+Node 22+. Every optional variable (passcode, Factur-X seller, receipts, gas sponsor, MPP, AI drafts, cron, private mode, testnet) is listed and explained in [`.env.example`](.env.example).
+
+## Tests and CI
+
+```bash
+npm run lint && npm run typecheck   # ESLint (flat config) and tsc, both clean
+npm test                            # 37 unit/integration tests (node:test): engine, drafter, auth gates, payer proofs, FailedTransaction, ICS/CSV
+npx playwright install              # once
+npx playwright test                 # E2E against a local server on real Walrus Memory + Tatum (reads .env.local)
+BASE_URL=https://invoice-chaser-sigma.vercel.app npx playwright test --project=chromium   # same suite, read-only, against production
+```
+
+The Playwright suite runs on **Chromium, Firefox, WebKit, iPad Mini, Pixel 7 and iPhone 14** (258 tests: 242 pass, 16 skipped by design). It covers:
+- the main flows: landing live stats, tabs as URLs (back/forward/reload/deep links), chase queue, learned profile, memory on vs off, pay link, statement, proven payer, `/proof`;
+- edge cases: empty, 5,000-character and emoji/HTML input, double submit in the same tick, unknown invoice, paid invoice;
+- failures, via route interception: API 500/503, network offline, wallet rejecting the connection, payer short of USDC, expired passcode, `/proof` down;
+- API validation against the real server (invalid digests, path traversal, wrong signer, stale proof), all refused before anything is written;
+- accessibility with axe (WCAG 2.1 AA, 0 violations), no horizontal scroll on any device, keyboard focus on tab change, visual baselines for key pages.
+
+Tests never write a memory: a fixture aborts every non-GET API call unless a test intercepts it, and only one test per run opens a live Tatum stream. Bugs the suite found, now fixed: a same-tick double submit sent a payment digest twice; the landing logo link's accessible name didn't match its text; a request without a passcode counted toward the lockout.
+
+[CI](.github/workflows/ci.yml) runs lint, typecheck, unit tests, build and `npm audit --audit-level=high` on every push and PR. On `main` it then waits until production serves that exact commit (`/api/version`) and runs the Playwright suite against it, read-only, uploading the HTML report.
 
 ## Private mode (after judging)
 

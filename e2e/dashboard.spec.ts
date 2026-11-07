@@ -48,7 +48,9 @@ test('an API outage shows an error, never zeros', async ({ page }) => {
 
 test('an expired/wrong owner passcode asks again instead of failing silently', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('ic-passcode', 'stale'))
-  await page.route('**/api/chaser/clients', (r) => r.fulfill({ status: 401, json: { error: 'Owner passcode required' } }))
+  // the whole API answers 401 (an expired session); nothing reaches the real server, so this test can't
+  // count toward that IP's wrong-passcode lockout and disturb parallel tests
+  await page.route('**/api/chaser/**', (r) => r.fulfill({ status: 401, json: { error: 'Owner passcode required' } }))
   const asked = page.waitForEvent('dialog')
   await page.goto('/?tab=clients')
   const d = await asked

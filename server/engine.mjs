@@ -96,7 +96,8 @@ export function deriveState(store, now = new Date()) {
     } else if (t.type === 'payer_proven' && clients.has(t.client)) {
       // the client signed a message with this wallet (proof of control); newest proof first, one entry per wallet
       const c = clients.get(t.client)
-      c.provenPayers = [{ address: t.payer, at: m.timestamp, invoice: t.invoice, scheme: t.scheme || null }, ...(c.provenPayers || []).filter((p) => p.address !== t.payer)]
+      const address = t.proven_payer || t.payer
+      if (address) c.provenPayers = [{ address, at: m.timestamp, invoice: t.invoice, scheme: t.scheme || null }, ...(c.provenPayers || []).filter((p) => p.address !== address)]
     }
   }
   // an early-payment discount is an offer with a deadline: unpaid after it, the full amount is owed again

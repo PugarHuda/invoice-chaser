@@ -337,3 +337,16 @@ test('chaseAction: memory timing joined with the payer wallet on chain', () => {
   assert.match(chaseAction({ ...promised, late: 9 }).why[0], /kept 1 of 2/)
   assert.equal(chaseAction({ ...base, inv: { dueDate: '2026-11-05', promise: { date: '2026-11-08' } }, late: 5 }).action, 'chase_now') // broken promise
 })
+
+test('a pay-link wallet claim is listed as a claim, never as the expected payer or a payer tag', () => {
+  const store = new Map([['ic:c9', [
+    { timestamp: '2026-11-01T00:00:00Z', tag: { type: 'client_created', client: 'c9', name: 'Zeta' } },
+    { timestamp: '2026-11-02T00:00:00Z', tag: { type: 'payer_proven', client: 'c9', invoice: 'inv-9', proven_payer: '0xa', scheme: 'ED25519' } },
+    { timestamp: '2026-11-03T00:00:00Z', tag: { type: 'payer_proven', client: 'c9', invoice: 'inv-9', proven_payer: '0xb', scheme: 'ZkLogin' } },
+    { timestamp: '2026-11-04T00:00:00Z', tag: { type: 'payer_proven', client: 'c9', invoice: 'inv-9', proven_payer: '0xa', scheme: 'ED25519' } },
+  ]]])
+  const c = deriveState(store).clients.find((x) => x.id === 'c9')
+  assert.deepEqual(c.provenPayers.map((p) => p.address), ['0xa', '0xb']) // newest first, one entry per wallet
+  assert.equal(c.expectedPayer, undefined)
+  assert.ok(store.get('ic:c9').every((m) => m.tag.payer === undefined))
+})

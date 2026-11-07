@@ -287,7 +287,7 @@ export default function App() {
       const data = (await v.json()) as ApiBody & { address: string; verifiedBy: string; wallet: { usdc: string; covers: boolean; owed: string } | null };
       if (!v.ok) throw new Error(data.error || 'Proof refused');
       setPayerProof({ address: data.address, verifiedBy: data.verifiedBy, wallet: data.wallet });
-      showToast('Wallet proven: the invoice owner now knows which wallet you pay from');
+      showToast('Wallet verified: the invoice owner can see which wallet you plan to pay from');
     } catch (e) {
       showToast(e instanceof Error ? e.message : 'Could not prove the wallet', 'error');
     } finally {
@@ -1287,7 +1287,7 @@ export default function App() {
                       </label>
                       {!!clientDetail.client.provenPayers?.length && (
                         <p className="text-xs text-utility-success-700">
-                          Proven by the client (signed message): {clientDetail.client.provenPayers.map((p) => `${p.address.slice(0, 10)}…${p.address.slice(-4)} on ${p.at.slice(0, 10)}`).join(', ')}
+                          Claimed via the pay link (signature-verified, not proof of identity): {clientDetail.client.provenPayers.map((p) => `${p.address.slice(0, 10)}…${p.address.slice(-4)} on ${p.at.slice(0, 10)}`).join(', ')}
                         </p>
                       )}
                       <div className="flex gap-sm">

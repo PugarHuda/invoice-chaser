@@ -36,6 +36,8 @@ app.use(credentialGuard)
 // Agent discovery: robots, sitemap, llms.txt, /openapi.json, /.well-known/*, Link headers, markdown negotiation.
 app.use(discovery)
 
+// Which commit is live (Vercel sets VERCEL_GIT_COMMIT_SHA on git deployments): CI waits for it before E2E.
+app.get('/api/version', (_req, res) => res.set('Cache-Control', 'no-store').json({ commit: process.env.VERCEL_GIT_COMMIT_SHA || null, env: process.env.VERCEL_ENV || 'local' }))
 app.use('/api/tatum', tatumRoutes)
 app.use('/api/chaser', chaserRoutes)
 

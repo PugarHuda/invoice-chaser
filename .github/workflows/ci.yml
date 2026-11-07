@@ -3,15 +3,12 @@ name: CI
 on:
   push:
   pull_request:
-  # Vercel reports each deployment back to GitHub: the E2E job runs once production is live
-  deployment_status:
 
 permissions:
   contents: read
 
 jobs:
   checks:
-    if: github.event_name != 'deployment_status'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,16 +24,24 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   e2e:
-    # read-only against the live production deployment: no secrets needed, nothing is written
-    if: github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success' && github.event.deployment.environment == 'Production'
+    # read-only against the live production deployment: no secrets needed, nothing is written.
+    # Vercel deploys main on push; wait until production serves this exact commit, then test it.
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://invoice-chaser-sigma.vercel.app
       CI: 'true'
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.deployment.sha }}
+      - name: Wait for production to serve this commit
+        run: |
+          for i in $(seq 1 60); do
+            live=$(curl -fsS "$BASE_URL/api/version" | jq -r .commit || true)
+            [ "$live" = "$GITHUB_SHA" ] && echo "production is on $live" && exit 0
+            echo "production is on ${live:-unknown}, waiting for $GITHUB_SHA"; sleep 10
+          done
+          echo "production never served $GITHUB_SHA"; exit 1
       - uses: actions/setup-node@v4
         with:
           node-version: 24

@@ -405,7 +405,8 @@ router.post('/pay/:id/prove-payer', async (req, res) => {
   const already = client?.provenPayers?.some((p) => p.address === v.address)
   const proofs = memsFor(inv.clientId).filter((m) => m.tag?.type === 'payer_proven' && m.tag.invoice === inv.id).length
   if (!already && proofs >= PROOFS_PER_INVOICE) return res.status(429).json({ error: `This invoice already has ${PROOFS_PER_INVOICE} proven wallets` })
-  const memory = already ? null : mem.remember(mem.writeNs(inv.clientId), `${client.name} proved it pays from ${v.address} (signed message, ${v.scheme}, invoice ${inv.id}).`, { type: 'payer_proven', client: inv.clientId, invoice: inv.id, payer: v.address, scheme: v.scheme })
+  // own tag key (not `payer`): a claim must never feed the new-payer fraud signal or the last-payer lookup
+  const memory = already ? null : mem.remember(mem.writeNs(inv.clientId), `A pay-link holder for ${client.name} claimed wallet ${v.address} (signature-verified, ${v.scheme}, invoice ${inv.id}).`, { type: 'payer_proven', client: inv.clientId, invoice: inv.id, proven_payer: v.address, scheme: v.scheme })
   const wallet = await sui.walletBalances(v.address).catch(() => null)
   const need = sui.toMicro(owed(withStatus(inv)))
   res.json({
@@ -1324,13 +1325,14 @@ async function payerLiquidityOf(inv) {
   const client = state().clients.find((c) => c.id === inv.clientId)
   const last = memsFor(inv.clientId).find((m) => m.tag?.payer)?.tag
   const proven = client?.provenPayers?.[0]
-  // the owner's rule wins; then a wallet the client proved it controls; then the last one it paid from
-  const owner = client?.expectedPayer?.address || proven?.address || last?.payer
+  // invoice ids are guessable, so a pay-link claim proves control of a wallet, not identity: the owner's rule
+  // wins, then the wallet that actually paid before, and a claim only fills in before the first payment
+  const owner = client?.expectedPayer?.address || last?.payer || proven?.address
   if (!owner || invoiceStatus(inv) === 'paid') return null
   const w = await sui.walletBalances(owner).catch(() => null)
   if (!w) return null
   const need = sui.toMicro(owed(withStatus(inv)))
-  return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : proven ? 'wallet the client proved it pays from (signed message)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, owedUsdc: owed(withStatus(inv)), service: 'StateService.ListBalances' }
+  return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : last?.payer ? 'last wallet this client paid from' : 'wallet claimed via the pay link (signature-verified, not yet confirmed by a payment)', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, owedUsdc: owed(withStatus(inv)), service: 'StateService.ListBalances' }
 }
 
 // Memory <-> chain audit ("Total Recall" both ways): every payment memory in Walrus claims a digest, an
