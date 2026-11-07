@@ -60,20 +60,32 @@ const isOwner = (req) => {
 // Failed passcode attempts per IP: 10 per 10 minutes, then 429, so the passcode can't be guessed at network speed.
 const authFails = new Map()
 const clientIp = (req) => (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
+const AUTH_MAX_FAILS = 10
+const authFail = (req) => {
+  const f = authFails.get(clientIp(req))
+  return f?.reset > Date.now() ? f : null
+}
+const tooManyFails = (res, f) => res.status(429).set('Retry-After', String(Math.ceil((f.reset - Date.now()) / 1000))).json({ error: 'Too many wrong passcodes, try again later' })
+// checked BEFORE the passcode: a locked-out IP can't keep guessing, not even the right one
+const lockedOut = (req, res) => {
+  const f = authFail(req)
+  return f && f.n >= AUTH_MAX_FAILS ? tooManyFails(res, f) : null
+}
 const denyOwner = (req, res, body = { error: 'Owner passcode required' }) => {
-  const ip = clientIp(req)
   const now = Date.now()
-  const f = authFails.get(ip)?.reset > now ? authFails.get(ip) : { n: 0, reset: now + 10 * 60_000 }
+  if (authFails.size > 10_000) for (const [k, v] of authFails) if (v.reset <= now) authFails.delete(k)
+  const f = authFail(req) || { n: 0, reset: now + 10 * 60_000 }
   f.n++
-  authFails.set(ip, f)
-  if (f.n > 10) return res.status(429).set('Retry-After', String(Math.ceil((f.reset - now) / 1000))).json({ error: 'Too many wrong passcodes, try again later' })
-  return res.status(401).json(body)
+  authFails.set(clientIp(req), f)
+  return f.n > AUTH_MAX_FAILS ? tooManyFails(res, f) : res.status(401).json(body)
 }
 const privateReads = () => process.env.PRIVATE_READS === '1' && Boolean(process.env.APP_PASSCODE)
 const PUBLIC_READS = [/^\/$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
 const ownerView = (req) => !privateReads() || isOwner(req)
 router.use((req, res, next) => {
-  if (!privateReads() || isOwner(req)) return next()
+  if (!privateReads()) return next()
+  if (lockedOut(req, res)) return
+  if (isOwner(req)) return next()
   if ((req.method === 'GET' || req.method === 'HEAD') && !PUBLIC_READS.some((r) => r.test(req.path))) return denyOwner(req, res)
   if (req.path === '/mcp') return denyOwner(req, res, { jsonrpc: '2.0', error: { code: -32001, message: 'Owner passcode required (x-passcode header)' }, id: null })
   next()
@@ -84,6 +96,7 @@ router.use((req, res, next) => {
   if (req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
   // fail closed on a deploy that lost its passcode: Walrus memories can't be deleted, so open writes are permanent damage
   if (!pass) return process.env.VERCEL && process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set on this deployment' }) : next()
+  if (lockedOut(req, res)) return
   if (!isOwner(req)) return denyOwner(req, res)
   next()
 })
