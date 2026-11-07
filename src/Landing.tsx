@@ -245,7 +245,7 @@ export default function Landing() {
           <div className="flex flex-col gap-xl rounded-[28px] border border-[#530e5c] bg-[linear-gradient(120deg,#200854,#2b0e94_55%,#530e5c)] p-2xl lg:flex-row lg:items-center lg:justify-between lg:p-4xl">
             <div className="max-w-2xl">
               <h2 id="agents-h" className="ic-display text-xl font-extrabold uppercase tracking-wide">Built for agents too</h2>
-              <p className="mt-xs text-sm text-[#e4e1f5]">Every invoice is a payable HTTP resource. Agents discover it, pay it, and query what the app learned through 11 MCP tools.</p>
+              <p className="mt-xs text-sm text-[#e4e1f5]">Every invoice is a payable HTTP resource. Agents discover it, pay it, and query what the app learned through 12 MCP tools.</p>
             </div>
             <ul className="flex flex-wrap gap-sm">
               {AGENT_LINKS.map(([t, h]) => (

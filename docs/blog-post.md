@@ -10,7 +10,7 @@ Every freelancer has a client like Acme. The invoice is due on the 5th, nothing 
 I built **Invoice Chaser** for the Total Recall hackathon (Tatum × Walrus Memory) to fix exactly that. It's an invoice tracker for freelancers who get paid in USDC on Sui, and it remembers how each client pays.
 
 - Live demo: https://invoice-chaser-sigma.vercel.app
-- Video (2:50): https://github.com/PugarHuda/invoice-chaser/releases/download/demo-v2/invoice-chaser-demo-v2.mp4
+- Video (2:08): https://youtu.be/nCpQtlcQF-0
 - Code: https://github.com/PugarHuda/invoice-chaser
 
 ## What it does
@@ -88,7 +88,11 @@ Clients shouldn't need a second token just to pay gas. The pay page now builds t
 
 ## Agents can read the memory too (MCP)
 
-The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude tools like `client_profile`, `plan_reminder` and `search_client_memory` over the same Walrus memories.
+The app is also an MCP server. `claude mcp add --transport http invoice-chaser https://invoice-chaser-sigma.vercel.app/api/chaser/mcp` gives Claude 12 tools, like `client_profile`, `plan_reminder`, `chase_queue` and `search_client_memory`, over the same Walrus memories.
+
+## A statement you can send to the client
+
+Each client has a statement of account (JSON or CSV, and the `client_statement` MCP tool): every invoice and payment from Walrus Memory, with each payment re-checked on Sui in one Tatum `BatchGetTransactions` call and linked to its explorer page and the Walrus blob that remembers it. For the client with real Mainnet payments, all 7 come back verified on Sui.
 
 ## Receipts that outlive the app
 
