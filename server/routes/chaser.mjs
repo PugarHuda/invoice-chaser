@@ -359,18 +359,25 @@ router.get('/invoices', (_req, res) => {
   res.json(invoices.map((i) => ({ ...withStatus(i), clientName: clientName(clients, i.clientId) })).sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
 })
 
+// input checks for a new invoice; null when valid (exported for the unit test)
+export function invoiceInputError({ amount, dueDate, description, repeat } = {}) {
+  if (repeat != null && !REPEATS.includes(repeat)) return `repeat must be one of ${REPEATS.join(', ')}`
+  // amounts are priced in cents and capped well below u64 in base units; dates must be real calendar days
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dueDate || '') && isoDay(`${dueDate}T00:00:00Z`) === dueDate
+  if (!['number', 'string'].includes(typeof amount) || !/^\d+(\.\d{1,2})?$/.test(typeof amount === 'number' ? String(Math.round(amount * 100) / 100 === amount ? amount : 'x') : String(amount))) return 'amount must be a number with at most 2 decimals'
+  if (!(Number(amount) >= 0.01 && Number(amount) <= 1_000_000) || !validDate) return 'amount between 0.01 and 1,000,000 and a real dueDate (YYYY-MM-DD) are required'
+  if (description != null && typeof description !== 'string') return 'description must be text'
+  if (description && description.length > 200) return 'description must be 200 characters or fewer'
+  return null
+}
+
 router.post('/invoices', (req, res) => {
   const { clientId, amount, dueDate, description, repeat } = req.body || {}
-  if (repeat != null && !REPEATS.includes(repeat)) return res.status(400).json({ error: `repeat must be one of ${REPEATS.join(', ')}` })
+  const bad = invoiceInputError(req.body || {})
+  if (bad) return res.status(400).json({ error: bad })
   const { clients, invoices } = state()
   const client = clients.find((c) => c.id === clientId)
   if (!client) return res.status(400).json({ error: 'unknown clientId' })
-  // amounts are priced in cents and capped well below u64 in base units; dates must be real calendar days
-  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(dueDate || '') && isoDay(`${dueDate}T00:00:00Z`) === dueDate
-  if (!/^\d+(\.\d{1,2})?$/.test(typeof amount === 'number' ? String(Math.round(amount * 100) / 100 === amount ? amount : 'x') : String(amount))) return res.status(400).json({ error: 'amount must be a number with at most 2 decimals' })
-  if (!(Number(amount) >= 0.01 && Number(amount) <= 1_000_000) || !validDate) return res.status(400).json({ error: 'amount between 0.01 and 1,000,000 and a real dueDate (YYYY-MM-DD) are required' })
-  if (description != null && typeof description !== 'string') return res.status(400).json({ error: 'description must be text' })
-  if (description && description.length > 200) return res.status(400).json({ error: 'description must be 200 characters or fewer' })
   const id = newId('inv')
   const payAmount = uniquePayAmount(amount, takenAmounts(invoices))
   const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}${repeat ? `, repeating ${repeat}` : ''}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '', ...(repeat ? { repeat, series: id } : {}) })

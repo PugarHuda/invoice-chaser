@@ -378,7 +378,7 @@ Node 22+. Every optional variable (passcode, Factur-X seller, receipts, gas spon
 
 ```bash
 npm run lint && npm run typecheck   # ESLint (flat config) and tsc, both clean
-npm test                            # 39 unit/integration tests (node:test): engine, recurrence, drafter, auth gates, payer proofs, FailedTransaction, ICS/CSV
+npm test                            # 40 unit/integration tests (node:test): engine, recurrence, invoice input (negative, zero, huge, fake dates), drafter, auth gates, payer proofs, FailedTransaction, ICS/CSV
 npx playwright install              # once
 npx playwright test                 # E2E against a local server on real Walrus Memory + Tatum (reads .env.local)
 BASE_URL=https://invoice-chaser-sigma.vercel.app npx playwright test --project=chromium   # same suite, read-only, against production
@@ -391,7 +391,7 @@ The Playwright suite runs on **Chromium, Firefox, WebKit, iPad Mini, Pixel 7 and
 - API validation against the real server (invalid digests, path traversal, wrong signer, stale proof), all refused before anything is written;
 - accessibility with axe (WCAG 2.1 AA, 0 violations), no horizontal scroll on any device, keyboard focus on tab change, visual baselines for key pages.
 
-Tests never write a memory: a fixture aborts every non-GET API call unless a test intercepts it, and only one test per run opens a live Tatum stream. Bugs the suite found, now fixed: a same-tick double submit sent a payment digest twice; the landing logo link's accessible name didn't match its text; a request without a passcode counted toward the lockout.
+Tests never write a memory: a fixture aborts every non-GET API call unless a test intercepts it, and only one test per run opens a live Tatum stream. Bugs the suite found, now fixed: a same-tick double submit sent a payment digest twice; the landing logo link's accessible name didn't match its text; a request without a passcode counted toward the lockout; an array amount (`[5]`) passed invoice validation.
 
 [CI](.github/workflows/ci.yml) runs lint, typecheck, unit tests, build and `npm audit --audit-level=high` on every push and PR. Then Playwright:
 - on `main`, it waits until production serves that exact commit (`/api/version`) and runs the suite against it, read-only;

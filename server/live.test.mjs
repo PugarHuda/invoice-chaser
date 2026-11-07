@@ -195,3 +195,17 @@ test('proven payer: a fresh signed proof for this invoice verifies; wrong text, 
   assert.equal((await verifyPayerProof({ ...base, signature: 'AAAA' })).ok, false)
   assert.equal((await verifyPayerProof({ ...base, address: 'not-an-address' })).ok, false)
 })
+
+test('new invoice input: negative, zero, huge, NaN, 3 decimals, fake dates and bad repeat are refused', async () => {
+  const { invoiceInputError: e } = await import('./routes/chaser.mjs')
+  const ok = { amount: '250', dueDate: '2026-12-31' }
+  assert.equal(e(ok), null)
+  assert.equal(e({ ...ok, amount: 0.01 }), null)
+  assert.equal(e({ ...ok, amount: '1000000', repeat: 'monthly' }), null)
+  for (const amount of ['-5', -5, '0', 0, '0.001', '1000000.01', 1e21, 'NaN', 'Infinity', '', null, '1e3', ' 5', '5,00', [5]]) assert.ok(e({ ...ok, amount }), `amount ${JSON.stringify(amount)}`)
+  for (const dueDate of ['2026-02-30', '2026-13-01', '31-12-2026', '', undefined]) assert.ok(e({ ...ok, dueDate }), `dueDate ${dueDate}`)
+  assert.ok(e({ ...ok, repeat: 'daily' }))
+  assert.ok(e({ ...ok, description: { x: 1 } }))
+  assert.ok(e({ ...ok, description: 'x'.repeat(201) }))
+  assert.equal(e({ ...ok, description: '🧾 <b>Design</b> & "QA"' }), null)
+})
