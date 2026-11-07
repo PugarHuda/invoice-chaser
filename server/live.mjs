@@ -51,7 +51,7 @@ function start() {
         for (const w of watchers) w.onCheckpoint?.(lastSeq)
         for (const [w, digest] of matches(cp, watchers, sui.USDC_COIN_TYPE)) {
           w.hit = true
-          w.onHit(digest, lastSeq)
+          Promise.resolve(w.onHit(digest, lastSeq)).catch((e) => console.error('live onHit failed', e?.message || e))
         }
       }
     } catch (e) {

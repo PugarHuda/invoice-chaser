@@ -136,3 +136,33 @@ test('x402 Bazaar discovery info validates against the schema it ships with', as
   assert.ok(ok, 'bazaar info must satisfy its own schema')
   assert.match(b.routeTemplate, /^\/[a-zA-Z0-9_/:.\-~%]+$/)
 })
+
+test('a FailedTransaction from execute is reported, never treated as a settleable digest', async () => {
+  const { executed } = await import('./sui.mjs')
+  assert.deepEqual(executed({ Transaction: { digest: 'D1' } }), { digest: 'D1' })
+  const f = executed({ FailedTransaction: { digest: 'D2', effects: { status: { error: { message: 'InsufficientCoinBalance' } } } } })
+  assert.equal(f.digest, 'D2')
+  assert.match(f.failed, /failed on-chain: InsufficientCoinBalance/)
+  assert.deepEqual(executed(undefined), { digest: null })
+})
+
+test('owner writes fail closed on Vercel without a passcode; wrong passcodes are throttled', async () => {
+  const saved = { VERCEL: process.env.VERCEL, APP_PASSCODE: process.env.APP_PASSCODE }
+  const { default: app } = await import('../app.mjs')
+  const srv = app.listen(0)
+  const base = `http://127.0.0.1:${srv.address().port}/api/chaser`
+  const post = (path, headers = {}) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}' })
+  try {
+    process.env.VERCEL = '1'
+    delete process.env.APP_PASSCODE
+    assert.equal((await post('/clients')).status, 503)
+    delete process.env.VERCEL
+    process.env.APP_PASSCODE = 'right-one'
+    const codes = []
+    for (let i = 0; i < 12; i++) codes.push((await post('/clients', { 'x-passcode': 'wrong' })).status)
+    assert.deepEqual([codes[0], codes[9], codes[10]], [401, 401, 429])
+  } finally {
+    srv.close()
+    for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
+})

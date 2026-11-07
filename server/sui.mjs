@@ -573,3 +573,8 @@ export async function walletActivity(owner, payee = null) {
   activityCache.set(key, { at: Date.now(), value })
   return value
 }
+
+// executeSigned can return FailedTransaction (e.g. the loser of a duplicate-payment race): surface it, never settle it
+export const executed = (out) => out?.FailedTransaction
+  ? { failed: `transaction failed on-chain: ${out.FailedTransaction.effects?.status?.error?.message || 'unknown error'}`, digest: out.FailedTransaction.digest || null }
+  : { digest: out?.Transaction?.digest || out?.transaction?.digest || out?.digest || null }

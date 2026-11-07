@@ -323,7 +323,8 @@ export default function App() {
     es.addEventListener('watching', (e) => { const d = JSON.parse((e as MessageEvent).data); setLive((l) => ({ ...l, state: 'watching', via: d.provider === 'tatum' ? 'Tatum gRPC' : 'the public Sui fullnode (Tatum credits exhausted)' })); });
     es.addEventListener('checkpoint', (e) => { const d = JSON.parse((e as MessageEvent).data); setLive((l) => ({ ...l, state: 'watching', checkpoint: d.checkpoint, via: d.provider ? (d.provider === 'tatum' ? 'Tatum gRPC' : 'the public Sui fullnode (Tatum credits exhausted)') : l.via })); });
     es.addEventListener('seen', () => setLive((l) => ({ ...l, state: 'verifying' })));
-    es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error, 'error'); });
+    // the server already retried transient misses; one registry/reconcile sync still catches a payment it gave up on
+    es.addEventListener('rejected', (e) => { setLive((l) => ({ ...l, state: 'watching' })); showToast(JSON.parse((e as MessageEvent).data).error, 'error'); setTimeout(syncPayments, 5000); });
     es.addEventListener('paid', (e) => {
       const d = JSON.parse((e as MessageEvent).data);
       es.close();
@@ -450,14 +451,22 @@ export default function App() {
     } catch (_err) { await failed(null, 'invoices'); }
   };
 
+  // latest id asked for: a slower response for a previously selected client/invoice must not overwrite it
+  const clientReq = useRef('');
+  const invoiceReq = useRef('');
   const fetchClientDetail = async (id: string) => {
+    clientReq.current = id;
+    // never show (and post actions against) the previous client's rules under the new selection
+    setClientDetail((d) => (d?.client.id === id ? d : null));
     try {
-      const res = await fetch(`/api/chaser/clients/${id}`);
-      if (res.ok) {
-        const data = await res.json();
-        setClientDetail(data);
-      }
-    } catch (_err) {}
+      const res = await fetch(`/api/chaser/clients/${encodeURIComponent(id)}`);
+      if (clientReq.current !== id) return;
+      if (!res.ok) return showToast(`Could not load this client (HTTP ${res.status}). Please retry.`, 'error');
+      const data = await res.json();
+      if (clientReq.current === id) setClientDetail(data);
+    } catch (_err) {
+      if (clientReq.current === id) showToast('Network error while loading the client. Check your connection and retry.', 'error');
+    }
   };
 
   const [storingReceipt, setStoringReceipt] = useState(false);
@@ -476,9 +485,11 @@ export default function App() {
     }
   };
   const fetchInvoiceDetail = async (id: string) => {
+    invoiceReq.current = id;
     try {
       const res = await fetch(PAY_ONLY ? `/api/chaser/pay/${encodeURIComponent(id)}` : `/api/chaser/invoices/${encodeURIComponent(id)}`);
       const data = await res.json().catch(() => ({}));
+      if (invoiceReq.current !== id) return;
       // never leave the previous invoice's amount on screen under a different invoice id
       if (!res.ok) {
         if (res.status === 404) setInvoiceDetail(null);
@@ -487,7 +498,7 @@ export default function App() {
       setDetailError('');
       setInvoiceDetail(data);
     } catch (_err) {
-      setDetailError('Network error while loading the invoice. Check your connection and retry.');
+      if (invoiceReq.current === id) setDetailError('Network error while loading the invoice. Check your connection and retry.');
     }
   };
 

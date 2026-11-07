@@ -17,13 +17,6 @@ const router = Router()
 const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
 const DAY = 86_400_000
 
-// First request after boot rebuilds everything from Walrus Memory.
-router.use(async (_req, res, next) => {
-  await mem.ready()
-  if (!mem.loadState.loaded) return res.status(503).set('Retry-After', '5').json({ error: 'Loading memory from Walrus failed; try again in a few seconds', detail: mem.loadState.error || null })
-  next()
-})
-
 const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/pay-gasless', '/sync-payments', '/mcp'])
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
@@ -42,7 +35,7 @@ router.use((req, res, next) => {
   const [max, windowMs] = LIMITS[kind]
   // On Vercel the edge sets x-vercel-forwarded-for (clients can't spoof it). Elsewhere use req.ip,
   // which honours only the configured proxy hop ('trust proxy' = 1), never the client-supplied leftmost XFF.
-  const ip = (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
+  const ip = clientIp(req)
   const key = `${kind}:${ip}`
   const now = Date.now()
   const b = buckets.get(key)?.reset > now ? buckets.get(key) : { n: 0, reset: now + windowMs }
@@ -64,20 +57,41 @@ const isOwner = (req) => {
 // PRIVATE_READS=1 (with APP_PASSCODE set) also puts the owner's data behind the passcode: clients,
 // invoices, memories, plans, exports and MCP. Payers and agents keep what they need: the pay page and its
 // PDF/XML/live stream, x402, MPP, and aggregate-only /summary and /proof (the landing page's live stats).
+// Failed passcode attempts per IP: 10 per 10 minutes, then 429, so the passcode can't be guessed at network speed.
+const authFails = new Map()
+const clientIp = (req) => (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
+const denyOwner = (req, res, body = { error: 'Owner passcode required' }) => {
+  const ip = clientIp(req)
+  const now = Date.now()
+  const f = authFails.get(ip)?.reset > now ? authFails.get(ip) : { n: 0, reset: now + 10 * 60_000 }
+  f.n++
+  authFails.set(ip, f)
+  if (f.n > 10) return res.status(429).set('Retry-After', String(Math.ceil((f.reset - now) / 1000))).json({ error: 'Too many wrong passcodes, try again later' })
+  return res.status(401).json(body)
+}
 const privateReads = () => process.env.PRIVATE_READS === '1' && Boolean(process.env.APP_PASSCODE)
 const PUBLIC_READS = [/^\/$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
 const ownerView = (req) => !privateReads() || isOwner(req)
 router.use((req, res, next) => {
   if (!privateReads() || isOwner(req)) return next()
-  if ((req.method === 'GET' || req.method === 'HEAD') && !PUBLIC_READS.some((r) => r.test(req.path))) return res.status(401).json({ error: 'Owner passcode required' })
-  if (req.path === '/mcp') return res.status(401).json({ jsonrpc: '2.0', error: { code: -32001, message: 'Owner passcode required (x-passcode header)' }, id: null })
+  if ((req.method === 'GET' || req.method === 'HEAD') && !PUBLIC_READS.some((r) => r.test(req.path))) return denyOwner(req, res)
+  if (req.path === '/mcp') return denyOwner(req, res, { jsonrpc: '2.0', error: { code: -32001, message: 'Owner passcode required (x-passcode header)' }, id: null })
   next()
 })
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
-  if (!pass || req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
-  if (!isOwner(req)) return res.status(401).json({ error: 'Owner passcode required' })
+  if (req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
+  // fail closed on a deploy that lost its passcode: Walrus memories can't be deleted, so open writes are permanent damage
+  if (!pass) return process.env.VERCEL && process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set on this deployment' }) : next()
+  if (!isOwner(req)) return denyOwner(req, res)
+  next()
+})
+
+// After the rate limit and auth gates (a rejected request never triggers a Walrus load): the first request after boot rebuilds everything from Walrus Memory.
+router.use(async (_req, res, next) => {
+  await mem.ready()
+  if (!mem.loadState.loaded) return res.status(503).set('Retry-After', '5').json({ error: 'Loading memory from Walrus failed; try again in a few seconds', detail: mem.loadState.error || null })
   next()
 })
 
@@ -401,11 +415,12 @@ router.get('/pay/:id/invoice.pdf', async (req, res) => {
 // moves this invoice's exact amount to the payee, the digest goes through the same verify/settle
 // path as everything else, so a stream hit can never settle what a manual check would reject.
 const LIVE_MS = 240_000 // ponytail: under Vercel's function limit; the page reconnects when it ends
+const LIVE_SETTLE_TRIES = 4 // ~20 s of retries for a transient settle miss
 const liveByIp = new Map() // ponytail: per-instance; ip -> (invoice -> finish) so one client can't take every slot
 router.get('/pay/:id/live', (req, res) => {
   const inv = state().invoices.find((i) => i.id === req.params.id)
   if (!inv) return res.status(404).json({ error: 'Invoice not found' })
-  const ip = (process.env.VERCEL && req.get('x-vercel-forwarded-for')) || req.ip || '?'
+  const ip = clientIp(req)
   // One stream per (address, invoice): a reload, a tab switch or a second tab REPLACES the older stream
   // (the platform may not report the old client's disconnect for minutes). Up to 4 invoices per address.
   const mine = liveByIp.get(ip) || new Map()
@@ -444,7 +459,15 @@ data: ${JSON.stringify(data)}
   try {
     stop = live.watch(PAYEE(), [...new Set([owed(inv), ...(inv.status === 'sent' || inv.status === 'overdue' ? quotedAmounts(inv) : [])])].map((a) => sui.toMicro(a)), async (digest, seq) => {
       send('seen', { digest, checkpoint: seq })
-      const [code, body] = await settleDigest(inv.id, digest, 'live-stream')
+      // the tx shows up in exactly one checkpoint, so a transient miss (ledger lag 404, lock held 409,
+      // gateway/memory 5xx) must be retried here or the stream never settles it
+      let code, body
+      for (let attempt = 1; ; attempt++) {
+        ;[code, body] = await settleDigest(inv.id, digest, 'live-stream')
+        const transient = code === 404 || code === 409 || code >= 500 || body?.retry
+        if (closed || !transient || attempt === LIVE_SETTLE_TRIES) break
+        await new Promise((r) => setTimeout(r, 2000 * attempt))
+      }
       if (closed) return
       if (code === 200) {
         send('paid', { invoice: inv.id, digest, checkpoint: seq, message: body.message, explorer: body.explorer })
@@ -919,8 +942,10 @@ async function x402v2Settle(req, res, inv, want, signature, transaction, fail, v
   if (check.received !== BigInt(want.amount)) return fail('invalid_payload', 402, `simulated ${sui.fromMicro(check.received)} USDC to payTo, invoice needs ${owed(inv)}`)
   let digest
   try {
-    const out = await sui.executeSigned(transaction, signature)
-    digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest
+    const ex = sui.executed(await sui.executeSigned(transaction, signature))
+    if (ex.failed) return fail('invalid_transaction_state', 402, ex.failed)
+    if (!ex.digest) return fail('unexpected_settle_error', 502, 'execution returned no digest')
+    digest = ex.digest
   } catch (e) {
     return fail('unexpected_settle_error', 500, e.message)
   }
@@ -1091,9 +1116,9 @@ router.post('/pay-sponsored', async (req, res) => {
   const sponsorSignature = await sui.cosignSponsored(bytes, mac).catch(() => null)
   if (!sponsorSignature) return res.status(400).json({ error: 'These bytes were not built by this server' })
   try {
-    const out = await sui.executeSigned(bytes, [signature, sponsorSignature])
-    const digest = out?.Transaction?.digest || out?.transaction?.digest || out?.digest
-    if (!digest) return res.status(502).json({ error: 'Execution returned no digest', out })
+    const { failed, digest } = sui.executed(await sui.executeSigned(bytes, [signature, sponsorSignature]))
+    if (failed) return res.status(400).json({ error: `Sponsored payment ${failed}`, digest })
+    if (!digest) return res.status(502).json({ error: 'Execution returned no digest' })
     let code, body
     for (let i = 0; i < 6; i++) {
       ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-sponsored')
@@ -1122,9 +1147,8 @@ router.post('/pay-gasless', async (req, res) => {
   if (withStatus(inv).status === 'paid') return res.status(409).json({ error: 'Invoice is already paid; nothing was sent' })
   if (inflight.has(inv.id)) return res.status(409).json({ error: 'A payment for this invoice is already being verified; nothing was sent' })
   try {
-    const out = await sui.executeSigned(bytes, signature)
-    const digest = out?.Transaction?.digest || out?.FailedTransaction?.digest
-    if (!digest || out?.FailedTransaction) return res.status(400).json({ error: `Gasless transfer failed on-chain: ${out?.FailedTransaction?.effects?.status?.error?.message || 'no digest'}`, digest: digest || null })
+    const { failed, digest } = sui.executed(await sui.executeSigned(bytes, signature))
+    if (failed || !digest) return res.status(400).json({ error: `Gasless ${failed || 'transfer returned no digest'}`, digest })
     let code, body
     for (let i = 0; i < 6; i++) {
       ;[code, body] = await settleDigest(invoiceId, digest, 'wallet-gasless', {}, { allowInexact: true })

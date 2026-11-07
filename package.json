@@ -21,10 +21,9 @@
     "@protobuf-ts/grpc-transport": "^2.11.1",
     "@suimpp/mpp": "^0.9.0",
     "@vercel/functions": "^3.10.5",
-    "@vitejs/plugin-react": "^4.3.1",
     "ai": "^7.0.162",
     "axios": "^1.21.0",
-    "express": "^4.21.0",
+    "express": "^4.22.3",
     "lucide-react": "^1.31.0",
     "mppx": "^0.4.12",
     "pdf-lib": "^1.17.1",
@@ -33,7 +32,6 @@
     "react-dom": "^18.3.1",
     "undici": "^7.0.0",
     "viem": "^2.57.16",
-    "vite": "5.4.21",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -41,13 +39,23 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^6.4.5"
   },
   "allowScripts": {
     "esbuild": true,
     "protobufjs": true
+  },
+  "overrides": {
+    "@pythnetwork/hermes-client": {
+      "zod": "$zod"
+    },
+    "@zodios/core": {
+      "zod": "$zod"
+    }
   }
 }
