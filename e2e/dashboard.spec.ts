@@ -51,9 +51,9 @@ test('an expired/wrong owner passcode asks again instead of failing silently', a
   // the whole API answers 401 (an expired session); nothing reaches the real server, so this test can't
   // count toward that IP's wrong-passcode lockout and disturb parallel tests
   await page.route('**/api/chaser/**', (r) => r.fulfill({ status: 401, json: { error: 'Owner passcode required' } }))
-  const asked = page.waitForEvent('dialog')
+  // the prompt can open before the load event: answer it from a listener, never block navigation on it
+  let asked = ''
+  page.once('dialog', (d) => { asked = d.message(); void d.dismiss() })
   await page.goto('/?tab=clients')
-  const d = await asked
-  expect(d.message()).toMatch(/passcode/i)
-  await d.dismiss()
+  await expect.poll(() => asked).toMatch(/passcode/i)
 })

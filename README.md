@@ -11,6 +11,41 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 > Acme always pays 5 days late and ignores friendly nudges. Beta pays on the due date. Gamma short-pays by ~10%.
 > Every invoicing tool treats them the same. Invoice Chaser remembers, and the reminder plan changes because of it.
 
+**Positioning.** For freelancers and small studios paid in USDC, who lose days chasing clients with the same reminder for everyone, Invoice Chaser is an invoicing app that learns each client's payment behaviour into memory the user owns and can verify on-chain. Collections tools like Chaser and Kolleno predict late payers from bank and ledger data, and nobody can see why a prediction was made. Crypto invoicing tools like Request Finance and Coinbase Business take the payment but never learn who pays when.
+
+## How it compares
+
+| Capability | Invoice Chaser | [Chaser](https://www.chaserhq.com) | [Kolleno](https://www.kolleno.com) | [Request Finance](https://www.request.finance) | [Coinbase Business](https://www.coinbase.com/business/features-invoices) |
+|---|---|---|---|---|---|
+| Predicts when each client will pay | Yes | Yes, ML late-payment predictor [1] | Yes, AI forecast from payment habits and promises [2] | Not in public docs | Not in public docs |
+| Shows the evidence behind each prediction | **Yes, each plan cites its Walrus memories** | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
+| Picks the reminder tone per client | Yes | Not in public docs | Yes [2] | Not in public docs | Not in public docs |
+| Payment verified on a public chain | Yes (Sui) | No (bank / ledger) | No (bank / ledger) | Yes (EVM) | Yes (Base) [4] |
+| Learned data re-checked against the chain | **Yes, live 7/7** | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
+| Reads the payer's live balance before chasing | **Yes** | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
+| AI agents can pay the invoice (x402 / MPP) | Yes | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
+| Recurring invoices | Yes | Not in public docs | Not in public docs | Yes [3] | Yes [4] |
+| Accounting sync (QuickBooks / Xero) | CSV and statement export only | Yes | Yes | Yes | Yes [4] |
+| Pricing | Open source | From $259/month [1] | Sales quote | Per-transaction fee | Per-payment fee [4] |
+
+"Not in public docs" means we found no claim on the vendor's pages (November 2026), not that it is impossible.
+
+What is the same as everyone (parity, not a reason to choose us): invoices with a payment link, reminders, PDF invoices, CSV export, payment prediction (Chaser and Kolleno have it too), tone selection (Kolleno), promises to pay (Kolleno).
+
+What competitors have that we don't, and what we did about it:
+- **Recurring invoices** (Request Finance, Coinbase Business): a must for freelancers on retainers, so we built it (below).
+- **QuickBooks/Xero sync**: not built. It needs OAuth apps with both vendors. The per-client statement of account (CSV) covers the hand-off for now.
+- **Sending email**: the app opens the reminder in your mail client (`mailto:`) instead of sending through a provider (needs an email API key).
+
+The gap nobody fills, and the three differentiators (each live on the landing page with its number):
+1. **Learning you can check.** Every reminder plan cites the exact Walrus memories it used, and the prediction error is published (1.5 → 0.3 days). Chaser and Kolleno document predictions, but not their evidence.
+2. **Memory proven by the chain.** Every remembered payment is re-proven on Sui through Tatum (`BatchGetTransactions`), and every USDC transfer to the payee is checked against memory (`ListTransactions`). A tool that learns from a private ledger can't offer this.
+3. **Chases the wallet, not the calendar.** Before a reminder, the chase queue reads the payer's USDC and recent activity on Sui (`ListBalances`, `ListTransactions`). A late client whose wallet is paying others gets chased; an empty, quiet wallet gets a nudge. Bank balances are private, so no fiat collections tool can do this.
+
+These are hard to copy because they need all three pieces together: memory that belongs to the user (Walrus), payments on a public chain (Sui), and a gateway to read both payer and payee live (Tatum).
+
+Sources: [1] [Chaser late payment predictor](https://www.newswire.com/news/introducing-chasers-late-payment-predictor-predict-whether-or-not-22087090), [Chaser pricing (GetApp)](https://www.getapp.com/finance-accounting-software/a/chaser/pricing/) · [2] [Kolleno collections](https://www.kolleno.com/collections-software/), [Kolleno forecasting](https://help.kolleno.com/en/articles/12691187-understanding-cash-flow-forecasting-in-kolleno) · [3] [Request Finance recurring invoices](https://www.request.finance/post/automate-your-business-with-recurring-invoices), [Request Finance reviews (Capterra)](https://www.capterra.com/p/246076/Request-Finance/) · [4] [Coinbase Business invoices](https://www.coinbase.com/business/features-invoices) · [Spark: crypto invoicing tools](https://www.spark.money/tools/which-crypto-invoicing-tool-should-i-use)
+
 ## What it does
 
 1. **Issue a USDC invoice** and send the client a **pay link** (`/?pay=<invoice>`): a payer-only page with a real `sui:pay` QR code (Sui Payment Kit URI) that shows nothing about how you see them.
@@ -167,6 +202,13 @@ With a gas wallet configured (`GAS_SPONSOR_KEY`, or the receipts storage wallet 
 ## Pay links for Slush
 
 Every pay page also carries Slush's universal pay link (`https://my.slush.app/pay?receiver&amount&coinType&nonce&registry`), the same Payment Kit fields as the `sui:pay` QR. It opens the Slush app on a phone or the Slush web app on desktop, so a payer without a browser extension still gets a prefilled, nonce-protected payment that `/sync-payments` finds without a reported digest.
+
+## Recurring invoices
+
+Pick **Repeat: Monthly** or **Weekly** on a new invoice. The series lives in Walrus Memory like everything else: the invoice memory carries `repeat` and a series id, and the daily cron (`/api/chaser/cron/sync`) writes the next invoice 7 days (monthly) or 2 days (weekly) before it falls due. The next invoice keeps the amount, gets a fresh unique micro-amount, and inherits the client's learned reminder plan.
+- Monthly keeps the day of the month and clamps at month end (31 Jan → 28/29 Feb).
+- A successor already in memory is never written twice; a cron that missed several periods catches up one invoice per run.
+- **Stop repeating** on the invoice writes a `repeat_stopped` memory; nothing more is issued for that series.
 
 ## Proven payer wallet
 
@@ -336,14 +378,14 @@ Node 22+. Every optional variable (passcode, Factur-X seller, receipts, gas spon
 
 ```bash
 npm run lint && npm run typecheck   # ESLint (flat config) and tsc, both clean
-npm test                            # 37 unit/integration tests (node:test): engine, drafter, auth gates, payer proofs, FailedTransaction, ICS/CSV
+npm test                            # 39 unit/integration tests (node:test): engine, recurrence, drafter, auth gates, payer proofs, FailedTransaction, ICS/CSV
 npx playwright install              # once
 npx playwright test                 # E2E against a local server on real Walrus Memory + Tatum (reads .env.local)
 BASE_URL=https://invoice-chaser-sigma.vercel.app npx playwright test --project=chromium   # same suite, read-only, against production
 ```
 
-The Playwright suite runs on **Chromium, Firefox, WebKit, iPad Mini, Pixel 7 and iPhone 14** (258 tests: 242 pass, 16 skipped by design). It covers:
-- the main flows: landing live stats, tabs as URLs (back/forward/reload/deep links), chase queue, learned profile, memory on vs off, pay link, statement, proven payer, `/proof`;
+The Playwright suite runs on **Chromium, Firefox, WebKit, iPad Mini, Pixel 7 and iPhone 14** (282 tests: 266 pass, 16 skipped by design). It covers:
+- the main flows: landing live stats, the three differentiators in the first viewport, the competitor table, tabs as URLs (back/forward/reload/deep links), chase queue, learned profile, memory on vs off, recurring invoices (create, next due, stop), pay link, statement, pay-link wallet claim, `/proof`;
 - edge cases: empty, 5,000-character and emoji/HTML input, double submit in the same tick, unknown invoice, paid invoice;
 - failures, via route interception: API 500/503, network offline, wallet rejecting the connection, payer short of USDC, expired passcode, `/proof` down;
 - API validation against the real server (invalid digests, path traversal, wrong signer, stale proof), all refused before anything is written;
@@ -351,7 +393,11 @@ The Playwright suite runs on **Chromium, Firefox, WebKit, iPad Mini, Pixel 7 and
 
 Tests never write a memory: a fixture aborts every non-GET API call unless a test intercepts it, and only one test per run opens a live Tatum stream. Bugs the suite found, now fixed: a same-tick double submit sent a payment digest twice; the landing logo link's accessible name didn't match its text; a request without a passcode counted toward the lockout.
 
-[CI](.github/workflows/ci.yml) runs lint, typecheck, unit tests, build and `npm audit --audit-level=high` on every push and PR. On `main` it then waits until production serves that exact commit (`/api/version`) and runs the Playwright suite against it, read-only, uploading the HTML report.
+[CI](.github/workflows/ci.yml) runs lint, typecheck, unit tests, build and `npm audit --audit-level=high` on every push and PR. Then Playwright:
+- on `main`, it waits until production serves that exact commit (`/api/version`) and runs the suite against it, read-only;
+- on PRs and other branches, it starts the server from repository secrets (`TATUM_API_KEY`, `MEMWAL_PRIVATE_KEY`, `MEMWAL_ACCOUNT_ID`, `SUI_PAYEE_ADDRESS`) and runs the suite against it. Without the secrets (forks), the job says so and skips.
+
+Both upload the HTML report.
 
 ## Private mode (after judging)
 

@@ -55,3 +55,39 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 14
+
+  e2e-local:
+    # PRs and branches: start the server from repository secrets (real Walrus Memory + Tatum, read-only tests)
+    needs: checks
+    if: github.event_name == 'pull_request' || github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      CI: 'true'
+      TATUM_API_KEY: ${{ secrets.TATUM_API_KEY }}
+      MEMWAL_PRIVATE_KEY: ${{ secrets.MEMWAL_PRIVATE_KEY }}
+      MEMWAL_ACCOUNT_ID: ${{ secrets.MEMWAL_ACCOUNT_ID }}
+      MEMWAL_SERVER_URL: https://relayer.memory.walrus.xyz
+      SUI_PAYEE_ADDRESS: ${{ secrets.SUI_PAYEE_ADDRESS }}
+    steps:
+      - name: Secrets present?
+        id: secrets
+        run: |
+          if [ -n "$TATUM_API_KEY" ] && [ -n "$MEMWAL_PRIVATE_KEY" ] && [ -n "$MEMWAL_ACCOUNT_ID" ] && [ -n "$SUI_PAYEE_ADDRESS" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::E2E skipped: add TATUM_API_KEY, MEMWAL_PRIVATE_KEY, MEMWAL_ACCOUNT_ID and SUI_PAYEE_ADDRESS as repository secrets to run it on PRs"; fi
+      - uses: actions/checkout@v4
+        if: steps.secrets.outputs.ok == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.secrets.outputs.ok == 'true'
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.secrets.outputs.ok == 'true'
+        run: npm ci && npm run build && npx playwright install --with-deps chromium
+      - if: steps.secrets.outputs.ok == 'true'
+        run: npx playwright test --project=chromium --project=mobile-android
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.secrets.outputs.ok == 'true'
+        with:
+          name: playwright-report-local
+          path: playwright-report
+          retention-days: 14
