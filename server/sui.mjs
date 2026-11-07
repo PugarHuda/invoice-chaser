@@ -14,7 +14,7 @@ import { bcs } from '@mysten/sui/bcs'
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519'
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography'
 import { createHmac, timingSafeEqual, randomInt } from 'node:crypto'
-import { verifyTransactionSignature } from '@mysten/sui/verify'
+import { verifyTransactionSignature, verifyPersonalMessageSignature } from '@mysten/sui/verify'
 import { parseSerializedSignature } from '@mysten/sui/cryptography'
 
 export const NETWORK = process.env.SUI_NETWORK === 'testnet' ? 'testnet' : 'mainnet'
@@ -578,3 +578,30 @@ export async function walletActivity(owner, payee = null) {
 export const executed = (out) => out?.FailedTransaction
   ? { failed: `transaction failed on-chain: ${out.FailedTransaction.effects?.status?.error?.message || 'unknown error'}`, digest: out.FailedTransaction.digest || null }
   : { digest: out?.Transaction?.digest || out?.transaction?.digest || out?.digest || null }
+
+// Proven payer: the client signs this exact text with the wallet it will pay from. It names the invoice and the
+// client, and carries the time it was issued, so a signature can't be reused for another client or kept for later.
+export const PAYER_PROOF_TTL_MS = 10 * 60_000
+export const payerProofMessage = (invoiceId, clientName, issuedAt) =>
+  `Invoice Chaser: ${clientName} pays invoices from this wallet.\nInvoice: ${invoiceId}\nIssued: ${issuedAt}`
+// -> { ok: true, address, scheme } or { ok: false, reason }. zkLogin signatures are checked against the current
+// JWKs/epoch through Tatum's SignatureVerificationService; Ed25519/Secp256k1/Secp256r1/MultiSig verify locally.
+export async function verifyPayerProof({ message, signature, address, invoiceId, clientName, now = Date.now() }) {
+  if (typeof message !== 'string' || typeof signature !== 'string' || !ADDRESS_RE.test(address || '')) return { ok: false, reason: 'message, signature and a 0x address are required' }
+  const issued = /\nIssued: (\S+)$/.exec(message)?.[1]
+  const at = Date.parse(issued || '')
+  if (!issued || message !== payerProofMessage(invoiceId, clientName, issued)) return { ok: false, reason: 'the signed text is not the proof message for this invoice' }
+  if (!(at <= now + 60_000 && now - at <= PAYER_PROOF_TTL_MS)) return { ok: false, reason: 'the proof message expired: sign a fresh one' }
+  let scheme
+  try {
+    scheme = parseSerializedSignature(signature).signatureScheme
+    if (scheme === 'ZkLogin') await throttle()
+    const signer = await verifyPersonalMessageSignature(new TextEncoder().encode(message), signature, { client: sui(), address })
+    if (normAddr(signer.toSuiAddress()) !== normAddr(address)) return { ok: false, reason: 'signature is not from this address' }
+  } catch (e) {
+    if (/provided address|not valid|Unsupported|Invalid|length|parse|signature/i.test(e?.message || '')) return { ok: false, reason: 'invalid signature for this address' }
+    throw e
+  }
+  return { ok: true, address: address.toLowerCase(), scheme }
+}
+

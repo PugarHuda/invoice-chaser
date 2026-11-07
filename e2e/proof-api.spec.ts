@@ -1,9 +1,13 @@
 import { test, expect } from './fixtures'
 
-test('/proof: Tatum connected and every remembered payment re-proven on Sui', async ({ page }) => {
+test.describe(() => {
+  // the audit calls Tatum live: a gateway rate limit under a parallel run is retried, not hidden
+  test.describe.configure({ retries: 2 })
+  test('/proof: Tatum connected and every remembered payment re-proven on Sui', async ({ page }) => {
   await page.goto('/?tab=proof')
   await expect(page.getByText(/memory audited against sui/i)).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText(/every payment memory matches the chain/i)).toBeVisible()
+  })
 })
 
 test('/proof down: an error state, not a blank page', async ({ page }) => {

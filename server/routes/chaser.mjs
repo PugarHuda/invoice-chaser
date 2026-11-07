@@ -18,6 +18,8 @@ const PAYEE = () => process.env.SUI_PAYEE_ADDRESS
 const DAY = 86_400_000
 
 const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/pay-gasless', '/sync-payments', '/mcp'])
+// payer-facing writes that live under a pay link
+const isPayLinkWrite = (path) => /^\/pay\/[^/]+\/prove-payer$/.test(path)
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
@@ -28,7 +30,7 @@ const LIMITS = { write: [30, 10 * 60_000], payment: [60, 10 * 60_000], expensive
 const isExpensiveRead = (req) => (req.method === 'GET' && (/^\/clients\/[^/]+\/search$/.test(req.path) || /^\/pay\/[^/]+\/(live|invoice\.pdf)$/.test(req.path))) || req.path === '/mcp' || req.path === '/proof' || req.path === '/chase-queue' || /^\/clients\/[^/]+\/statement$/.test(req.path)
 router.use((req, res, next) => {
   const isSync = req.path === '/sync-payments'
-  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
+  const isPayment = (PUBLIC_WRITES.has(req.path) && req.path !== '/mcp' && !isSync) || isPayLinkWrite(req.path) || req.path.startsWith('/x402/') || req.path.startsWith('/mpp/')
   const expensive = isExpensiveRead(req)
   if (req.method === 'GET' && !isPayment && !expensive) return next()
   const kind = isSync ? 'sync' : isPayment ? 'payment' : expensive ? 'expensive' : 'write'
@@ -107,7 +109,7 @@ router.use((req, res, next) => {
 // Owner-only writes. The payer-facing /verify-payment stays public; it only settles against verified chain data.
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
-  if (req.method === 'GET' || PUBLIC_WRITES.has(req.path)) return next()
+  if (req.method === 'GET' || PUBLIC_WRITES.has(req.path) || isPayLinkWrite(req.path)) return next()
   // fail closed on a deploy that lost its passcode: Walrus memories can't be deleted, so open writes are permanent damage
   if (!pass) return process.env.VERCEL && process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set on this deployment' }) : next()
   if (!isOwner(req)) return denyOwner(req, res)
@@ -375,6 +377,44 @@ router.post('/invoices', (req, res) => {
 })
 
 // Public, payer-facing view: only what a client needs to pay. Never the learned profile or plan.
+// Proven payer. The client signs a short message with the wallet it will pay from; the server checks the
+// signature (zkLogin through Tatum's SignatureVerificationService, other schemes locally), remembers the wallet
+// in Walrus Memory (payer_proven), and reads it live on Sui through Tatum ListBalances: "can they pay now?"
+// works before the first payment, and a later payment from it is recognised as theirs.
+const PROOFS_PER_INVOICE = 3
+router.get('/pay/:id/payer-message', (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  res.set('Cache-Control', 'no-store').json({ message: sui.payerProofMessage(inv.id, clientName(clients, inv.clientId), new Date().toISOString()), ttlSeconds: sui.PAYER_PROOF_TTL_MS / 1000 })
+})
+router.post('/pay/:id/prove-payer', async (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  if (invoiceStatus(inv) === 'paid') return res.status(409).json({ error: 'This invoice is already paid' })
+  const client = clients.find((c) => c.id === inv.clientId)
+  const { message, signature, address } = req.body || {}
+  let v
+  try {
+    v = await sui.verifyPayerProof({ message, signature, address: typeof address === 'string' ? address.toLowerCase() : address, invoiceId: inv.id, clientName: client?.name || 'Unknown' })
+  } catch (e) {
+    return res.status(502).json({ error: `Tatum Sui gRPC: ${e.message}`, retry: true })
+  }
+  if (!v.ok) return res.status(400).json({ error: v.reason })
+  const already = client?.provenPayers?.some((p) => p.address === v.address)
+  const proofs = memsFor(inv.clientId).filter((m) => m.tag?.type === 'payer_proven' && m.tag.invoice === inv.id).length
+  if (!already && proofs >= PROOFS_PER_INVOICE) return res.status(429).json({ error: `This invoice already has ${PROOFS_PER_INVOICE} proven wallets` })
+  const memory = already ? null : mem.remember(mem.writeNs(inv.clientId), `${client.name} proved it pays from ${v.address} (signed message, ${v.scheme}, invoice ${inv.id}).`, { type: 'payer_proven', client: inv.clientId, invoice: inv.id, payer: v.address, scheme: v.scheme })
+  const wallet = await sui.walletBalances(v.address).catch(() => null)
+  const need = sui.toMicro(owed(withStatus(inv)))
+  res.json({
+    success: true, address: v.address, scheme: v.scheme, alreadyProven: Boolean(already), memory,
+    wallet: wallet ? { usdc: wallet.usdc, sui: wallet.sui, covers: BigInt(wallet.usdcMicro) >= need, owed: owed(withStatus(inv)), service: 'StateService.ListBalances (Tatum)' } : null,
+    verifiedBy: v.scheme === 'ZkLogin' ? 'SignatureVerificationService (Tatum)' : `${v.scheme} signature check`,
+  })
+})
+
 router.get('/pay/:id', async (req, res) => {
   const { clients, invoices } = state()
   const inv = invoices.find((i) => i.id === req.params.id)
@@ -1283,22 +1323,33 @@ router.get('/chase-queue', async (_req, res) => {
 async function payerLiquidityOf(inv) {
   const client = state().clients.find((c) => c.id === inv.clientId)
   const last = memsFor(inv.clientId).find((m) => m.tag?.payer)?.tag
-  const owner = client?.expectedPayer?.address || last?.payer
+  const proven = client?.provenPayers?.[0]
+  // the owner's rule wins; then a wallet the client proved it controls; then the last one it paid from
+  const owner = client?.expectedPayer?.address || proven?.address || last?.payer
   if (!owner || invoiceStatus(inv) === 'paid') return null
   const w = await sui.walletBalances(owner).catch(() => null)
   if (!w) return null
   const need = sui.toMicro(owed(withStatus(inv)))
-  return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, owedUsdc: owed(withStatus(inv)), service: 'StateService.ListBalances' }
+  return { ...w, source: client?.expectedPayer?.address ? 'expected payer (client rule)' : proven ? 'wallet the client proved it pays from (signed message)' : 'last wallet this client paid from', name: client?.expectedPayer?.name || last?.payer_name || null, covers: BigInt(w.usdcMicro) >= need, owedUsdc: owed(withStatus(inv)), service: 'StateService.ListBalances' }
 }
 
 // Memory <-> chain audit ("Total Recall" both ways): every payment memory in Walrus claims a digest, an
 // amount and a checkpoint. All claims are re-checked against Sui through Tatum in batches; a memory that
 // the chain doesn't back (wrong amount, failed or missing tx, other checkpoint) is listed, never hidden.
 let auditCache = null
+// a readable reason for a gateway failure instead of a raw transport string
+const gatewayMessage = (e) => (/status code 429|RESOURCE_EXHAUSTED/i.test(`${e?.message} ${e?.cause?.message}`) ? 'Tatum rate limit reached; the audit runs again on the next load' : e?.message || 'unavailable')
 let auditP = null // one audit in flight: concurrent callers share it instead of each hitting Tatum
 function auditMemories() {
   if (auditCache && Date.now() - auditCache.at < 600_000) return Promise.resolve(auditCache.value)
-  return (auditP ||= runAudit().finally(() => (auditP = null)))
+  // a transient gateway failure (Tatum 429/timeout) doesn't erase what was verified: the last good audit is
+  // served, marked stale with the reason, and the next request runs a fresh one
+  return (auditP ||= runAudit()
+    .catch((e) => {
+      if (auditCache) return { ...auditCache.value, stale: { since: new Date(auditCache.at).toISOString(), reason: gatewayMessage(e) } }
+      throw e
+    })
+    .finally(() => (auditP = null)))
 }
 async function runAudit() {
   const pays = [...mem.store.values()].flat().filter((m) => (m.tag?.type === 'invoice_paid' || m.tag?.type === 'invoice_partial'))
@@ -1395,7 +1446,7 @@ router.get('/proof', async (_req, res) => {
       // writes this instance made: batched rememberBulk calls (items per call) vs single remember calls
       writes: mem.writeStats,
       // every payment memory re-checked against Sui through Tatum (counts; details at /api/chaser/audit)
-      chainAudit: audit.status === 'fulfilled' ? { ...audit.value, mismatched: audit.value.mismatched.length, chainToMemory: audit.value.chainToMemory?.error ? audit.value.chainToMemory : { ...audit.value.chainToMemory, unrecorded: audit.value.chainToMemory?.unrecorded?.length ?? 0 } } : { error: audit.reason?.message || 'unavailable' },
+      chainAudit: audit.status === 'fulfilled' ? { ...audit.value, mismatched: audit.value.mismatched.length, chainToMemory: audit.value.chainToMemory?.error ? audit.value.chainToMemory : { ...audit.value.chainToMemory, unrecorded: audit.value.chainToMemory?.unrecorded?.length ?? 0 } } : { error: gatewayMessage(audit.reason) },
       durability: dur.status === 'fulfilled' ? dur.value : { ok: false, error: dur.reason?.message || 'audit failed' },
       // private mode: none, even for the owner -- /proof is CDN-cached for everyone (s-maxage)
       sampleMemories: privateReads() ? [] : [...mem.store.entries()].map(([namespace, ms]) => ({ namespace, count: ms.length, latest: ms[0]?.sentence || '', blobId: ms.find((m) => m.blobId)?.blobId || null })),

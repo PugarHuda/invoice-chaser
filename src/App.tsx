@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { LogoMark } from './Logo';
-import { getWallets, type StandardConnectFeature, type SuiSignTransactionFeature, type SuiSignAndExecuteTransactionFeature } from '@mysten/wallet-standard';
+import { getWallets, type StandardConnectFeature, type SuiSignTransactionFeature, type SuiSignAndExecuteTransactionFeature, type SuiSignPersonalMessageFeature } from '@mysten/wallet-standard';
 import { Transaction } from '@mysten/sui/transactions';
 import QRCode from 'qrcode';
 
@@ -105,6 +105,7 @@ interface ClientDetail {
     email: string;
     address: string;
     expectedPayer?: { address: string; name?: string | null } | null;
+    provenPayers?: Array<{ address: string; at: string; invoice: string; scheme: string | null }>;
   };
   profile: ClientProfile;
   memories: Array<{
@@ -207,6 +208,7 @@ interface ProofData {
       gatewayCalls: number;
       service?: string;
       demoHistoryWithoutTransaction?: number;
+      stale?: { since: string; reason: string };
       chainToMemory?: { error?: string; windowDays: number; incomingTransfers: number; recordedInMemory: number; unrecorded: number; scannedTransactions: number };
     };
     sampleMemories: Array<{
@@ -264,6 +266,34 @@ export default function App() {
   const [reminderSource, setReminderSource] = useState<string>('');
   const [newClientName, setNewClientName] = useState<string>('');
   const [walletBusy, setWalletBusy] = useState<string | null>(null);
+  const [payerProof, setPayerProof] = useState<{ address: string; verifiedBy: string; wallet: { usdc: string; covers: boolean; owed: string } | null } | null>(null);
+  // the client proves which wallet it pays from by signing one message (no transaction, no fee)
+  const handleProvePayer = async () => {
+    const wallets = getWallets().get().filter((w) => 'sui:signPersonalMessage' in w.features && 'standard:connect' in w.features);
+    if (!wallets.length) return showToast('No Sui wallet found in this browser. Install Slush to prove the wallet you pay from.', 'error');
+    const wallet = wallets.find((w) => /slush|sui/i.test(w.name)) || wallets[0];
+    try {
+      setWalletBusy(`Connecting ${wallet.name}…`);
+      const { accounts } = await (wallet.features['standard:connect'] as StandardConnectFeature['standard:connect']).connect();
+      const account = accounts[0];
+      if (!account) throw new Error('No account approved');
+      const r = await fetch(`/api/chaser/pay/${encodeURIComponent(selectedInvoiceId)}/payer-message`);
+      const challenge = (await r.json()) as ApiBody & { message: string };
+      if (!r.ok) throw new Error(challenge.error || 'Could not prepare the message');
+      setWalletBusy('Sign the message in your wallet · no transaction, no fee');
+      const signed = await (wallet.features['sui:signPersonalMessage'] as SuiSignPersonalMessageFeature['sui:signPersonalMessage']).signPersonalMessage({ message: new TextEncoder().encode(challenge.message), account });
+      setWalletBusy('Checking the signature and the wallet on Sui through Tatum…');
+      const v = await fetch(`/api/chaser/pay/${encodeURIComponent(selectedInvoiceId)}/prove-payer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: challenge.message, signature: signed.signature, address: account.address }) });
+      const data = (await v.json()) as ApiBody & { address: string; verifiedBy: string; wallet: { usdc: string; covers: boolean; owed: string } | null };
+      if (!v.ok) throw new Error(data.error || 'Proof refused');
+      setPayerProof({ address: data.address, verifiedBy: data.verifiedBy, wallet: data.wallet });
+      showToast('Wallet proven: the invoice owner now knows which wallet you pay from');
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Could not prove the wallet', 'error');
+    } finally {
+      setWalletBusy(null);
+    }
+  };
   const [qr, setQr] = useState<string>('');
   const [noteText, setNoteText] = useState<string>('');
   // when the email/call happened: Walrus analyze() resolves "next Friday" against it
@@ -1255,6 +1285,11 @@ export default function App() {
                         <ShieldCheck className="w-3.5 h-3.5 text-fg-brand-primary" />
                         <span>Wallet this client pays from {clientDetail.client.expectedPayer ? <span className="font-mono text-xs text-tertiary">({clientDetail.client.expectedPayer.name || clientDetail.client.expectedPayer.address.slice(0, 12) + '…'})</span> : null}</span>
                       </label>
+                      {!!clientDetail.client.provenPayers?.length && (
+                        <p className="text-xs text-utility-success-700">
+                          Proven by the client (signed message): {clientDetail.client.provenPayers.map((p) => `${p.address.slice(0, 10)}…${p.address.slice(-4)} on ${p.at.slice(0, 10)}`).join(', ')}
+                        </p>
+                      )}
                       <div className="flex gap-sm">
                         <input value={payerInput} onChange={(e) => setPayerInput(e.target.value)} placeholder="0x… or name.sui" aria-label="Expected payer wallet" className="flex-1 min-w-0 rounded-md bg-primary px-lg py-sm text-sm text-primary placeholder:text-placeholder border border-primary focus-visible:ring-2 focus-visible:ring-focus-ring" />
                         <button onClick={handleSetPayer} className="rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring">Set payer</button>
@@ -1870,6 +1905,21 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                 >
                   <span>Only have SUI? Swap &amp; pay in one transaction</span>
                 </button>
+                {PAY_ONLY && (
+                  <button
+                    onClick={handleProvePayer}
+                    disabled={!invoiceDetail || invoiceDetail.invoice.status === 'paid' || !!walletBusy}
+                    className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-secondary px-lg py-sm text-xs font-semibold text-secondary focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50"
+                  >
+                    Paying later? Prove the wallet you will pay from (sign a message, no fee)
+                  </button>
+                )}
+                {payerProof && (
+                  <p role="status" className="text-xs text-utility-success-700 text-center break-all">
+                    Proven: {payerProof.address.slice(0, 10)}…{payerProof.address.slice(-6)} ({payerProof.verifiedBy})
+                    {payerProof.wallet ? ` · holds ${payerProof.wallet.usdc} USDC on Sui, ${payerProof.wallet.covers ? 'enough' : 'not yet enough'} for ${payerProof.wallet.owed}` : ''}
+                  </p>
+                )}
                 <p className="text-xs text-tertiary text-center">Slush, Suiet, Phantom: any Sui wallet. The transaction is built through Tatum and verified on {netLabel}. USDC alone is enough: if your USDC sits in your Sui address balance the transfer is natively gasless (no fee for anyone); otherwise the app sponsors the network fee for a Payment Kit payment, and if the sponsor runs dry your wallet pays the gas.</p>
               </div>
 
@@ -2035,6 +2085,7 @@ Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id
                   return (
                     <div className={`p-sm rounded-lg border text-xs space-y-xxs ${ok ? 'border-utility-success-200 bg-utility-success-50 text-utility-success-700' : 'border-utility-error-200 bg-utility-error-50 text-utility-error-700'}`}>
                       <span className="block font-semibold">Memory audited against Sui {ok ? '· every payment memory matches the chain' : '· needs attention'}</span>
+                      {a.stale && <p>Showing the audit from {a.stale.since.slice(0, 16).replace('T', ' ')} UTC ({a.stale.reason}).</p>}
                       {a.error ? <p>{a.error}</p> : (
                         <>
                           <p>{a.verified}/{a.withTransaction} payment memories re-checked on-chain (digest, USDC amount, checkpoint) in {a.gatewayCalls} Tatum {a.service?.split(' ')[0]} call{a.gatewayCalls === 1 ? '' : 's'}{a.mismatched ? ` · ${a.mismatched} mismatch(es): see /api/chaser/audit` : ''}</p>

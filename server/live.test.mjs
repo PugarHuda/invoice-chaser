@@ -172,3 +172,26 @@ test('owner writes fail closed on Vercel without a passcode; wrong passcodes are
     for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v)
   }
 })
+
+test('proven payer: a fresh signed proof for this invoice verifies; wrong text, stale, or wrong signer are refused', async () => {
+  const { verifyPayerProof, payerProofMessage } = await import('./sui.mjs')
+  const { Ed25519Keypair } = await import('@mysten/sui/keypairs/ed25519')
+  const kp = new Ed25519Keypair()
+  const address = kp.toSuiAddress()
+  const now = Date.parse('2026-11-07T10:00:00Z')
+  const sign = async (text) => (await kp.signPersonalMessage(new TextEncoder().encode(text))).signature
+  const message = payerProofMessage('inv-101', 'Acme Corp', '2026-11-07T09:58:00.000Z')
+  const base = { message, signature: await sign(message), address, invoiceId: 'inv-101', clientName: 'Acme Corp', now }
+  assert.deepEqual(await verifyPayerProof(base), { ok: true, address, scheme: 'ED25519' })
+  // the same signature can't prove a payer for another invoice or client
+  assert.equal((await verifyPayerProof({ ...base, invoiceId: 'inv-102' })).ok, false)
+  assert.equal((await verifyPayerProof({ ...base, clientName: 'Beta Ltd' })).ok, false)
+  // older than 10 minutes
+  assert.match((await verifyPayerProof({ ...base, now: now + 11 * 60_000 })).reason, /expired/)
+  // signed by a different wallet than the one claimed
+  const other = new Ed25519Keypair().toSuiAddress()
+  assert.match((await verifyPayerProof({ ...base, address: other })).reason, /invalid signature|not from this address/)
+  // garbage
+  assert.equal((await verifyPayerProof({ ...base, signature: 'AAAA' })).ok, false)
+  assert.equal((await verifyPayerProof({ ...base, address: 'not-an-address' })).ok, false)
+})
