@@ -256,7 +256,7 @@ With the seller identity set (`SELLER_NAME`, `SELLER_COUNTRY`, optional `SELLER_
 
 Amounts are in USD, settled 1:1 in USDC. The XML was checked against the official Factur-X XSD, and was extracted from the PDF with the `factur-x` Python library (level `minimum`).
 
-The PDF does not claim PDF/A-3: standard fonts are not embedded. The live demo uses a placeholder seller identity (`Invoice Chaser (demo seller)`, `ID`, no VAT ID); a real deployment sets its own legal name and country. Try it: [inv-102 XML](https://invoice-chaser-sigma.vercel.app/api/chaser/pay/inv-102/invoice.xml).
+The PDF does not claim PDF/A-3: standard fonts are not embedded. The live demo's seller is the author (`Pugar Huda Mantoro`, country `ID`, no VAT ID); a deployment sets its own legal name and country. Try it: [inv-102 XML](https://invoice-chaser-sigma.vercel.app/api/chaser/pay/inv-102/invoice.xml).
 
 ## Revoking what it learned
 

@@ -65,6 +65,9 @@
     },
     "@zodios/core": {
       "zod": "$zod"
+    },
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.5"
     }
   }
 }
