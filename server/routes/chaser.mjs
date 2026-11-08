@@ -234,6 +234,8 @@ router.get('/clients/:id', (req, res) => {
 // Sandbox for visitors: what would this rule change? Runs the real engine on the client's real memories plus the
 // rule, writes nothing to Walrus, needs no passcode. Saving the rule stays owner-only.
 router.post('/clients/:id/preview-rule', (req, res) => {
+  // it shows invoice plans, so private mode (PRIVATE_READS=1) keeps it behind the passcode like any owner read
+  if (!ownerView(req)) return denyOwner(req, res)
   const note = String(req.body?.preference || '').trim()
   if (!note) return res.status(400).json({ error: 'preference is required' })
   if (note.length > 300) return res.status(400).json({ error: 'keep rules under 300 characters' })
