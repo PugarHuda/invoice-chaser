@@ -456,19 +456,28 @@ async function scanIncoming(payee, { since = null, limit = 1000 } = {}) {
   const out = []
   const me = normAddr(payee)
   let scanned = 0
-  for await (const f of call.responses) {
-    const t = f.transaction
-    if (!t?.digest) continue
-    scanned++
-    const tsMs = t.timestamp ? Number(t.timestamp.seconds) * 1000 : null
-    if (since && tsMs && tsMs < Date.parse(since) - 60_000) break // older than every open invoice
-    if (t.effects?.status && t.effects.status.success === false) continue
-    const received = (t.balanceChanges || []).filter((b) => normAddr(b.address) === me && normalizeStructTag(b.coinType) === normalizeStructTag(USDC_COIN_TYPE)).reduce((s, b) => s + BigInt(b.amount), 0n)
-    if (received <= 0n) continue
-    const ts = t.timestamp ? new Date(Number(t.timestamp.seconds) * 1000 + Math.floor((t.timestamp.nanos || 0) / 1e6)).toISOString() : null
-    out.push({ digest: t.digest, checkpoint: String(t.checkpoint ?? ''), timestamp: ts, sender: t.transaction?.sender || null, received })
+  let oldest = null
+  try {
+    for await (const f of call.responses) {
+      const t = f.transaction
+      if (!t?.digest) continue
+      scanned++
+      const tsMs = t.timestamp ? Number(t.timestamp.seconds) * 1000 : null
+      if (tsMs) oldest = new Date(tsMs).toISOString()
+      if (since && tsMs && tsMs < Date.parse(since) - 60_000) break // older than every open invoice
+      if (t.effects?.status && t.effects.status.success === false) continue
+      const received = (t.balanceChanges || []).filter((b) => normAddr(b.address) === me && normalizeStructTag(b.coinType) === normalizeStructTag(USDC_COIN_TYPE)).reduce((s, b) => s + BigInt(b.amount), 0n)
+      if (received <= 0n) continue
+      const ts = t.timestamp ? new Date(Number(t.timestamp.seconds) * 1000 + Math.floor((t.timestamp.nanos || 0) / 1e6)).toISOString() : null
+      out.push({ digest: t.digest, checkpoint: String(t.checkpoint ?? ''), timestamp: ts, sender: t.transaction?.sender || null, received })
+    }
+  } catch (e) {
+    // a node that pruned older history ends the stream there: that is the end of what it can show, not a failure
+    if (!/below earliest available/.test(decodeURIComponent(e.message || ''))) throw e
+    out.prunedBefore = oldest || 'start'
   }
   out.scanned = scanned
+  out.provider = provider()
   return out
 }
 

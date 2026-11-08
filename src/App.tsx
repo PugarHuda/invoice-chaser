@@ -241,6 +241,8 @@ export default function App() {
   // on a narrow screen the active tab may sit past the nav's edge: bring it into view when the tab changes
   useEffect(() => { document.querySelector('nav[aria-label="Main"] [aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }, [activeTab]);
   const [clientNote, setClientNote] = useState<string>('');
+  // sandbox result: how a rule would change the plan, computed by the real engine, not saved
+  const [rulePreview, setRulePreview] = useState<{ rule: string; invoices: { invoice: string; before: { date: string; tone: string } | null; after: { date: string; tone: string; reason: string } | null }[] } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastTone, setToastTone] = useState<'ok' | 'error'>('ok');
 
@@ -639,6 +641,18 @@ export default function App() {
       } else showToast((await res.json().catch(() => ({}))).error || 'Could not save the preference', 'error');
     } catch {
       showToast('Failed to record memory', 'error');
+    }
+  };
+
+  const handlePreviewRule = async () => {
+    if (!clientNote.trim()) return;
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/preview-rule`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: clientNote }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return showToast(data.error || 'Could not try the rule', 'error');
+      setRulePreview({ rule: clientNote, invoices: data.invoices });
+    } catch {
+      showToast('Could not try the rule', 'error');
     }
   };
 
@@ -1359,8 +1373,26 @@ export default function App() {
                         >
                           Save Preference
                         </button>
+                        <button
+                          onClick={handlePreviewRule}
+                          className="inline-flex items-center gap-sm rounded-lg border border-primary bg-primary px-lg py-sm text-sm font-semibold text-secondary shadow-xs hover:bg-primary-hover focus-visible:ring-2 focus-visible:ring-focus-ring shrink-0"
+                        >
+                          Try it (no passcode)
+                        </button>
                       </div>
-                      <p className="text-xs text-tertiary">Saves hard preference constraints directly to Walrus Memory.</p>
+                      <p className="text-xs text-tertiary">Save writes the rule to Walrus Memory (owner passcode). Try it runs the same engine on this client's memories plus your rule and saves nothing.</p>
+                      {rulePreview && (
+                        <div role="status" className="rounded-lg border border-secondary bg-secondary p-md text-xs text-secondary space-y-xs">
+                          <p className="font-semibold text-primary">Sandbox, not saved: "{rulePreview.rule}"</p>
+                          {rulePreview.invoices.length === 0 && <p>This client has no open invoice, so no plan changes.</p>}
+                          {rulePreview.invoices.map((r) => (
+                            <p key={r.invoice}>
+                              <span className="font-mono">{r.invoice}</span>: first reminder {r.before ? `${r.before.date} (${r.before.tone})` : 'none'} → <strong>{r.after ? `${r.after.date} (${r.after.tone})` : 'none'}</strong>
+                              {r.after && r.before && (r.after.date !== r.before.date || r.after.tone !== r.before.tone) ? ` · ${r.after.reason}` : ' · no change: the engine did not read a constraint from this sentence'}
+                            </p>
+                          ))}
+                        </div>
+                      )}
                     </div>
 
                     {/* Expected payer wallet: 0x… or a SuiNS name, resolved and screened through Tatum */}

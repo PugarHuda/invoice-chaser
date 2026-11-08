@@ -20,7 +20,7 @@ const DAY = 86_400_000
 
 const PUBLIC_WRITES = new Set(['/verify-payment', '/pay-tx', '/pay-sponsored', '/pay-gasless', '/sync-payments', '/mcp'])
 // payer-facing writes that live under a pay link
-const isPayLinkWrite = (path) => /^\/pay\/[^/]+\/prove-payer$/.test(path)
+const isPayLinkWrite = (path) => /^\/pay\/[^/]+\/prove-payer$/.test(path) || /^\/clients\/[^/]+\/preview-rule$/.test(path)
 
 // Per-IP write budget so the public demo can't be used to flood Walrus or Tatum.
 // ponytail: per-instance in-memory buckets; a shared store would make it global across instances
@@ -127,6 +127,8 @@ router.use(async (_req, res, next) => {
 const state = () => deriveState(mem.store)
 const memsFor = (clientId) => mem.clientMemories(clientId)
 const profileOf = (clientId) => computeProfile(clientId, memsFor(clientId))
+// which gateway actually served chain reads right now (Tatum, or the public fullnode after a quota 402)
+const providerLabel = () => (sui.provider() === 'tatum' ? 'Tatum' : 'public Sui fullnode: Tatum quota fallback')
 const clientName = (clients, id) => clients.find((c) => c.id === id)?.name || 'Unknown'
 const withStatus = (inv) => ({ ...inv, status: invoiceStatus(inv) })
 // time-ordered and collision-free even for concurrent requests
@@ -227,6 +229,27 @@ router.get('/clients/:id', (req, res) => {
   const client = state().clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
   res.json({ client: { ...client, email: client.contact, address: null }, profile: profileOf(client.id), memories: memsFor(client.id), namespace: mem.clientNs(client.id), namespaces: mem.clientShards(client.id) })
+})
+
+// Sandbox for visitors: what would this rule change? Runs the real engine on the client's real memories plus the
+// rule, writes nothing to Walrus, needs no passcode. Saving the rule stays owner-only.
+router.post('/clients/:id/preview-rule', (req, res) => {
+  const note = String(req.body?.preference || '').trim()
+  if (!note) return res.status(400).json({ error: 'preference is required' })
+  if (note.length > 300) return res.status(400).json({ error: 'keep rules under 300 characters' })
+  const { clients, invoices } = state()
+  const client = clients.find((c) => c.id === req.params.id)
+  if (!client) return res.status(404).json({ error: 'Client not found' })
+  const ms = memsFor(client.id)
+  const before = computeProfile(client.id, ms)
+  const after = computeProfile(client.id, [...ms, { id: 'sandbox', timestamp: new Date().toISOString(), sentence: `Rule for ${client.name}: "${note}"`, tag: { type: 'preference', client: client.id, note } }])
+  const open = invoices.filter((i) => i.clientId === client.id && invoiceStatus(i) !== 'paid')
+  const first = (p) => (p.steps[0] ? { date: p.steps[0].date, tone: p.steps[0].tone, reason: p.steps[0].reason } : null)
+  res.json({
+    saved: false,
+    understood: after.preferences.length > before.preferences.length ? after.constraints || null : null,
+    invoices: open.map((inv) => ({ invoice: inv.id, before: first(plan(inv, before)), after: first(plan(inv, after)) })),
+  })
 })
 
 router.post('/clients/:id/preference', (req, res) => {
@@ -430,8 +453,8 @@ router.post('/pay/:id/prove-payer', async (req, res) => {
   const need = sui.toMicro(owed(withStatus(inv)))
   res.json({
     success: true, address: v.address, scheme: v.scheme, alreadyProven: Boolean(already), memory,
-    wallet: wallet ? { usdc: wallet.usdc, sui: wallet.sui, covers: BigInt(wallet.usdcMicro) >= need, owed: owed(withStatus(inv)), service: 'StateService.ListBalances (Tatum)' } : null,
-    verifiedBy: v.scheme === 'ZkLogin' ? 'SignatureVerificationService (Tatum)' : `${v.scheme} signature check`,
+    wallet: wallet ? { usdc: wallet.usdc, sui: wallet.sui, covers: BigInt(wallet.usdcMicro) >= need, owed: owed(withStatus(inv)), service: `StateService.ListBalances (${providerLabel()})` } : null,
+    verifiedBy: v.scheme === 'ZkLogin' ? `SignatureVerificationService (${providerLabel()})` : `${v.scheme} signature check`,
   })
 })
 
@@ -1361,7 +1384,7 @@ async function clientStatement(clientId) {
     totals: { invoicedUsdc: sui.fromMicro(invoiced), paidUsdc: sui.fromMicro(paid), outstandingUsdc: sui.fromMicro(sum(open.map((i) => owed(i)))), invoices: invs.length, open: open.length, paymentsVerifiedOnChain: payments.filter((p) => p.verified === 'verified on Sui').length, paymentsWithTransaction: payments.filter((p) => p.digest).length },
     invoices: invs.map((i) => ({ id: i.id, description: i.description || '', due: i.dueDate, amountUsdc: i.payAmount, status: i.status, owedUsdc: i.status === 'paid' ? '0.000000' : owed(i) })),
     payments,
-    services: ['Walrus Memory (invoices, payments)', 'LedgerService.BatchGetTransactions (Tatum)'],
+    services: ['Walrus Memory (invoices, payments)', `LedgerService.BatchGetTransactions (${providerLabel()})`],
   }
 }
 router.get('/clients/:id/statement', async (req, res) => {
@@ -1410,7 +1433,7 @@ async function buildQueue() {
     items.push({ invoiceId: inv.id, clientId: inv.clientId, clientName: clientName(clients, inv.clientId), owedUsdc: owed(inv), dueDate: inv.dueDate, daysLate: late, action, tone: next?.tone || null, nextReminder: next?.date || null, why, memory: { ewmaDelayDays: profile.ewmaDelayDays, delayRange: profile.delayRange, promises: ps, underpayRate: profile.underpayRate || 0 }, chain: wallet ? { wallet: wallet.owner, name: wallet.name, usdc: wallet.usdc, covers: wallet.covers, source: wallet.source, lastActivity: activity?.lastActivity?.at || null, usdcSent7d: activity?.usdcSent7d ?? null, paymentsToUs7d: activity?.paymentsToUs7d ?? null } : null })
   }
   items.sort((a, b) => RANK[a.action] - RANK[b.action] || Number(b.owedUsdc) - Number(a.owedUsdc))
-  const value = { generatedAt: new Date().toISOString(), counts: Object.fromEntries(Object.keys(RANK).map((k) => [k, items.filter((i) => i.action === k).length])), items, services: ['Walrus Memory (learned profile, promises)', 'StateService.ListBalances (Tatum)', 'LedgerService.ListTransactions (Tatum)'] }
+  const value = { generatedAt: new Date().toISOString(), counts: Object.fromEntries(Object.keys(RANK).map((k) => [k, items.filter((i) => i.action === k).length])), items, services: ['Walrus Memory (learned profile, promises)', `StateService.ListBalances (${providerLabel()})`, `LedgerService.ListTransactions (${providerLabel()})`] }
   queueCache = { at: Date.now(), value }
   return value
 }
@@ -1473,11 +1496,12 @@ async function runAudit() {
     const known = new Set([...mem.store.values()].flat().map((m) => m.tag?.digest).filter(Boolean))
     const incoming = await sui.recentIncoming(PAYEE(), { since: new Date(Date.now() - 30 * 86_400_000).toISOString(), limit: 200 })
     const unrecorded = incoming.filter((t) => !known.has(t.digest)).map((t) => ({ digest: t.digest, usdc: sui.fromMicro(t.received), sender: t.sender, timestamp: t.timestamp }))
-    chainToMemory = { windowDays: 30, incomingTransfers: incoming.length, recordedInMemory: incoming.length - unrecorded.length, unrecorded, scannedTransactions: incoming.scanned, service: 'LedgerService.ListTransactions (Tatum)' }
+    // a pruned node can only show part of the window: say how far back the check really reached
+    chainToMemory = { windowDays: 30, ...(incoming.prunedBefore ? { coveredSince: incoming.prunedBefore === 'start' ? null : incoming.prunedBefore, note: 'the serving node keeps less than 30 days of history; transfers before coveredSince were not checked' } : {}), incomingTransfers: incoming.length, recordedInMemory: incoming.length - unrecorded.length, unrecorded, scannedTransactions: incoming.scanned, service: `LedgerService.ListTransactions (${providerLabel()})` }
   } catch (e) {
     chainToMemory = { error: e.message }
   }
-  const value = { checkedAt: new Date().toISOString(), paymentMemories: pays.length, withTransaction: claims.length, verified: claims.length - mismatched.length, mismatched, demoHistoryWithoutTransaction: pays.length - claims.length, gatewayCalls: Math.ceil(new Set(claims.map((m) => m.tag.digest)).size / 50), service: 'LedgerService.BatchGetTransactions (Tatum)', chainToMemory }
+  const value = { checkedAt: new Date().toISOString(), paymentMemories: pays.length, withTransaction: claims.length, verified: claims.length - mismatched.length, mismatched, demoHistoryWithoutTransaction: pays.length - claims.length, gatewayCalls: Math.ceil(new Set(claims.map((m) => m.tag.digest)).size / 50), service: `LedgerService.BatchGetTransactions (${providerLabel()})`, chainToMemory }
   auditCache = { at: Date.now(), value }
   return value
 }
