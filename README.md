@@ -25,7 +25,7 @@ Built for **Total Recall** (Tatum × Walrus Memory, 20 Oct – 10 Nov 2026) · T
 | Reads the payer's live balance before chasing | **Yes** | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
 | AI agents can pay the invoice (x402 / MPP) | Yes | Not in public docs | Not in public docs | Not in public docs | Not in public docs |
 | Recurring invoices | Yes | Not in public docs | Not in public docs | Yes [3] | Yes [4] |
-| Accounting sync (QuickBooks / Xero) | CSV and statement export only | Yes | Yes | Yes | Yes [4] |
+| Accounting sync (QuickBooks / Xero) | Xero, plus CSV and statement export | Yes | Yes | Yes | Yes [4] |
 | Pricing | Open source | From $259/month [1] | Sales quote | Per-transaction fee | Per-payment fee [4] |
 
 "Not in public docs" means we found no claim on the vendor's pages (November 2026), not that it is impossible.
@@ -34,8 +34,8 @@ What is the same as everyone (parity, not a reason to choose us): invoices with 
 
 What competitors have that we don't, and what we did about it:
 - **Recurring invoices** (Request Finance, Coinbase Business): a must for freelancers on retainers, so we built it (below).
-- **QuickBooks/Xero sync**: not built. It needs OAuth apps with both vendors. The per-client statement of account (CSV) covers the hand-off for now.
-- **Sending email**: the app opens the reminder in your mail client (`mailto:`) instead of sending through a provider (needs an email API key).
+- **Accounting sync**: built for **Xero** (below). QuickBooks is not built; the per-client statement of account (CSV) covers it.
+- **Sending email**: built, from your own mailbox over SMTP (below). `mailto:` stays as the no-setup option.
 
 The gap nobody fills, and the three differentiators (each live on the landing page with its number):
 1. **Learning you can check.** Every reminder plan cites the exact Walrus memories it used, and the prediction error is published (1.5 → 0.3 days). Chaser and Kolleno document predictions, but not their evidence.
@@ -282,6 +282,17 @@ Both payments are now memories in Delta Studio's Walrus namespace (`ic:main:clie
 - **Calendar.** `GET /api/chaser/reminders.ics` exports every open invoice's memory-driven plan (Acme's reminders land after the 10th because of its rule).
 - **Daily cron.** Vercel Cron calls `/api/chaser/cron/sync` (guarded by `CRON_SECRET`) to settle Payment Kit payments nobody reported.
 
+## Email reminders and Xero sync
+
+- **Email from your own mailbox.** With `SMTP_USER` / `SMTP_PASS` set (Gmail with an App Password works; no domain needed), a drafted reminder gets a **Send by email** button. The server sends it to the client's contact address and adds the pay link and the PDF link itself. Walrus Memory records that the reminder went out by email (`reminder_emailed`, message id only, never the address).
+- **Xero.** With a Xero web app (`XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`) and Upstash Redis for the OAuth tokens (the app has no database), **Connect Xero** signs in with the granular scopes Xero requires for new apps. **Sync to Xero** then:
+  - creates every invoice as an `ACCREC` invoice matched by `InvoiceNumber` = the invoice id, so a re-run never duplicates;
+  - records each USDC payment against the org's bank account, with the Sui digest as the reference;
+  - for a partial payment, records only the amount Xero doesn't have yet.
+
+  The plan is a pure function (`xeroPlan`) with a unit test.
+- Neither button is shown until it is configured.
+
 ## Use the memory from Claude / Cursor (MCP)
 
 Invoice Chaser is also an MCP server (Streamable HTTP, stateless, read-only): any agent can ask what it has learned.
@@ -412,7 +423,6 @@ The dashboard asks for the passcode once and sends it with every request. Export
 
 - **Tatum credits.** On 2026-11-04 the free plan's credit limit was reached (HTTP 402 "plan limit exceeded" on both gRPC and REST). The organizers' rule for this case is to fall back to public RPC and say so, so the app does exactly that. A second free account (created 2026-11-05) reached its limit on 2026-11-08, so production may be on the fallback while you judge; `/proof` says which provider served each call. On a 402, every Sui read, simulation, broadcast and the live checkpoint stream switch to the public Sui fullnode (`fullnode.mainnet.sui.io`, gRPC-web) for 10 minutes, then Tatum is tried again. `/proof` shows `gatewayStatus: "quota_fallback"` plus the provider and retry time. The pay page names the provider, and every payment memory records `verified_via`. The cause was ours: live streams left open in background tabs, and 10-second sync polling. Streams now pause while the tab is hidden and stop after 15 minutes (with a Resume button), sync runs at most once a minute, and the reconciliation scan at most every 5 minutes.
 
-- Reminders are drafted, logged and opened in your email app (`mailto:` with the pay link); the app does not send email itself.
 - The Walrus Site needs a SuiNS name to be reachable at `<name>.wal.app`; until then it is on-chain but only browsable through a self-hosted portal.
 - Receipt de-duplication is per instance plus the memory check; two instances storing the same receipt at the same moment could write two blobs (same content).
 - Rules are parsed from the sentence (yours, or a fact extracted by Walrus `analyze()`) with a small rule set: day-of-month, pay weekdays, skip weekdays, weekends, tone.

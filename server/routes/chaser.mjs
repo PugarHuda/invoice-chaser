@@ -7,6 +7,7 @@ import { usdRate } from '../rates.mjs'
 import { screenAddress } from '../security.mjs'
 import { mcpHandler } from '../mcp.mjs'
 import { draftReminder } from '../drafter.mjs'
+import { emailReady, sendEmail, EMAIL_RE, xeroConfigured, xeroAuthUrl, xeroStateValid, xeroConnect, xeroStatus, xeroDisconnect, xeroSync } from '../integrations.mjs'
 import { storeReceipt, receiptsEnabled, invoicePdf } from '../receipts.mjs'
 import * as live from '../live.mjs'
 import { ciiXml, seller } from '../facturx.mjs'
@@ -98,7 +99,7 @@ router.use((req, res, next) => {
   next()
 })
 const privateReads = () => process.env.PRIVATE_READS === '1' && Boolean(process.env.APP_PASSCODE)
-const PUBLIC_READS = [/^\/$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
+const PUBLIC_READS = [/^\/$/, /^\/xero\/callback$/, /^\/pay\//, /^\/x402\//, /^\/mpp\//, /^\/proof$/, /^\/summary$/, /^\/cron\/sync$/]
 const ownerView = (req) => !privateReads() || isOwner(req)
 router.use((req, res, next) => {
   if (!privateReads() || isOwner(req)) return next()
@@ -671,6 +672,63 @@ router.post('/invoices/:id/promise', (req, res) => {
   const name = clientName(clients, inv.clientId)
   const m = mem.remember(mem.writeNs(inv.clientId), `${name} promised to pay ${inv.id} by ${date}.`, { type: 'promise', client: inv.clientId, invoice: inv.id, date, source: 'owner' })
   res.json({ promise: { invoice: inv.id, date }, memory: m })
+})
+
+// ---- integrations: email through the owner's SMTP account, accounting sync to Xero ----
+router.get('/integrations', async (_req, res) => {
+  res.json({ email: { configured: emailReady(), from: emailReady() ? process.env.SMTP_FROM || process.env.SMTP_USER : null }, xero: await xeroStatus().catch((e) => ({ configured: true, connected: false, error: e.message })) })
+})
+
+// sends the reminder the owner just drafted to the client's email; the pay link and PDF link are added by the server
+router.post('/invoices/:id/email', async (req, res) => {
+  const { clients, invoices } = state()
+  const inv = invoices.find((i) => i.id === req.params.id)
+  if (!inv) return res.status(404).json({ error: 'Invoice not found' })
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+  if (!text || text.length > 4000) return res.status(400).json({ error: 'text is required (4,000 characters or fewer)' })
+  const client = clients.find((c) => c.id === inv.clientId)
+  if (!EMAIL_RE.test(client?.contact || '')) return res.status(400).json({ error: 'Add an email address to this client first' })
+  const base = `${req.get('x-forwarded-proto') || req.protocol}://${req.get('host')}`
+  try {
+    const sent = await sendEmail({ to: client.contact, subject: `Invoice ${inv.id}: ${owed(inv)} USDC due ${inv.dueDate}`, text: `${text}
+
+Pay here: ${base}/?pay=${inv.id}
+Invoice PDF: ${base}/api/chaser/pay/${inv.id}/invoice.pdf` })
+    // memories hold no email addresses: only that this invoice's reminder went out by email
+    const m = mem.remember(mem.writeNs(inv.clientId), `Emailed the reminder for ${inv.id} to ${client.name}.`, { type: 'reminder_emailed', client: inv.clientId, invoice: inv.id, message_id: sent.messageId })
+    res.json({ success: true, accepted: sent.accepted, memory: m })
+  } catch (e) {
+    res.status(e.status || 502).json({ error: `Email not sent: ${e.message}` })
+  }
+})
+
+const xeroRedirect = (req) => process.env.XERO_REDIRECT_URI || `https://${req.get('host')}/api/chaser/xero/callback`
+router.post('/xero/connect', (req, res) => {
+  if (!xeroConfigured()) return res.status(503).json({ error: 'Xero is not configured (XERO_CLIENT_ID, XERO_CLIENT_SECRET, Upstash Redis)' })
+  res.json({ url: xeroAuthUrl(xeroRedirect(req)) })
+})
+router.get('/xero/callback', async (req, res) => {
+  if (!xeroConfigured()) return res.status(503).send('Xero is not configured')
+  if (req.query.error) return res.redirect(`/?app&xero=${encodeURIComponent(String(req.query.error).slice(0, 40))}`)
+  if (!xeroStateValid(req.query.state) || typeof req.query.code !== 'string') return res.status(400).send('Invalid or expired Xero sign-in. Start again from the app.')
+  try {
+    await xeroConnect(req.query.code, xeroRedirect(req))
+    res.redirect('/?app&xero=connected')
+  } catch (e) {
+    res.status(502).send(`Xero connection failed: ${e.message}`)
+  }
+})
+router.post('/xero/sync', async (_req, res) => {
+  try {
+    res.json(await xeroSync(state()))
+  } catch (e) {
+    res.status(e.status || 502).json({ error: e.message })
+  }
+})
+router.post('/xero/disconnect', async (_req, res) => {
+  if (!xeroConfigured()) return res.status(503).json({ error: 'Xero is not configured' })
+  await xeroDisconnect()
+  res.json({ success: true })
 })
 
 router.post('/invoices/:id/remind', async (req, res) => {

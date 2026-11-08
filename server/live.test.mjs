@@ -210,3 +210,49 @@ test('new invoice input: negative, zero, huge, NaN, 3 decimals, fake dates and b
   assert.ok(e({ ...ok, description: 'x'.repeat(201) }))
   assert.equal(e({ ...ok, description: '🧾 <b>Design</b> & "QA"' }), null)
 })
+
+test('xero: plan creates each invoice once and records only the unpaid difference', async () => {
+  const { xeroPlan } = await import('./integrations.mjs')
+  const clients = [{ id: 'c1', name: 'Acme Corp' }]
+  const invoices = [
+    { id: 'inv-1', clientId: 'c1', baseAmount: 100, issuedDate: '2026-10-01', dueDate: '2026-10-15', status: 'paid', digest: 'D1', settledAt: '2026-10-20T00:00:00Z' },
+    { id: 'inv-2', clientId: 'c1', baseAmount: 50, issuedDate: '2026-10-01', dueDate: '2026-11-15', status: 'partial', partialAmount: '20.004321', settledAt: '2026-11-01T00:00:00Z' },
+    { id: 'inv-3', clientId: 'c1', baseAmount: 70, issuedDate: '2026-11-01', dueDate: '2026-11-20', status: 'sent' },
+  ]
+  const opts = { revenueCode: '200', bankAccountId: 'BANK' }
+  const first = xeroPlan({ clients, invoices }, [], opts)
+  assert.deepEqual(first.create.map((x) => [x.InvoiceNumber, x.Contact.Name, x.LineItems[0].UnitAmount, x.LineItems[0].AccountCode]), [['inv-1', 'Acme Corp', 100, '200'], ['inv-2', 'Acme Corp', 50, '200'], ['inv-3', 'Acme Corp', 70, '200']])
+  assert.deepEqual(first.payments.map((p) => [p.invoiceNumber, p.Amount, p.Reference, p.Date]), [['inv-1', 100, 'Sui D1', '2026-10-20'], ['inv-2', 20, 'USDC on Sui', '2026-11-01']])
+  // second run after Xero recorded everything: nothing to do
+  const existing = [{ InvoiceNumber: 'inv-1', AmountPaid: 100 }, { InvoiceNumber: 'inv-2', AmountPaid: 20 }, { InvoiceNumber: 'inv-3', AmountPaid: 0 }]
+  assert.deepEqual(xeroPlan({ clients, invoices }, existing, opts), { create: [], payments: [] })
+  // more USDC arrived on inv-2: only the difference is paid
+  invoices[1].partialAmount = '35.5'
+  assert.deepEqual(xeroPlan({ clients, invoices }, existing, opts).payments.map((p) => p.Amount), [15.5])
+})
+
+test('xero: OAuth state is MACed, expires, and rejects tampering', async () => {
+  process.env.XERO_CLIENT_ID = 'cid'
+  process.env.XERO_CLIENT_SECRET = 'secret'
+  const { xeroAuthUrl, xeroStateValid } = await import('./integrations.mjs')
+  const url = new URL(xeroAuthUrl('https://x.test/cb', 1_000))
+  const state = url.searchParams.get('state')
+  assert.match(url.searchParams.get('scope'), /accounting\.invoices/)
+  assert.equal(xeroStateValid(state, 2_000), true)
+  assert.equal(xeroStateValid(state, 1_000 + 10 * 60_000 + 1), false, 'expired')
+  assert.equal(xeroStateValid(state.replace(/^\d+/, '99999999999999'), 2_000), false, 'tampered expiry')
+  assert.equal(xeroStateValid('', 2_000), false)
+  delete process.env.XERO_CLIENT_ID
+  delete process.env.XERO_CLIENT_SECRET
+})
+
+test('email: refused without SMTP config or a client address, never sent', async () => {
+  const { sendEmail } = await import('./integrations.mjs')
+  delete process.env.SMTP_USER
+  await assert.rejects(sendEmail({ to: 'a@b.co', subject: 's', text: 't' }), /not configured/)
+  process.env.SMTP_USER = 'u'
+  process.env.SMTP_PASS = 'p'
+  await assert.rejects(sendEmail({ to: 'not-an-email', subject: 's', text: 't' }), /no email address/)
+  delete process.env.SMTP_USER
+  delete process.env.SMTP_PASS
+})

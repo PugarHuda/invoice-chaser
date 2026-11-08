@@ -271,6 +271,9 @@ export default function App() {
   useEffect(() => { if (!newInvoice.clientId && clientsList[0]) setNewInvoice((n) => ({ ...n, clientId: clientsList[0].id })); }, [clientsList, newInvoice.clientId]);
   const [reminderText, setReminderText] = useState<string>('');
   const [reminderSource, setReminderSource] = useState<string>('');
+  // integrations the owner configured on the server; nothing is shown for one that isn't configured
+  const [integrations, setIntegrations] = useState<{ email: { configured: boolean; from: string | null }; xero: { configured: boolean; connected: boolean; tenantName?: string | null; error?: string; lastSync?: { at: string; created: number; payments: number } | null } } | null>(null);
+  const [integrationBusy, setIntegrationBusy] = useState<string | null>(null);
   const [newClientName, setNewClientName] = useState<string>('');
   const [walletBusy, setWalletBusy] = useState<string | null>(null);
   const [payerProof, setPayerProof] = useState<{ address: string; verifiedBy: string; wallet: { usdc: string; covers: boolean; owed: string } | null } | null>(null);
@@ -451,7 +454,51 @@ export default function App() {
     fetchSummary();
     fetchClients();
     fetchAllInvoices();
+    fetchIntegrations();
+    const xero = new URLSearchParams(window.location.search).get('xero');
+    if (xero) showToast(xero === 'connected' ? 'Xero connected. Use "Sync to Xero" to push invoices and USDC payments.' : `Xero sign-in did not finish: ${xero}`, xero === 'connected' ? 'ok' : 'error');
   }, []);
+
+  const fetchIntegrations = async () => {
+    try {
+      const res = await fetch('/api/chaser/integrations');
+      if (res.ok) setIntegrations(await res.json());
+    } catch { /* integrations stay hidden */ }
+  };
+
+  const integrationCall = async (key: string, path: string, body?: unknown) => {
+    setIntegrationBusy(key);
+    try {
+      const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      return data;
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), 'error');
+      return null;
+    } finally {
+      setIntegrationBusy(null);
+    }
+  };
+
+  const handleXeroConnect = async () => {
+    const data = await integrationCall('xero', '/api/chaser/xero/connect');
+    if (data?.url) window.location.href = data.url;
+  };
+  const handleXeroSync = async () => {
+    const data = await integrationCall('xero', '/api/chaser/xero/sync');
+    if (data) showToast(`Synced to Xero (${data.tenant}): ${data.created} new invoice(s), ${data.payments} payment(s) recorded in ${data.bank}`);
+    fetchIntegrations();
+  };
+  const handleXeroDisconnect = async () => {
+    if (!window.confirm('Disconnect Xero? Invoices already in Xero stay there.')) return;
+    if (await integrationCall('xero', '/api/chaser/xero/disconnect')) showToast('Xero disconnected');
+    fetchIntegrations();
+  };
+  const handleEmailReminder = async () => {
+    const data = await integrationCall('email', `/api/chaser/invoices/${selectedInvoiceId}/email`, { text: reminderText });
+    if (data) showToast(`Reminder emailed from ${integrations?.email.from}; logged to Walrus Memory`);
+  };
 
   // recall hits belong to one client: clear them when the selection changes
   useEffect(() => { setMemHits(null); setMemQuery(''); }, [selectedClientId]);
@@ -1445,7 +1492,21 @@ export default function App() {
           <div className="space-y-xl">
             <div className="flex flex-wrap items-center justify-between gap-md">
               <div>
-                <div className="flex flex-wrap items-center gap-x-md gap-y-xs"><h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} onClick={(e) => ownerDownload(e, '/api/chaser/export.csv', 'invoice-chaser.csv')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} onClick={(e) => ownerDownload(e, '/api/chaser/reminders.ics', 'invoice-chaser-reminders.ics')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a></div>
+                <div className="flex flex-wrap items-center gap-x-md gap-y-xs"><h1 className="text-heading-lg font-semibold text-primary">Invoice Detail</h1> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/export.csv`} onClick={(e) => ownerDownload(e, '/api/chaser/export.csv', 'invoice-chaser.csv')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Export CSV</a> <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/reminders.ics`} onClick={(e) => ownerDownload(e, '/api/chaser/reminders.ics', 'invoice-chaser-reminders.ics')} className="text-xs font-semibold text-utility-brand-700 hover:underline">Reminders to calendar (.ics)</a>
+                  {integrations?.xero.configured && (
+                    <span className="inline-flex flex-wrap items-center gap-sm text-xs">
+                      {integrations.xero.connected ? (
+                        <>
+                          <button onClick={handleXeroSync} disabled={integrationBusy === 'xero'} className="font-semibold text-utility-brand-700 hover:underline disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-focus-ring">{integrationBusy === 'xero' ? 'Syncing to Xero…' : `Sync to Xero (${integrations.xero.tenantName})`}</button>
+                          {integrations.xero.lastSync && <span className="text-tertiary">last sync {new Date(integrations.xero.lastSync.at).toLocaleString()}</span>}
+                          <button onClick={handleXeroDisconnect} className="text-tertiary hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring">Disconnect</button>
+                        </>
+                      ) : (
+                        <button onClick={handleXeroConnect} disabled={integrationBusy === 'xero'} className="font-semibold text-utility-brand-700 hover:underline disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-focus-ring">Connect Xero</button>
+                      )}
+                    </span>
+                  )}
+                </div>
                 <p className="text-secondary text-sm mt-xs">
                   Review reminder plans, memory reasoning, and payment parameters.
                 </p>
@@ -1714,6 +1775,11 @@ export default function App() {
 Invoice PDF: ${window.location.origin}/api/chaser/pay/${invoiceDetail.invoice.id}/invoice.pdf`)}`} className="inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline">
                               Open in your email app <ExternalLink className="w-3 h-3" />
                             </a>
+                            {integrations?.email.configured && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientsList.find((c) => c.id === invoiceDetail.invoice.clientId)?.contact || '') && (
+                              <button onClick={handleEmailReminder} disabled={integrationBusy === 'email'} className="ml-md inline-flex items-center gap-xxs font-semibold text-utility-brand-700 hover:underline disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-focus-ring">
+                                {integrationBusy === 'email' ? 'Sending…' : `Send by email from ${integrations.email.from}`}
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
