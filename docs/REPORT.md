@@ -79,7 +79,7 @@ Recurring invoices, chase queue, statement of account, wallet claim, x402 v1/v2,
 ## 9. Blockers (need the owner)
 
 1. **Wallet signature** for the Tatum Ecosystem developer profile. The form is filled in Chrome.
-2. **Repository secrets** for PR E2E: `TATUM_API_KEY`, `MEMWAL_PRIVATE_KEY`, `MEMWAL_ACCOUNT_ID`, `SUI_PAYEE_ADDRESS`.
+2. ~~Repository secrets for PR E2E~~: set 2026-11-08; the `e2e-local` job passes on a branch run.
 3. **Email API key** (for example Resend) for sending reminders from the app; `mailto:` works today.
 4. **QuickBooks/Xero OAuth apps** for accounting sync; the CSV statement covers it today.
 5. **After judging:** `PRIVATE_READS=1` on Vercel, then redeploy.

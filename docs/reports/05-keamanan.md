@@ -15,6 +15,7 @@ No custom Move contract (see `03-kontrak.md`), so Slither and Aderyn don't apply
 | S-9 | CSV injection | Medium | formula in exported cells | unit test | fixed |
 | S-10 | Array amount `[5]` passed validation | Medium | type confusion | unit test | fixed (`cc9ea1f`) |
 | S-11 | LLM draft injection | Medium | the model invents a link, amount or address | the server inserts the facts, drafts with numbers or links are rejected | fixed |
+| S-13 | Open writes off Vercel | High | the first CI run with secrets (no passcode, not on Vercel) wrote 2 test clients to production Walrus | the E2E test `owner writes need the passcode` got 200 | fixed in `a480872`: fail closed everywhere; the test clients are hidden by a `client_archived` memory |
 | S-12 | `minimatch` DoS (dev dependency) | Medium | lint-time only | `npm audit` | fixed in this pass (override 11.0.5) |
 
 Also in place:
