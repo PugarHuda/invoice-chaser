@@ -80,6 +80,6 @@ Recurring invoices, chase queue, statement of account, wallet claim, x402 v1/v2,
 
 1. ~~Tatum Ecosystem developer profile~~: live at https://ecosystem.tatum.io/developers/pugar-huda-mantoro (v1).
 2. ~~Repository secrets for PR E2E~~: set 2026-11-08; the `e2e-local` job passes on a branch run.
-3. **Email API key** (for example Resend) for sending reminders from the app; `mailto:` works today.
-4. **QuickBooks/Xero OAuth apps** for accounting sync; the CSV statement covers it today.
+3. **Email from the owner's mailbox**: built (SMTP); needs `SMTP_USER` + a Gmail App Password (`SMTP_PASS`) on Vercel. `mailto:` works meanwhile.
+4. ~~Xero OAuth app~~: built and configured 2026-11-08 (Xero app "Invoice Chaser", tokens in Upstash Redis). QuickBooks is not built.
 5. **After judging:** `PRIVATE_READS=1` on Vercel, then redeploy.
