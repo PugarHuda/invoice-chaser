@@ -110,8 +110,8 @@ router.use((req, res, next) => {
 router.use((req, res, next) => {
   const pass = process.env.APP_PASSCODE
   if (req.method === 'GET' || PUBLIC_WRITES.has(req.path) || isPayLinkWrite(req.path)) return next()
-  // fail closed on a deploy that lost its passcode: Walrus memories can't be deleted, so open writes are permanent damage
-  if (!pass) return process.env.VERCEL && process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set on this deployment' }) : next()
+  // fail closed anywhere without a passcode (Vercel, CI, a fresh clone): Walrus memories can't be deleted, so open writes are permanent damage
+  if (!pass) return process.env.ALLOW_OPEN_WRITES !== '1' ? res.status(503).json({ error: 'Owner writes are disabled: APP_PASSCODE is not set (ALLOW_OPEN_WRITES=1 opens them for a throwaway local demo)' }) : next()
   if (!isOwner(req)) return denyOwner(req, res)
   next()
 })
@@ -209,6 +209,17 @@ router.post('/clients', (req, res) => {
   const id = newId('c')
   const m = mem.remember(mem.writeNs(id), `New client ${name} added.`, { type: 'client_created', client: id, name, contact })
   res.json({ client: { id, name }, memory: m })
+})
+
+// Walrus can't delete, so removing a client is a `client_archived` memory; only a client with no invoices
+// (a typo or a test entry), so no invoice, payment or learned history is ever hidden by it
+router.post('/clients/:id/archive', (req, res) => {
+  const { clients, invoices } = state()
+  const client = clients.find((c) => c.id === req.params.id)
+  if (!client) return res.status(404).json({ error: 'Client not found' })
+  if (invoices.some((i) => i.clientId === client.id)) return res.status(409).json({ error: 'Only a client without invoices can be archived' })
+  const m = mem.remember(mem.writeNs(client.id), `Client ${client.name} archived by the owner.`, { type: 'client_archived', client: client.id })
+  res.json({ success: true, memory: m })
 })
 
 router.get('/clients/:id', (req, res) => {

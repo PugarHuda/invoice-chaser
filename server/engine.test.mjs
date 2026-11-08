@@ -378,3 +378,15 @@ test('recurring: the next invoice is due for issue from 7 days before it falls d
   store.get('ic:r').push({ timestamp: '2026-11-20T00:00:00Z', tag: { type: 'repeat_stopped', client: 'r', series: 'inv-a' } })
   assert.equal(recurringDue(deriveState(store), new Date('2026-12-08T00:00:00Z')).length, 0)
 })
+
+test('an archived client disappears from state; its memories are untouched', () => {
+  const store = new Map([['ic:main:client:c-x', [
+    { id: 'a', timestamp: '2026-11-08T01:55:58Z', tag: { type: 'client_created', client: 'c-x', name: 'x' } },
+    { id: 'b', timestamp: '2026-11-08T02:10:00Z', tag: { type: 'client_archived', client: 'c-x' } },
+  ]], ['ic:main:client:c1', [{ id: 'c', timestamp: '2026-08-01T00:00:00Z', tag: { type: 'client_created', client: 'c1', name: 'Acme' } }]]])
+  assert.deepEqual(deriveState(store).clients.map((c) => c.id), ['c1'])
+  assert.equal(store.get('ic:main:client:c-x').length, 2)
+  // archiving a client that was never created is a no-op
+  store.set('ic:main:client:c-y', [{ id: 'd', timestamp: '2026-11-08T02:11:00Z', tag: { type: 'client_archived', client: 'c-y' } }])
+  assert.equal(deriveState(store).clients.length, 1)
+})

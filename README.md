@@ -325,7 +325,7 @@ SUI_NETWORK=testnet node --env-file=.env.local --env-file=.env.testagent scripts
 - Per-IP write / payment / search budgets (429 + `Retry-After`); on Vercel the IP comes from the edge header, never the client-supplied `X-Forwarded-For`.
 - Input validation (real calendar dates, amounts 0.01–1,000,000 with ≤2 decimals, length caps), JSON errors for malformed bodies.
 - The owner passcode is checked once per request and the result reused everywhere, so no route can act as a guessing oracle. Ten wrong passcodes from an IP lock it out for 10 minutes, checked *before* the passcode, so even the right one is refused while locked; requests without a passcode never count.
-- A deployment without `APP_PASSCODE` refuses owner writes (503) instead of opening them, since Walrus memories can't be deleted (`ALLOW_OPEN_WRITES=1` opts out for local demos).
+- Without `APP_PASSCODE`, owner writes are refused (503) everywhere (Vercel, CI, a fresh clone) instead of opening them, since Walrus memories can't be deleted (`ALLOW_OPEN_WRITES=1` opts out for a throwaway local demo).
 - Rate limiting and auth run before the Walrus load, so a refused request never triggers one.
 - A transaction that fails on-chain (`FailedTransaction`) is reported as such on the x402, sponsored and gasless paths, never settled.
 - The live checkpoint stream retries a transient settle miss (ledger lag, lock held, gateway error) instead of giving up after one checkpoint; the memory-chain audit serves the last good result, marked stale, when Tatum rate-limits.

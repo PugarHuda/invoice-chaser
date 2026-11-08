@@ -84,6 +84,8 @@ export function deriveState(store, now = new Date()) {
         series: REPEATS.includes(t.repeat) ? t.series || t.invoice : null,
         prev: t.prev || null,
       })
+    } else if (t.type === 'client_archived' && clients.has(t.client)) {
+      clients.get(t.client).archived = true // append-only store: archiving hides the client, its memories stay on Walrus
     } else if (t.type === 'repeat_stopped' && t.series) {
       stoppedSeries.add(t.series)
     } else if (t.type === 'reminder_sent' && invoices.has(t.invoice)) {
@@ -141,7 +143,8 @@ export function deriveState(store, now = new Date()) {
       }
     }
   for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
-  return { clients: [...clients.values()], invoices: [...invoices.values()], usedDigests, stoppedSeries }
+  // an archived client is only ever one without invoices (the route refuses otherwise), so nothing dangles
+  return { clients: [...clients.values()].filter((c) => !c.archived), invoices: [...invoices.values()], usedDigests, stoppedSeries }
 }
 
 // The amount this invoice asked for at chain time `ts`: the newest quote issued by then, skipping a

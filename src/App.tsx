@@ -612,6 +612,20 @@ export default function App() {
     }
   };
 
+  // only offered for a client with no invoices (a typo or test entry); the server refuses anything else
+  const handleArchiveClient = async () => {
+    if (!window.confirm('Archive this client? An archive memory is written to Walrus; the original memories stay.')) return;
+    try {
+      const res = await fetch(`/api/chaser/clients/${selectedClientId}/archive`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      showToast('Client archived: an archive memory was written to Walrus');
+      setSelectedClientId('');
+      fetchClients();
+    } catch (err) {
+      showToast(`Failed to archive: ${err instanceof Error ? err.message : err}`, 'error');
+    }
+  };
+
   const handleRebuildFromMemory = async () => {
     try {
       showToast('Total Recall: restoring and recalling every namespace from Walrus…');
@@ -1181,6 +1195,9 @@ export default function App() {
                           Walrus Namespace: <code className="text-brand-primary font-mono">{clientDetail.namespace}</code>
                         </p>
                         <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`} onClick={(e) => ownerDownload(e, `/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`, `statement-${clientDetail.client.id}.csv`)} className="text-xs font-semibold text-utility-brand-700 hover:underline">Statement of account (CSV, verified on Sui)</a>
+                        {!allInvoices.some((i) => i.clientId === clientDetail.client.id) && (
+                          <button onClick={handleArchiveClient} className="ml-md text-xs font-semibold text-utility-error-700 hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring">Archive client (no invoices)</button>
+                        )}
                       </div>
                       <button
                         onClick={handleRebuildFromMemory}

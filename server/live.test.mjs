@@ -146,8 +146,8 @@ test('a FailedTransaction from execute is reported, never treated as a settleabl
   assert.deepEqual(executed(undefined), { digest: null })
 })
 
-test('owner writes fail closed on Vercel without a passcode; wrong passcodes are throttled', async () => {
-  const saved = { VERCEL: process.env.VERCEL, APP_PASSCODE: process.env.APP_PASSCODE }
+test('owner writes fail closed without a passcode (Vercel or not); wrong passcodes are throttled', async () => {
+  const saved = { VERCEL: process.env.VERCEL, APP_PASSCODE: process.env.APP_PASSCODE, ALLOW_OPEN_WRITES: process.env.ALLOW_OPEN_WRITES }
   const { default: app } = await import('../app.mjs')
   const srv = app.listen(0)
   const base = `http://127.0.0.1:${srv.address().port}/api/chaser`
@@ -157,6 +157,7 @@ test('owner writes fail closed on Vercel without a passcode; wrong passcodes are
     delete process.env.APP_PASSCODE
     assert.equal((await post('/clients')).status, 503)
     delete process.env.VERCEL
+    assert.equal((await post('/clients')).status, 503, 'no passcode off Vercel (CI, fresh clone) must not open writes')
     process.env.APP_PASSCODE = 'right-one'
     // requests without a passcode are refused but never lock the owner out
     for (let i = 0; i < 15; i++) assert.equal((await post('/clients')).status, 401)
