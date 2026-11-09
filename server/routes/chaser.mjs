@@ -737,14 +737,14 @@ router.post('/xero/connect', (req, res) => {
   res.json({ url: xeroAuthUrl(xeroRedirect(req)) })
 })
 router.get('/xero/callback', async (req, res) => {
-  if (!xeroConfigured()) return res.status(503).send('Xero is not configured')
+  if (!xeroConfigured()) return res.status(503).type('text/plain').send('Xero is not configured')
   if (req.query.error) return res.redirect(`/?app&xero=${encodeURIComponent(String(req.query.error).slice(0, 40))}`)
-  if (!xeroStateValid(req.query.state) || typeof req.query.code !== 'string') return res.status(400).send('Invalid or expired Xero sign-in. Start again from the app.')
+  if (!xeroStateValid(req.query.state) || typeof req.query.code !== 'string') return res.status(400).type('text/plain').send('Invalid or expired Xero sign-in. Start again from the app.')
   try {
     await xeroConnect(req.query.code, xeroRedirect(req))
     res.redirect('/?app&xero=connected')
   } catch (e) {
-    res.status(502).send(`Xero connection failed: ${e.message}`)
+    res.status(502).type('text/plain').send(`Xero connection failed: ${e.message}`) // plain text: the message comes from Xero
   }
 })
 router.post('/xero/sync', async (_req, res) => {
