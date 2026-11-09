@@ -23,11 +23,13 @@ There is no custom Move package (see [03-contracts](03-contracts.md)), so Slithe
 | S-2 | Lockout order | High | The right passcode worked during lockout | Unit test | Fixed |
 | S-13 | Writes without `APP_PASSCODE` off Vercel | High | A CI run wrote 2 permanent test clients to production Walrus | E2E `owner writes need the passcode` got 200 | Fixed (`a480872`): fail closed everywhere; unit test covers the case off Vercel; test clients archived |
 | S-14 | Archive hides an invoice with a payment in flight | Medium | A payment could land on a hidden invoice | Review finding | Fixed (`c981450`): archive refused while a payment is being verified; paid invoices stay visible |
-| S-15 | Archived invoice frees its unique amount | Medium | A new invoice could reuse the amount, so a payment could match the wrong invoice | Review finding | Fixed (`c981450`): amounts reserved from `allInvoices`; unit test |
-| S-16 | Rule sandbox under private mode | Medium | With `PRIVATE_READS=1` it would leak invoice plans | Review finding | Fixed (`a5a2259`): gated like other owner reads |
-| S-17 | Xero callback error page | Low | A Xero error string was echoed as `text/html` (reflected content; CSP blocks scripts) | `curl …/xero/callback?state=bad` → `text/html` | Fixed: `text/plain` |
+| S-15 | Archived invoice frees its unique amount | Medium | A new invoice could reuse the amount, so a payment could match the wrong invoice | Unit test (`allInvoices` keeps the amount) + route PoC: archiving a paid client → 409 | Fixed (`c981450`): amounts reserved from `allInvoices`; unit test |
+| S-16 | Rule sandbox under private mode | Medium | With `PRIVATE_READS=1` it would leak invoice plans | Route PoC: no passcode → 401, passcode → 200. Mutation-checked: without the fix the test fails (200 ≠ 401) | Fixed (`a5a2259`): gated like other owner reads |
+| S-17 | Xero callback error page | Low | A Xero error string was echoed as `text/html` (reflected content; CSP blocks scripts) | Route PoC: `state=<script>…` → 400 `text/plain`; production checked with curl | Fixed: `text/plain` |
 | S-4…S-11 | FailedTransaction settle, digest replay, x402 binding, sponsor abuse, XFF spoofing, CSV injection, array amount, LLM draft injection | High–Medium | See 05-keamanan | Unit and testnet tests | Fixed in earlier rounds |
 | S-12 | `minimatch` (dev dependency) | Medium | Lint-time ReDoS | `npm audit` | Fixed (override 11.0.5) |
+
+PoCs live in `server/live.test.mjs` (`security PoCs S-15/S-16/S-17`). They run the real routes against an in-memory book and never write to Walrus. The in-flight branch of S-14 has no PoC, because the lock is module-private; it is covered by review.
 
 ## Checks run this round
 

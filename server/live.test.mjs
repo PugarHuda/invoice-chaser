@@ -256,3 +256,46 @@ test('email: refused without SMTP config or a client address, never sent', async
   delete process.env.SMTP_USER
   delete process.env.SMTP_PASS
 })
+
+test('security PoCs S-15/S-16/S-17: a paid client cannot be archived, the sandbox obeys private mode, Xero errors are plain text', async () => {
+  const mem = await import('./memory.mjs')
+  const saved = { PRIVATE_READS: process.env.PRIVATE_READS, APP_PASSCODE: process.env.APP_PASSCODE, XERO_CLIENT_ID: process.env.XERO_CLIENT_ID, XERO_CLIENT_SECRET: process.env.XERO_CLIENT_SECRET, KV_REST_API_URL: process.env.KV_REST_API_URL, KV_REST_API_TOKEN: process.env.KV_REST_API_TOKEN }
+  const snapshot = new Map(mem.store)
+  const loaded = { ...mem.loadState }
+  // an in-memory book: client c-poc has one paid invoice; nothing here reaches Walrus
+  mem.store.clear()
+  mem.store.set(mem.clientNs('c-poc'), [
+    { id: 'a', timestamp: '2026-11-01T00:00:00Z', tag: { type: 'client_created', client: 'c-poc', name: 'PoC' } },
+    { id: 'b', timestamp: '2026-11-01T00:01:00Z', tag: { type: 'invoice_sent', client: 'c-poc', invoice: 'inv-poc', base: 1, pay_amount: '1.000123', due: '2026-12-01' } },
+    { id: 'c', timestamp: '2026-11-02T00:00:00Z', tag: { type: 'invoice_paid', client: 'c-poc', invoice: 'inv-poc', digest: 'DPOC', received: '1.000123' } },
+  ])
+  Object.assign(mem.loadState, { loaded: true, loading: false, error: null, loadedAt: new Date().toISOString() })
+  const { default: app } = await import('../app.mjs')
+  const srv = app.listen(0)
+  const base = `http://127.0.0.1:${srv.address().port}/api/chaser`
+  // its own client IP (one trusted proxy hop), so the lockout the throttling test left on 127.0.0.1 doesn't apply
+  const post = (path, body = {}, headers = {}) => fetch(base + path, { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '10.9.9.9', ...headers }, body: JSON.stringify(body) })
+  try {
+    process.env.APP_PASSCODE = 'poc-pass'
+    // S-15: archiving would hide money that arrived; refused before anything is written
+    const r = await post('/clients/c-poc/archive', {}, { 'x-passcode': 'poc-pass' })
+    assert.equal(r.status, 409)
+    assert.match((await r.json()).error, /paid anything/)
+    // S-16: with private mode on, the sandbox needs the passcode like any owner read
+    process.env.PRIVATE_READS = '1'
+    assert.equal((await post('/clients/c-poc/preview-rule', { preference: 'never before the 20th' })).status, 401)
+    assert.equal((await post('/clients/c-poc/preview-rule', { preference: 'never before the 20th' }, { 'x-passcode': 'poc-pass' })).status, 200)
+    delete process.env.PRIVATE_READS
+    // S-17: a bad or replayed OAuth state is refused, as plain text
+    Object.assign(process.env, { XERO_CLIENT_ID: 'cid', XERO_CLIENT_SECRET: 'secret', KV_REST_API_URL: 'https://kv.invalid', KV_REST_API_TOKEN: 't' })
+    const cb = await fetch(`${base}/xero/callback?code=x&state=${encodeURIComponent('<script>alert(1)</script>')}`, { headers: { 'x-forwarded-for': '10.9.9.9' } })
+    assert.equal(cb.status, 400)
+    assert.match(cb.headers.get('content-type'), /^text\/plain/)
+  } finally {
+    srv.close()
+    mem.store.clear()
+    for (const [k, v] of snapshot) mem.store.set(k, v)
+    Object.assign(mem.loadState, loaded)
+    for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v)
+  }
+})
