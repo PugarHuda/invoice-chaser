@@ -143,8 +143,9 @@ export function deriveState(store, now = new Date()) {
       }
     }
   for (const inv of invoices.values()) delete inv.receivedMicro // bigint isn't JSON; `remaining` carries it
-  // an archived client is only ever one without invoices (the route refuses otherwise), so nothing dangles
-  return { clients: [...clients.values()].filter((c) => !c.archived), invoices: [...invoices.values()], usedDigests, stoppedSeries }
+  // archiving hides the client and its invoices; the route only allows it before any money arrived, so no payment history is ever hidden
+  const archived = new Set([...clients.values()].filter((c) => c.archived).map((c) => c.id))
+  return { clients: [...clients.values()].filter((c) => !c.archived), invoices: [...invoices.values()].filter((i) => !archived.has(i.clientId)), usedDigests, stoppedSeries }
 }
 
 // The amount this invoice asked for at chain time `ts`: the newest quote issued by then, skipping a

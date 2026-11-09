@@ -384,8 +384,10 @@ test('an archived client disappears from state; its memories are untouched', () 
     { id: 'a', timestamp: '2026-11-08T01:55:58Z', tag: { type: 'client_created', client: 'c-x', name: 'x' } },
     { id: 'b', timestamp: '2026-11-08T02:10:00Z', tag: { type: 'client_archived', client: 'c-x' } },
   ]], ['ic:main:client:c1', [{ id: 'c', timestamp: '2026-08-01T00:00:00Z', tag: { type: 'client_created', client: 'c1', name: 'Acme' } }]]])
+  store.get('ic:main:client:c-x').splice(1, 0, { id: 'i', timestamp: '2026-11-08T02:00:00Z', tag: { type: 'invoice_sent', client: 'c-x', invoice: 'inv-x', base: '1', pay_amount: '1.000001', due: '2026-12-01' } })
   assert.deepEqual(deriveState(store).clients.map((c) => c.id), ['c1'])
-  assert.equal(store.get('ic:main:client:c-x').length, 2)
+  assert.deepEqual(deriveState(store).invoices, [], 'its unpaid invoice is hidden with it')
+  assert.equal(store.get('ic:main:client:c-x').length, 3)
   // archiving a client that was never created is a no-op
   store.set('ic:main:client:c-y', [{ id: 'd', timestamp: '2026-11-08T02:11:00Z', tag: { type: 'client_archived', client: 'c-y' } }])
   assert.equal(deriveState(store).clients.length, 1)

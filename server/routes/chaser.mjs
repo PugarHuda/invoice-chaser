@@ -214,13 +214,13 @@ router.post('/clients', (req, res) => {
   res.json({ client: { id, name }, memory: m })
 })
 
-// Walrus can't delete, so removing a client is a `client_archived` memory; only a client with no invoices
-// (a typo or a test entry), so no invoice, payment or learned history is ever hidden by it
+// Walrus can't delete, so removing a client is a `client_archived` memory. Only before any money arrived
+// (a typo or a test entry): its unpaid invoices are hidden with it, but payment history never is
 router.post('/clients/:id/archive', (req, res) => {
   const { clients, invoices } = state()
   const client = clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
-  if (invoices.some((i) => i.clientId === client.id)) return res.status(409).json({ error: 'Only a client without invoices can be archived' })
+  if (invoices.some((i) => i.clientId === client.id && (i.payments || []).length)) return res.status(409).json({ error: 'A client that has paid anything cannot be archived' })
   const m = mem.remember(mem.writeNs(client.id), `Client ${client.name} archived by the owner.`, { type: 'client_archived', client: client.id })
   res.json({ success: true, memory: m })
 })

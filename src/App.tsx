@@ -1256,8 +1256,8 @@ export default function App() {
                           Walrus Namespace: <code className="text-brand-primary font-mono">{clientDetail.namespace}</code>
                         </p>
                         <a href={`${import.meta.env.VITE_API_BASE || ""}/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`} onClick={(e) => ownerDownload(e, `/api/chaser/clients/${clientDetail.client.id}/statement?format=csv`, `statement-${clientDetail.client.id}.csv`)} className="text-xs font-semibold text-utility-brand-700 hover:underline">Statement of account (CSV, verified on Sui)</a>
-                        {!allInvoices.some((i) => i.clientId === clientDetail.client.id) && (
-                          <button onClick={handleArchiveClient} className="ml-md text-xs font-semibold text-utility-error-700 hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring">Archive client (no invoices)</button>
+                        {!allInvoices.some((i) => i.clientId === clientDetail.client.id && ['paid', 'partial'].includes(i.status)) && (
+                          <button onClick={handleArchiveClient} className="ml-md text-xs font-semibold text-utility-error-700 hover:underline focus-visible:ring-2 focus-visible:ring-focus-ring">Archive client (nothing paid yet)</button>
                         )}
                       </div>
                       <button
