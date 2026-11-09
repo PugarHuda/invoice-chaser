@@ -220,7 +220,10 @@ router.post('/clients/:id/archive', (req, res) => {
   const { clients, invoices } = state()
   const client = clients.find((c) => c.id === req.params.id)
   if (!client) return res.status(404).json({ error: 'Client not found' })
-  if (invoices.some((i) => i.clientId === client.id && (i.payments || []).length)) return res.status(409).json({ error: 'A client that has paid anything cannot be archived' })
+  const mine = invoices.filter((i) => i.clientId === client.id)
+  if (mine.some((i) => (i.payments || []).length)) return res.status(409).json({ error: 'A client that has paid anything cannot be archived' })
+  // a payment being verified right now would land on a hidden invoice: refuse until it settles
+  if (mine.some((i) => inflight.has(i.id) || x402Inflight.has(i.id) || [...reservedDigests.values()].some((r) => r.invoiceId === i.id && Date.now() - r.at < RESERVE_MS))) return res.status(409).json({ error: 'A payment for this client is being verified; try again in a minute' })
   const m = mem.remember(mem.writeNs(client.id), `Client ${client.name} archived by the owner.`, { type: 'client_archived', client: client.id })
   res.json({ success: true, memory: m })
 })
@@ -412,11 +415,12 @@ router.post('/invoices', (req, res) => {
   const { clientId, amount, dueDate, description, repeat } = req.body || {}
   const bad = invoiceInputError(req.body || {})
   if (bad) return res.status(400).json({ error: bad })
-  const { clients, invoices } = state()
+  const { clients, allInvoices } = state()
   const client = clients.find((c) => c.id === clientId)
   if (!client) return res.status(400).json({ error: 'unknown clientId' })
   const id = newId('inv')
-  const payAmount = uniquePayAmount(amount, takenAmounts(invoices))
+  // hidden (archived) invoices keep their amounts reserved, so a payment can never match two invoices
+  const payAmount = uniquePayAmount(amount, takenAmounts(allInvoices))
   const m = mem.remember(mem.writeNs(clientId), `Invoice ${id} sent to ${client.name}: ${payAmount} USDC due ${dueDate}${repeat ? `, repeating ${repeat}` : ''}.`, { type: 'invoice_sent', client: clientId, invoice: id, base: Number(amount), pay_amount: payAmount, due: dueDate, description: description || '', ...(repeat ? { repeat, series: id } : {}) })
   res.json({ invoice: { id, payAmount }, memory: m })
 })
@@ -676,7 +680,7 @@ router.post('/invoices/:id/terms', async (req, res) => {
   const rec = incentive(withStatus(inv), profileOf(inv.clientId))
   if (!rec.kind) return res.status(409).json({ error: rec.reason })
   if (req.body?.kind !== rec.kind) return res.status(409).json({ error: `The current recommendation is ${rec.kind.replace('_', ' ')}, not ${String(req.body?.kind || 'none').replace('_', ' ')}` })
-  const payAmount = uniquePayAmount(rec.newBase, takenAmounts(invoices))
+  const payAmount = uniquePayAmount(rec.newBase, takenAmounts(state().allInvoices))
   const name = clientName(clients, inv.clientId)
   const sentence = rec.kind === 'early_discount'
     ? `Invoice ${inv.id} for ${name}: ${rec.pct}% early-payment discount, ${payAmount} USDC if paid by ${rec.until} (otherwise ${inv.payAmount} USDC).`
@@ -985,7 +989,7 @@ router.post('/sync-payments', async (req, res) => {
 // (engine.recurringDue), with a fresh unique micro-amount; a successor already in memory is never written twice.
 function issueRecurring(now = new Date()) {
   const st = state()
-  const taken = takenAmounts(st.invoices)
+  const taken = takenAmounts(st.allInvoices)
   return recurringDue(st, now).map(({ from, due }) => {
     const id = newId('inv')
     const payAmount = uniquePayAmount(from.baseAmount, taken)
